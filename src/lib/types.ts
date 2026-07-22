@@ -76,12 +76,14 @@ export type AppointmentStatus =
 // Single source of truth for appointment visit types: the option list every
 // visit-type dropdown renders (in order), the labels they show, and the values
 // the server validates against. Add or reorder here and it flows everywhere.
-export const VISIT_TYPE_VALUES = ["initial", "follow_up", "machines"] as const;
+export const VISIT_TYPE_VALUES = ["initial", "follow_up", "machines", "blood_test", "buy_products"] as const;
 export type VisitType = (typeof VISIT_TYPE_VALUES)[number];
 export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
   initial: "Initial",
   follow_up: "Follow-up",
   machines: "Machines",
+  blood_test: "Blood Test",
+  buy_products: "Buy Products",
 };
 export type MaritalStatus = "single" | "married" | "divorced" | "widowed" | "other";
 
