@@ -212,6 +212,7 @@ function ReferrersCard() {
   const { toast } = useToast();
   const referrers = useApi(() => api.listReferrers());
   const [newName, setNewName] = useState("");
+  const [newFee, setNewFee] = useState("");
   const [adding, setAdding] = useState(false);
 
   async function addReferrer() {
@@ -221,9 +222,10 @@ function ReferrersCard() {
     }
     setAdding(true);
     try {
-      await api.createReferrer({ name: newName.trim() });
+      await api.createReferrer({ name: newName.trim(), fee: Number(newFee) || 0 });
       toast("Referrer added");
       setNewName("");
+      setNewFee("");
       referrers.refetch();
     } catch (e) {
       toast((e as Error).message);
@@ -236,7 +238,7 @@ function ReferrersCard() {
     <Card>
       <CardHeader
         title="Referrers"
-        subtitle="Who refers patients to the clinic — offered at registration and check-in. Renaming or removing one never changes past client records."
+        subtitle="Who refers patients to the clinic — offered at registration and check-in, alongside a built-in “None” option for patients who came organically (no referrer, no fee). The referral fee is the commission paid per patient they send. Renaming, removing or re-pricing one never changes past client records (each patient's fee is frozen at registration)."
       />
       <CardBody className="space-y-4">
         <div className="space-y-2">
@@ -259,6 +261,16 @@ function ReferrersCard() {
             <FormRow label="Name" className="flex-1">
               <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Dr. Karam" />
             </FormRow>
+            <FormRow label="Fee / referral (USD)" className="w-40">
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={newFee}
+                onChange={(e) => setNewFee(e.target.value)}
+                placeholder="0"
+              />
+            </FormRow>
             <Button size="sm" onClick={addReferrer} disabled={adding}>
               {adding ? "Adding…" : "Add"}
             </Button>
@@ -272,15 +284,24 @@ function ReferrersCard() {
 function ReferrerRow({ referrer, onChanged }: { referrer: Referrer; onChanged: () => void }) {
   const { toast } = useToast();
   const [name, setName] = useState(referrer.name);
+  const [fee, setFee] = useState(String(referrer.fee));
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
-  const dirty = name.trim() !== referrer.name && name.trim() !== "";
+  const nameDirty = name.trim() !== referrer.name && name.trim() !== "";
+  const feeDirty = (Number(fee) || 0) !== referrer.fee;
+  const dirty = nameDirty || feeDirty;
 
-  async function rename() {
+  // Saves whichever of name/fee changed. Editing the fee only changes the LIVE
+  // rate for future referrals — commissions already frozen onto past patients are
+  // untouched (that snapshot lives on the client, not here).
+  async function save() {
     setSaving(true);
     try {
-      await api.updateReferrer(referrer.id, { name: name.trim() });
-      toast("Referrer renamed");
+      await api.updateReferrer(referrer.id, {
+        ...(nameDirty ? { name: name.trim() } : {}),
+        ...(feeDirty ? { fee: Number(fee) || 0 } : {}),
+      });
+      toast("Referrer updated");
       onChanged();
     } catch (e) {
       toast((e as Error).message);
@@ -322,8 +343,11 @@ function ReferrerRow({ referrer, onChanged }: { referrer: Referrer; onChanged: (
       <FormRow label="Name" className="flex-1">
         <Input value={name} onChange={(e) => setName(e.target.value)} />
       </FormRow>
+      <FormRow label="Fee / referral (USD)" className="w-40">
+        <Input type="number" min={0} step="0.01" value={fee} onChange={(e) => setFee(e.target.value)} />
+      </FormRow>
       {!referrer.active && <Badge tone="gray">Inactive</Badge>}
-      <Button size="sm" variant="outline" onClick={rename} disabled={saving || !dirty}>
+      <Button size="sm" variant="outline" onClick={save} disabled={saving || !dirty}>
         {saving ? "Saving…" : "Save"}
       </Button>
       <Button size="sm" variant="ghost" onClick={toggleActive} disabled={busy}>

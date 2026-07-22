@@ -21,6 +21,13 @@ export const CLINIC = {
   timeZone: process.env.NEXT_PUBLIC_CLINIC_TIMEZONE || "Asia/Beirut",
 };
 
+// Reserved referrer value meaning "no one referred them — the patient came to the
+// clinic organically (walk-in / self-referred)". A real, explicit choice offered
+// in every referrer dropdown, distinct from a blank/unanswered field. It never
+// carries a commission: resolveReferralFee() short-circuits it to no fee even if a
+// referrer literally named "None" exists, so organic patients are never a cost.
+export const NONE_REFERRER = "None";
+
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 // One Intl formatter per timezone (built lazily, cached) — the calendar-day parts

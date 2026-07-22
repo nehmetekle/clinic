@@ -101,6 +101,14 @@ appointment steps (wizard was reworked to a plain registration form). The old "p
 package `paymentStatus` recompute" is superseded by the `SessionPlan` per-session billing +
 `ClientDebt` clearance systems (see [docs/known-issues.md](docs/known-issues.md))._
 
+_Also done since (removed): **per-referrer commission**. Each `Referrer` now has
+an admin-set `fee` (USD, Settings → Referrers); it's frozen onto the patient
+(`Client.referralFee`) at the registration moment — `createClient`, which both the
+new-client form and a phone booking go through — a one-time cost that reduces
+net profit and gross margin, surfaced as the "Referrer cost" card + drill-down on
+the dashboard/reports. Freeze-at-use, admin-only, redacted for other roles — see
+[docs/known-issues.md](docs/known-issues.md) §8._
+
 Still open:
 - **Full data export** — per-report CSV export works ([reports/page.tsx](src/app/(app)/reports/page.tsx)), but "Export all data (CSV)" in Settings is still a stub.
 - **Printable / PDF receipts** — receipt numbers are generated; a printable/PDF receipt is not.

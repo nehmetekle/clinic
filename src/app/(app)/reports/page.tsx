@@ -12,6 +12,7 @@ import { Input, Select } from "@/components/ui/Field";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { IncomeExpenseChart, RevenueBarChart } from "@/components/charts/Charts";
+import { ReferrerCostBreakdown } from "@/components/ReferrerCostBreakdown";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { todayIso } from "@/lib/config";
@@ -27,6 +28,7 @@ export default function ReportsPage() {
   const [customFrom, setCustomFrom] = useState(`${today.slice(0, 7)}-01`);
   const [customTo, setCustomTo] = useState(today);
   const [openReferrer, setOpenReferrer] = useState<string | null>(null);
+  const [showReferrerCost, setShowReferrerCost] = useState(false);
   const range =
     period === "Custom"
       ? { from: customFrom, to: customTo }
@@ -96,13 +98,21 @@ export default function ReportsPage() {
         <span className="font-medium text-slate-700">{rangeLabel(range.from, range.to)}</span>. Outstanding debts are current.
       </p>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
         <StatCard label="Total income" value={formatMoney(data.finance.totalIncome)} tone="green" />
         <StatCard label="Total expenses" value={formatMoney(data.finance.totalExpenses)} tone="rose" />
+        <StatCard label="Referrer cost" value={formatMoney(data.finance.referrerCost)} tone="rose" hint="View breakdown →" onClick={() => setShowReferrerCost(true)} />
         <StatCard label="Net profit" value={formatMoney(data.finance.netProfit)} tone={data.finance.netProfit >= 0 ? "brand" : "rose"} />
         <StatCard label="Gross margin" value={formatMoney(data.finance.grossMargin)} tone={data.finance.grossMargin >= 0 ? "brand" : "rose"} />
         <StatCard label="Outstanding debts" value={formatMoney(data.finance.unpaidBalance)} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
       </div>
+
+      <ReferrerCostBreakdown
+        open={showReferrerCost}
+        onClose={() => setShowReferrerCost(false)}
+        periodLabel={rangeLabel(range.from, range.to)}
+        report={data.referrerCostReport}
+      />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card>

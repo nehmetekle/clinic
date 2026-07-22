@@ -15,7 +15,7 @@ import { useClientSearch } from "@/lib/use-client-search";
 import { useDuplicatePhone } from "@/lib/use-duplicate-phone";
 import { api, DuplicatePhoneError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { todayIso } from "@/lib/config";
+import { todayIso, NONE_REFERRER } from "@/lib/config";
 import { cn, defaultSlot, formatTime, timeSlots } from "@/lib/utils";
 import { VISIT_TYPE_LABELS, VISIT_TYPE_VALUES } from "@/lib/types";
 import type { Client, VisitType } from "@/lib/types";
@@ -311,6 +311,7 @@ export default function PhoneBookingPage() {
                     className={cn(newPatient.referralSource.trim() === "" && missingClass)}
                   >
                     <option value="">Select referrer…</option>
+                    <option value={NONE_REFERRER}>None</option>
                     {(referrers.data ?? []).filter((r) => r.active).map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
                   </Select>
                 </FormRow>

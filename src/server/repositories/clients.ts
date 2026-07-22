@@ -4,6 +4,7 @@ import { ConflictError, DuplicatePhoneError, ForbiddenError, NotFoundError } fro
 import { dateOnly, toClientPackage } from "../serialize";
 import { expirePastScheduledAppointments, toAppointment } from "./appointments";
 import { listClientDebts } from "./clientDebts";
+import { resolveReferralFee } from "./referrers";
 import { consultationInclude, toConsultation } from "./consultations";
 import { paymentInclude, toPayment } from "./payments";
 import { listSessionPlans } from "./sessionPlans";
@@ -284,6 +285,13 @@ export async function createClient(input: {
     if (matches.length > 0) throw new DuplicatePhoneError(matches);
   }
 
+  // Freeze the referrer's commission onto the patient at THIS registration moment —
+  // whether it's the full new-client form or a phone booking, both capture the
+  // referrer here. A one-time fee, snapshotted from the referrer's LIVE rate at
+  // registration so a later rate change never re-prices this patient. null when
+  // self-referred or the referrer has no fee at registration.
+  const referralFee = await resolveReferralFee(input.referralSource);
+
   const created = await db.client.create({
     data: {
       firstName: input.firstName,
@@ -300,6 +308,7 @@ export async function createClient(input: {
       country: input.country,
       maritalStatus: input.maritalStatus,
       referralSource: input.referralSource,
+      referralFee,
       firstTimePatient: input.firstTimePatient ?? false,
       intakeComplete: input.intakeComplete ?? deriveIntakeComplete(input),
       assignedDietitianId: input.assignedDietitianId ?? null,
@@ -395,6 +404,11 @@ export async function updateClient(
     data.passportNumber = input.passportNumber || null;
   if (input.country !== undefined) data.country = input.country || null;
   if (input.maritalStatus !== undefined) data.maritalStatus = input.maritalStatus || null;
+  // referralFee is deliberately NOT (re)frozen here. The commission is snapshotted
+  // once, at the registration moment (createClient) — which includes a phone
+  // booking, since that captures the referrer too. Editing referralSource later is
+  // a correction to the record, not a new registration, so it never re-prices the
+  // frozen fee (nor retroactively attaches a rate the referrer only got afterwards).
   if (input.referralSource !== undefined) data.referralSource = input.referralSource;
   if (input.firstTimePatient !== undefined) data.firstTimePatient = input.firstTimePatient;
   if (input.intakeComplete !== undefined) data.intakeComplete = input.intakeComplete;

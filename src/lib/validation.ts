@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
 import { moneyCap } from "@/lib/utils";
-import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE } from "@/lib/config";
+import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
 
 // ---- R5: money-input sanity bounds ----
 // Reject negatives and unreasonably large amounts with a clear error instead of
@@ -363,15 +363,41 @@ export const updateProductSchema = z.object({
   active: z.boolean().optional(),
 });
 
-export const createReferrerSchema = z.object({
-  name: z.string().trim().min(1),
-  active: z.boolean().optional(),
-});
+// "None" is a reserved, built-in dropdown choice meaning "came organically" — it's
+// always offered automatically, so an admin can't add a list entry with that name
+// (a duplicate that would also imply a fee could be attached to organic patients).
+const reservedReferrerName = (name: string | undefined, ctx: z.RefinementCtx) => {
+  if (name && name.trim().toLowerCase() === NONE_REFERRER.toLowerCase()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["name"],
+      message: `"${NONE_REFERRER}" is a built-in option (came organically) — pick a different name.`,
+    });
+  }
+};
 
-export const updateReferrerSchema = z.object({
-  name: z.string().trim().min(1).optional(),
-  active: z.boolean().optional(),
-});
+export const createReferrerSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    active: z.boolean().optional(),
+    // Per-referral commission in USD. 0 = no fee. Capped like any money input.
+    fee: z.coerce.number().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.fee, "USD", ctx, "fee");
+    reservedReferrerName(v.name, ctx);
+  });
+
+export const updateReferrerSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    active: z.boolean().optional(),
+    fee: z.coerce.number().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.fee, "USD", ctx, "fee");
+    reservedReferrerName(v.name, ctx);
+  });
 
 export const updateServicePriceSchema = z.object({
   price: z.coerce.number().min(0).optional(),

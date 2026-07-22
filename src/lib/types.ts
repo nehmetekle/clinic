@@ -46,6 +46,9 @@ export interface Referrer {
   id: string;
   name: string;
   active: boolean;
+  // Admin-set per-referral commission in USD (0 = no fee). The LIVE rate; the
+  // amount owed for a given patient is frozen onto the client at registration.
+  fee: number;
 }
 
 // Admin-managed prices for blood tests and treatment services. `cost` is the
@@ -627,9 +630,12 @@ export interface DashboardSummary {
   finance: {
     totalIncome: number; // payments dated within the selected period (all-time if none)
     totalExpenses: number; // operating expenses dated within the selected period
-    netProfit: number; // income − operating expenses (COGS excluded, by design)
+    netProfit: number; // income − operating expenses − referrer cost (COGS excluded, by design)
     cogs: number; // cost of goods sold: frozen ClientPackage.cost for sales in the period
-    grossMargin: number; // income − (operating expenses + COGS)
+    grossMargin: number; // income − (operating expenses + COGS + referrer cost)
+    // Referrer commissions frozen onto patients registered in the period. A real
+    // clinic cost, deducted from net profit (and gross margin) like operating expenses.
+    referrerCost: number;
     unpaidBalance: number; // total outstanding tracked debt in USD (money owed) — current snapshot
     paymentsToday: number;
   };
@@ -653,5 +659,15 @@ export interface DashboardSummary {
     name: string;
     count: number;
     patients: { id: string; name: string }[];
+  }[];
+  // Referrer-cost breakdown behind the "Referrer cost" figure: each referrer that
+  // was owed a commission for patients registered in the period, the total owed
+  // (sum of frozen per-patient fees, USD), and the patients that drove it. Only
+  // referrers with a non-zero owed total appear. `fee` on each patient is the
+  // frozen amount attributed to that specific registration. Admin-only.
+  referrerCostReport: {
+    name: string;
+    total: number;
+    patients: { id: string; name: string; fee: number }[];
   }[];
 }

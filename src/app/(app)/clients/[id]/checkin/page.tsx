@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { todayIso } from "@/lib/config";
+import { todayIso, NONE_REFERRER } from "@/lib/config";
 
 // Red outline for an empty required field, so the secretary sees what's missing.
 const missingClass = "border-rose-400 focus:border-rose-500 focus:ring-rose-500/30";
@@ -210,11 +210,13 @@ function CheckInForm() {
             <FormRow label="Referrer *">
               <Select value={form.referralSource} onChange={(e) => set({ referralSource: e.target.value })} className={cn(form.referralSource.trim() === "" && missingClass)}>
                 <option value="">Select referrer…</option>
+                <option value={NONE_REFERRER}>None</option>
                 {(referrers.data ?? []).filter((r) => r.active).map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
                 {/* Preserve the record's current referrer (a legacy free-text value,
                     or one since deactivated/removed) so it still displays and isn't
-                    silently overwritten on save. */}
+                    silently overwritten on save. "None" is already a static option above. */}
                 {form.referralSource.trim() !== "" &&
+                  form.referralSource !== NONE_REFERRER &&
                   !(referrers.data ?? []).some((r) => r.active && r.name === form.referralSource) && (
                     <option value={form.referralSource}>{form.referralSource}</option>
                   )}

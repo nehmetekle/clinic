@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Client" ADD COLUMN     "referralFee" DOUBLE PRECISION;
+
+-- AlterTable
+ALTER TABLE "Referrer" ADD COLUMN     "fee" DOUBLE PRECISION NOT NULL DEFAULT 0;

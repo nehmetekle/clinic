@@ -136,7 +136,7 @@ function parseBodyParts(json: string | null): string[] | undefined {
 }
 
 export function toReferrer(r: PReferrer): Referrer {
-  return { id: r.id, name: r.name, active: r.active };
+  return { id: r.id, name: r.name, active: r.active, fee: r.fee };
 }
 
 export function toServicePrice(p: PServicePrice): ServicePrice {

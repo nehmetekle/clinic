@@ -15,7 +15,7 @@ import { api, DuplicatePhoneError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { Client } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { todayIso } from "@/lib/config";
+import { todayIso, NONE_REFERRER } from "@/lib/config";
 
 // Registration captures the patient's details only. Packages/bundles are NOT
 // assigned at signup — the dietitian starts a treatment-scoped bundle during a
@@ -185,6 +185,7 @@ export default function NewClientPage() {
             <FormRow label="Referrer *">
               <Select value={form.referralSource} onChange={(e) => setForm({ ...form, referralSource: e.target.value })} className={cn(form.referralSource.trim() === "" && missingClass)}>
                 <option value="">Select referrer…</option>
+                <option value={NONE_REFERRER}>None</option>
                 {(referrers.data ?? []).filter((r) => r.active).map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
               </Select>
             </FormRow>
