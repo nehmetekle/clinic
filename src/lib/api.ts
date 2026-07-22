@@ -257,7 +257,8 @@ export const api = {
   },
 
   getSettings: () => getJson<ClinicSettings>("/api/settings"),
-  updateSettings: (body: { usdToLbp: number }) => putJson<ClinicSettings>("/api/settings", body),
+  updateSettings: (body: { usdToLbp?: number; usdToEur?: number }) =>
+    putJson<ClinicSettings>("/api/settings", body),
 
   listProducts: () => getJson<Product[]>("/api/products"),
   createProduct: (body: CreateProductInput) => postJson<Product>("/api/products", body),

@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Leaf, X } from "lucide-react";
+import { X } from "lucide-react";
 import { navForRole } from "@/lib/nav";
 import type { Role } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -35,11 +36,15 @@ export function Sidebar({
         )}
       >
         <div className="flex h-16 items-center justify-between gap-2 border-b border-slate-100 px-5">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
-              <Leaf className="h-5 w-5" />
-            </div>
-            <span className="text-base font-semibold text-slate-800">NutriClinic</span>
+          <div className="relative h-12 w-40 overflow-hidden" aria-label="Layaka Wellness Center">
+            <Image
+              src="/images/layaka-logo1.png"
+              alt="Layaka Wellness Center"
+              fill
+              priority
+              className="object-cover object-center"
+              sizes="160px"
+            />
           </div>
           <button
             onClick={onClose}

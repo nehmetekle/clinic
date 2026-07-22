@@ -7,6 +7,10 @@ export const CLINIC = {
   // Fallback exchange rate; the live value is stored in the DB (Setting "usdToLbp")
   // and editable from the Settings page.
   defaultUsdToLbp: 89500,
+  // Fallback USD→EUR rate (1 USD = ? EUR); live value stored in Setting "usdToEur",
+  // editable from the Pricing page. Display/reference only for now — not yet a
+  // transaction currency, so it is not frozen onto any record.
+  defaultUsdToEur: 0.92,
   // The clinic's physical timezone. "Today", the queue, appointment scheduling,
   // every date-based filter/report, AND all date display are anchored to THIS
   // zone — never the runtime's own — so an admin logging in from the US sees the

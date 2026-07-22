@@ -338,9 +338,14 @@ export const updateBloodSampleSchema = z
     message: "Nothing to update",
   });
 
-export const updateSettingsSchema = z.object({
-  usdToLbp: z.coerce.number().positive(),
-});
+export const updateSettingsSchema = z
+  .object({
+    usdToLbp: z.coerce.number().positive().optional(),
+    usdToEur: z.coerce.number().positive().optional(),
+  })
+  .refine((v) => v.usdToLbp !== undefined || v.usdToEur !== undefined, {
+    message: "At least one rate must be provided",
+  });
 
 export const createProductSchema = z.object({
   name: z.string().trim().min(1),

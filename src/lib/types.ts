@@ -26,6 +26,7 @@ export type ServicePriceKind = "blood_test" | "treatment";
 
 export interface ClinicSettings {
   usdToLbp: number;
+  usdToEur: number;
 }
 
 // Sellable product/add-on (catalog). Prices are admin-managed. `cost` is the
