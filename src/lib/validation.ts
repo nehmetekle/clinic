@@ -275,7 +275,18 @@ export const updateVisitBasketSchema = z
 // as a tracked ClientDebt at the same time.
 export const settleVisitBasketSchema = z
   .object({
-    method: z.enum(PAYMENT_METHOD_VALUES),
+    // How the collected money was tendered, split across one or more methods. One
+    // entry = a single-method settlement. Portions are USD and must sum to the
+    // amount actually collected — that exact-sum check is enforced server-side in
+    // settleVisitBasket (it needs the basket total), mirroring the debt-cap check.
+    splits: z
+      .array(
+        z.object({
+          method: z.enum(PAYMENT_METHOD_VALUES),
+          amount: z.coerce.number().min(0),
+        }),
+      )
+      .default([]),
     notes: z.string().optional(),
     debtAmount: z.coerce.number().min(0).optional(),
     debtReason: z.string().trim().optional(),
@@ -294,6 +305,8 @@ export const settleVisitBasketSchema = z
     // Cap the owed-remainder amount (entered in the basket's currency, USD by
     // default across the app) so an absurd typo is rejected, not accepted. R5.
     refineMoneyCap(v.debtAmount, "USD", ctx, "debtAmount");
+    // Cap each split portion the same way (USD across the app).
+    v.splits.forEach((s, i) => refineMoneyCap(s.amount, "USD", ctx, `splits.${i}.amount`));
   });
 
 // Secretary clears (collects — records a payment) or voids (writes off) a debt.

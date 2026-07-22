@@ -3,7 +3,8 @@ import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
 import { asCurrency } from "../serialize";
 import { basketLineUsd, basketTotals } from "@/lib/utils";
-import { CLINIC } from "@/lib/config";
+import { CLINIC, toUsd } from "@/lib/config";
+import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { auditMoney, writeAudit } from "./audit";
 import { clearClientDebtTx, createClientDebtTx } from "./clientDebts";
 import { createPayment } from "./payments";
@@ -11,6 +12,7 @@ import { getUsdToLbp } from "./settings";
 import { userIdByEmail } from "./staff";
 import type {
   Currency,
+  PaymentMethod,
   VisitBasket,
   VisitBasketItem,
   VisitBasketStatus,
@@ -20,6 +22,9 @@ const include = {
   client: true,
   dietitian: true,
   payment: true,
+  // Every method portion of the settlement (a split produces several), oldest
+  // first, so the settled basket can show the full breakdown with each receipt.
+  settlementPayments: { orderBy: { createdAt: "asc" } },
   items: { orderBy: { createdAt: "asc" } },
 } satisfies Prisma.VisitBasketInclude;
 
@@ -92,6 +97,13 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     paidAt: b.paidAt?.toISOString(),
     paymentId: b.paymentId ?? undefined,
     receiptNumber: b.payment?.receiptNumber ?? undefined,
+    paymentSplits: b.settlementPayments.length
+      ? b.settlementPayments.map((p) => ({
+          method: p.method as PaymentMethod,
+          amount: p.amountPaid,
+          receiptNumber: p.receiptNumber,
+        }))
+      : undefined,
   };
 }
 
@@ -477,7 +489,14 @@ export async function updateVisitBasket(
 export async function settleVisitBasket(
   id: string,
   input: {
-    method: string;
+    // How the collected money was tendered, split across one or more methods. The
+    // portions must sum (in USD) to everything actually collected in this
+    // settlement = today's basket total (minus any deferred debt) + any existing
+    // debts collected alongside. Each portion becomes its own single-method
+    // Payment row so the payment-method breakdown stays exact. A single-method
+    // settlement is just one split entry. Empty/omitted only when nothing is
+    // collected (a fully deferred/covered basket).
+    splits?: { method: string; amount: number }[];
     notes?: string;
     createdById?: string | null;
     actorName?: string | null;
@@ -521,32 +540,87 @@ export async function settleVisitBasket(
       );
     }
 
-    // What the client actually handed over now = today's total minus the deferred
-    // debt. A fully-deferred basket ($0 collected) records no Payment row at all —
+    // Today's portion the client actually handed over = today's total minus the
+    // deferred debt. A fully-deferred basket ($0 today) records nothing for today —
     // the whole balance lives on the ClientDebt created below.
-    const collected = Math.max(0, Math.round((view.total - debtAmount) * 100) / 100);
-    let paymentId: string | null = null;
+    const todayCollected = Math.max(0, Math.round((view.total - debtAmount) * 100) / 100);
 
-    if (collected > 0) {
-      const labels = view.items.filter((i) => !i.covered).map((i) => i.label);
-      const motif =
-        labels.length <= 3
-          ? `Visit charges — ${labels.join(", ")}`
-          : `Visit charges — ${labels.slice(0, 3).join(", ")} +${labels.length - 3} more`;
+    // Existing debts the secretary is collecting in the SAME settlement. Their USD
+    // value folds into the same combined pot the split must cover (money is handed
+    // over as one amount, not earmarked per source). Fetched + client-scoped here
+    // so a stray/foreign id is rejected before any money is recorded.
+    const clearDebtIds = input.clearDebtIds ?? [];
+    const debtsToCollect = clearDebtIds.length
+      ? await tx.clientDebt.findMany({ where: { id: { in: clearDebtIds } } })
+      : [];
+    for (const d of debtsToCollect) {
+      if (d.clientId !== row.clientId) {
+        throw new ConflictError("This debt does not belong to this client.");
+      }
+    }
+    const oldDebtUsd = debtsToCollect.reduce(
+      (s, d) => s + toUsd(d.amount, d.currency, d.usdToLbp > 0 ? d.usdToLbp : rate),
+      0,
+    );
+
+    // The single combined amount actually collected now (USD), across every method.
+    const combinedCollected = Math.round((todayCollected + oldDebtUsd) * 100) / 100;
+
+    // Normalize the split: fold duplicate methods, drop zero/negative portions.
+    const byMethod = new Map<string, number>();
+    for (const s of input.splits ?? []) {
+      const amt = Math.max(0, Math.round((s.amount ?? 0) * 100) / 100);
+      if (amt <= 0) continue;
+      byMethod.set(s.method, Math.round(((byMethod.get(s.method) ?? 0) + amt) * 100) / 100);
+    }
+    const splitTotal = Math.round([...byMethod.values()].reduce((s, a) => s + a, 0) * 100) / 100;
+
+    // HARD validation (authoritative — mirrors the debt-cap check): the split must
+    // sum EXACTLY to what's being collected. Blocks a settlement that doesn't add
+    // up, so recorded income can never drift from the money actually taken.
+    if (Math.abs(splitTotal - combinedCollected) > 0.005) {
+      throw new ConflictError(
+        `The payment split (${splitTotal.toFixed(2)}) must add up to the amount being collected (${combinedCollected.toFixed(2)}).`,
+      );
+    }
+
+    // Each method portion becomes its own single-method Payment row, all linked to
+    // this basket, so the payment-method breakdown reports the split correctly and
+    // every portion carries its own receipt + audit entry.
+    const labels = view.items.filter((i) => !i.covered).map((i) => i.label);
+    const baseLabel =
+      labels.length <= 3
+        ? labels.join(", ")
+        : `${labels.slice(0, 3).join(", ")} +${labels.length - 3} more`;
+    const withBalance = oldDebtUsd > 0 ? " + previous balance" : "";
+    const baseMotif = todayCollected > 0
+      ? `Visit charges — ${baseLabel}${withBalance}`
+      : `Previous balance settled`;
+    const multi = byMethod.size > 1;
+
+    let paymentId: string | null = null;
+    let primaryReceipt: string | null = null;
+    for (const [method, amount] of byMethod) {
+      const motif = multi ? `${baseMotif} (${PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method})` : baseMotif;
       const payment = await createPayment(
         {
           clientId: row.clientId,
           motif,
-          amountPaid: collected,
-          currency: view.currency,
-          method: input.method,
+          amountPaid: amount,
+          // Split amounts are USD (basketTotals + debt values normalize to USD).
+          currency: "USD",
+          method,
           notes: input.notes,
           createdById: input.createdById ?? null,
           actorName: input.actorName,
+          visitBasketId: id,
         },
         tx,
       );
-      paymentId = payment.id;
+      if (!paymentId) {
+        paymentId = payment.id;
+        primaryReceipt = payment.receiptNumber;
+      }
     }
 
     // Flip only if still pending. A concurrent settle that already paid it makes
@@ -597,16 +671,22 @@ export async function settleVisitBasket(
       });
     }
 
-    // Collect the client's chosen existing debt(s) in the same transaction. Each
-    // goes through the shared guarded-clear core (its own Payment + "Debt cleared"
-    // audit), scoped to this client so a stray id can't settle another client's
-    // debt. Old debts clear in full — today's charges are the only deferrable part.
-    for (const debtId of input.clearDebtIds ?? []) {
+    // Collect the client's chosen existing debt(s) in the same transaction. Their
+    // money is already in the per-method Payment rows above (one combined pot), so
+    // each clear runs in PAYMENTLESS mode — it flips the debt to cleared and writes
+    // its "Debt cleared" audit referencing the settlement receipt(s), without
+    // minting a second Payment (which would double-count the income). Still scoped
+    // to this client via the shared guarded-clear core so a stray id can't settle
+    // another client's debt. Old debts clear in full — today's charges are the only
+    // deferrable part.
+    for (const debtId of clearDebtIds) {
       await clearClientDebtTx(tx, debtId, {
-        method: input.method,
+        method: byMethod.keys().next().value ?? "cash",
         clearedByName: input.actorName,
         createdById: input.createdById ?? null,
         expectedClientId: row.clientId,
+        recordPayment: false,
+        settlementReceiptRef: primaryReceipt,
       });
     }
   });

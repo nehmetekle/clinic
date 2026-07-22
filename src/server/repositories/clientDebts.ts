@@ -131,8 +131,17 @@ export async function clearClientDebtTx(
     clearedByName?: string | null;
     createdById?: string | null;
     expectedClientId?: string;
+    // Split-settlement mode: the debt's money is already recorded in the
+    // settlement's per-method Payment rows (one combined pot, not earmarked), so
+    // this clear must NOT mint its own Payment — doing so would double-count the
+    // income. When false, we only flip the debt to cleared and audit it,
+    // referencing the settlement's receipt(s) via `settlementReceiptRef` instead
+    // of a debt-specific receipt. Defaults to true (standalone clear — unchanged).
+    recordPayment?: boolean;
+    settlementReceiptRef?: string | null;
   },
 ): Promise<void> {
+  const recordPayment = input.recordPayment ?? true;
   const debt = await tx.clientDebt.findUnique({ where: { id } });
   if (!debt) throw new NotFoundError("Debt not found");
   if (input.expectedClientId && debt.clientId !== input.expectedClientId) {
@@ -156,22 +165,29 @@ export async function clearClientDebtTx(
   if (cleared.count === 0) {
     throw new ConflictError("This debt has already been settled or voided.");
   }
-  const payment = await createPayment(
-    {
-      clientId: debt.clientId,
-      motif: `Debt settlement — ${debt.reason}`,
-      amountPaid: debt.amount,
-      currency: debt.currency,
-      method: input.method,
-      notes: input.notes,
-      createdById: input.createdById ?? null,
-      actorName: input.clearedByName,
-      // A debt clear logs its own "Debt cleared" event below, so suppress the
-      // generic "Recorded payment" row — one clearly-labeled entry per clear.
-      skipAudit: true,
-    },
-    tx,
-  );
+  // Standalone clear records its own Payment (its own receipt). In split-settlement
+  // mode the money already lives in the settlement's per-method Payment rows, so we
+  // skip the payment and reference the settlement's receipt(s) in the audit.
+  let receiptRef = input.settlementReceiptRef ?? "settlement";
+  if (recordPayment) {
+    const payment = await createPayment(
+      {
+        clientId: debt.clientId,
+        motif: `Debt settlement — ${debt.reason}`,
+        amountPaid: debt.amount,
+        currency: debt.currency,
+        method: input.method,
+        notes: input.notes,
+        createdById: input.createdById ?? null,
+        actorName: input.clearedByName,
+        // A debt clear logs its own "Debt cleared" event below, so suppress the
+        // generic "Recorded payment" row — one clearly-labeled entry per clear.
+        skipAudit: true,
+      },
+      tx,
+    );
+    receiptRef = payment.receiptNumber;
+  }
   // Distinct, filterable debt-lifecycle event (mirrors the "Voided debt" entry),
   // referencing the settlement receipt so the money is still traceable.
   await writeAudit(tx, {
@@ -179,7 +195,7 @@ export async function clearClientDebtTx(
     userName: input.clearedByName,
     action: "Debt cleared",
     entityType: "ClientDebt",
-    entityLabel: `${auditMoney(debt.amount, debt.currency)} collected — ${payment.receiptNumber} — ${debt.reason}`,
+    entityLabel: `${auditMoney(debt.amount, debt.currency)} collected — ${receiptRef} — ${debt.reason}`,
   });
 }
 

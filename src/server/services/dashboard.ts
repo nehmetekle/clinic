@@ -109,6 +109,22 @@ export async function getDashboardSummaryForRole(
   const paymentsToday = payments
     .filter((p) => p.date === today)
     .reduce((s, p) => s + conv(p.amountPaid, p.currency, p.usdToLbp), 0);
+  // Payment-method splits (USD) behind the collected-money figures. Same frozen-rate
+  // conversion as the totals they mirror, so a method row always sums to its parent.
+  // Keyed by the RAW method value stored on each record (trimmed) — NEVER folded
+  // into another method — so a method later removed from the offered choices still
+  // reports under its own original value. Blank/garbled values collapse to the "" key
+  // (rendered as "Other"); everything non-empty is preserved verbatim.
+  const sumByMethod = (rows: typeof payments) => {
+    const acc: Record<string, number> = {};
+    for (const p of rows) {
+      const key = (p.method ?? "").trim();
+      acc[key] = (acc[key] ?? 0) + conv(p.amountPaid, p.currency, p.usdToLbp);
+    }
+    return acc;
+  };
+  const incomeByMethod = sumByMethod(payments.filter((p) => inRange(p.date)));
+  const paymentsTodayByMethod = sumByMethod(payments.filter((p) => p.date === today));
   // Cost of goods sold: frozen package cost for sales whose startDate falls in the
   // window (same flow-figure treatment as income/expenses). ClientPackage has no
   // rate snapshot, so conv() uses the live rate for LBP costs.
@@ -133,6 +149,8 @@ export async function getDashboardSummaryForRole(
     referrerCost,
     unpaidBalance,
     paymentsToday,
+    incomeByMethod,
+    paymentsTodayByMethod,
   };
 
   // Packages
@@ -330,6 +348,11 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
       referrerCost: 0,
       unpaidBalance: 0,
       paymentsToday: canHandleMoney ? summary.finance.paymentsToday : 0,
+      // Method splits follow their parent totals: totalIncome is admin-only (zeroed
+      // above), so incomeByMethod is always emptied here; paymentsToday is kept for
+      // whoever handles money, so its split rides along.
+      incomeByMethod: {},
+      paymentsTodayByMethod: canHandleMoney ? summary.finance.paymentsTodayByMethod : {},
     },
     recentPayments: canHandleMoney ? summary.recentPayments : [],
     packagesSold: 0,

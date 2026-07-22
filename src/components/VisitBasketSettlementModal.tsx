@@ -92,7 +92,13 @@ export function VisitBasketSettlementModal({
     basket.discountValue ? String(basket.discountValue) : "",
   );
   const [discountReason, setDiscountReason] = useState(basket.discountReason ?? "");
-  const [method, setMethod] = useState<PaymentMethod>("cash");
+  // Payment split: how the collected money is tendered, across one or more methods.
+  // The LAST row is the auto-balancer — it always shows/absorbs the remaining, so
+  // the split adds up without manual math (enter $100 Cash → the next method shows
+  // the rest). One row = an ordinary single-method settlement.
+  const [splits, setSplits] = useState<{ method: PaymentMethod; amount: string }[]>([
+    { method: "cash", amount: "" },
+  ]);
   // Secretary override: record a still-owed remainder as a tracked debt (e.g. the
   // client can only pay part today). Off by default.
   const [debtOpen, setDebtOpen] = useState(false);
@@ -233,6 +239,45 @@ export function VisitBasketSettlementModal({
   ).total;
   const combinedTotalUsd = todayTotalUsd + (collectDebt ? debtTotalUsd : 0);
 
+  // The single amount actually collected now (USD): today's total + any old balance
+  // being collected, minus the deferred remainder recorded as debt. This is what
+  // the payment split must add up to — same figure the server re-derives and
+  // enforces. A $0 result (fully deferred/covered) collects nothing, so no split.
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const collectedNow = Math.max(0, round2(combinedTotalUsd - debtValue));
+  // All rows except the last are manual entries; the last row auto-absorbs the
+  // remainder. So the split always sums to collectedNow — the only invalid state is
+  // over-allocation (an earlier row pushes the remainder negative), which blocks
+  // settlement, mirroring the debt-cap block.
+  const enteredBeforeLast = splits
+    .slice(0, -1)
+    .reduce((s, r) => s + Math.max(0, parseNumberInput(r.amount)), 0);
+  const remaining = round2(collectedNow - enteredBeforeLast);
+  const splitOverAllocated = collectedNow > 0 && remaining < -0.005;
+  // Payload: the last row carries the remaining; nothing to send when $0 collected.
+  const effectiveSplits =
+    collectedNow > 0
+      ? splits.map((r, i) => ({
+          method: r.method,
+          amount: i === splits.length - 1 ? Math.max(0, remaining) : Math.max(0, parseNumberInput(r.amount)),
+        }))
+      : [];
+  const usedMethods = new Set(splits.map((r) => r.method));
+  const canAddMethod =
+    collectedNow > 0 && splits.length < PAYMENT_METHOD_VALUES.length && remaining > 0.005;
+
+  function updateSplit(idx: number, patch: Partial<{ method: PaymentMethod; amount: string }>) {
+    setSplits((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function addSplit() {
+    const next = PAYMENT_METHOD_VALUES.find((m) => !usedMethods.has(m));
+    if (!next) return;
+    setSplits((prev) => [...prev, { method: next, amount: "" }]);
+  }
+  function removeSplit(idx: number) {
+    setSplits((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)));
+  }
+
   async function saveChanges() {
     if (discountReasonMissing) {
       toast("Please add a reason for the discount.");
@@ -260,12 +305,16 @@ export function VisitBasketSettlementModal({
       toast("Please add a reason for the debt.");
       return;
     }
+    if (splitOverAllocated) {
+      toast(`The payment split exceeds the ${formatMoney(collectedNow, "USD")} to collect.`);
+      return;
+    }
     setSaving(true);
     try {
       // Persist any edits first so the recorded payment matches what's shown.
       await api.updateVisitBasket(basket.id, payload());
       await api.settleVisitBasket(basket.id, {
-        method,
+        splits: effectiveSplits,
         // Record a still-owed remainder as a tracked debt when the override is on.
         ...(debtValue > 0
           ? { debtAmount: debtValue, debtReason: debtReason.trim() }
@@ -305,7 +354,7 @@ export function VisitBasketSettlementModal({
             <Button variant="outline" onClick={saveChanges} disabled={saving || discountReasonMissing}>
               {saving ? "Saving…" : "Save changes"}
             </Button>
-            <Button onClick={markPaid} disabled={saving || discountReasonMissing || debtReasonMissing}>
+            <Button onClick={markPaid} disabled={saving || discountReasonMissing || debtReasonMissing || splitOverAllocated}>
               {saving ? "Saving…" : debtValue > 0 ? "Mark paid + record debt" : "Mark paid"}
             </Button>
           </>
@@ -319,8 +368,20 @@ export function VisitBasketSettlementModal({
       <div className="space-y-4">
         {paid && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-            Settled{basket.paidAt ? ` on ${formatDate(basket.paidAt)}` : ""}
-            {basket.receiptNumber ? ` · receipt ${basket.receiptNumber}` : ""}.
+            <div>
+              Settled{basket.paidAt ? ` on ${formatDate(basket.paidAt)}` : ""}
+              {basket.receiptNumber ? ` · receipt ${basket.receiptNumber}` : ""}.
+            </div>
+            {basket.paymentSplits && basket.paymentSplits.length > 1 && (
+              <ul className="mt-1 space-y-0.5 border-t border-emerald-200 pt-1 text-xs text-emerald-700">
+                {basket.paymentSplits.map((s) => (
+                  <li key={s.receiptNumber} className="flex justify-between gap-3">
+                    <span>{PAYMENT_METHOD_LABELS[s.method] ?? s.method} · {s.receiptNumber}</span>
+                    <span className="font-semibold">{formatMoney(s.amount, "USD")}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -473,14 +534,94 @@ export function VisitBasketSettlementModal({
           </div>
         )}
 
-        {editable && (
-          <FormRow label="Payment method">
-            <Select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
-              {PAYMENT_METHOD_VALUES.map((m) => (
-                <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
-              ))}
-            </Select>
-          </FormRow>
+        {editable && collectedNow > 0 && (
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                Payment method{splits.length > 1 ? " — split" : ""}
+              </p>
+              <span className="text-xs text-slate-500">
+                Collecting <span className="font-semibold text-slate-700">{formatMoney(collectedNow, "USD")}</span>
+              </span>
+            </div>
+            <div className="space-y-2">
+              {splits.map((row, idx) => {
+                const isBalancer = idx === splits.length - 1;
+                // Methods free to pick in this row: unused ones + this row's own.
+                const options = PAYMENT_METHOD_VALUES.filter(
+                  (m) => m === row.method || !usedMethods.has(m),
+                );
+                return (
+                  <div key={idx} className="flex items-end gap-2">
+                    <FormRow label={idx === 0 ? "Method" : ""} className="flex-1">
+                      <Select
+                        value={row.method}
+                        onChange={(e) => updateSplit(idx, { method: e.target.value as PaymentMethod })}
+                      >
+                        {options.map((m) => (
+                          <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
+                        ))}
+                      </Select>
+                    </FormRow>
+                    <FormRow label={idx === 0 ? "Amount (USD)" : ""} className="w-32">
+                      {isBalancer ? (
+                        // Auto-balancer: shows the remaining so the split always
+                        // adds up. Read-only — the secretary types the other rows.
+                        <div
+                          className={`flex h-10 items-center justify-end rounded-lg border px-3 text-sm font-semibold ${
+                            splitOverAllocated
+                              ? "border-rose-300 bg-rose-50 text-rose-700"
+                              : "border-slate-200 bg-slate-50 text-slate-700"
+                          }`}
+                        >
+                          {formatMoney(remaining, "USD")}
+                        </div>
+                      ) : (
+                        <MoneyInput
+                          value={row.amount}
+                          onValueChange={(amount) => updateSplit(idx, { amount })}
+                          placeholder="0"
+                        />
+                      )}
+                    </FormRow>
+                    {splits.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => removeSplit(idx)}
+                        className="mb-1 px-1 text-xs text-slate-400 hover:text-rose-600"
+                        aria-label="Remove method"
+                      >
+                        Remove
+                      </button>
+                    ) : (
+                      <span className="w-[52px]" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {splitOverAllocated ? (
+              <p className="mt-2 text-xs text-rose-600">
+                The split adds up to more than the {formatMoney(collectedNow, "USD")} being collected — reduce a method amount.
+              </p>
+            ) : (
+              canAddMethod && (
+                <button
+                  type="button"
+                  onClick={addSplit}
+                  className="mt-2 text-sm font-medium text-brand-700 hover:underline"
+                >
+                  + Split across another method
+                </button>
+              )
+            )}
+          </div>
+        )}
+
+        {editable && collectedNow <= 0 && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            Nothing to collect now{debtValue > 0 ? " (recorded as debt below)" : " (fully covered)"} — no payment method needed.
+          </div>
         )}
 
         {editable && (

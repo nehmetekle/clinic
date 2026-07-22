@@ -28,6 +28,7 @@ import {
 } from "@/components/charts/Charts";
 import { Input } from "@/components/ui/Field";
 import { ReferrerCostBreakdown } from "@/components/ReferrerCostBreakdown";
+import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { todayIso } from "@/lib/config";
@@ -42,6 +43,7 @@ export function AdminDashboard() {
   const [customTo, setCustomTo] = useState(today);
   const [openReferrer, setOpenReferrer] = useState<string | null>(null);
   const [showReferrerCost, setShowReferrerCost] = useState(false);
+  const [showIncomeMethods, setShowIncomeMethods] = useState(false);
   const range =
     period === "Custom"
       ? { from: customFrom, to: customTo }
@@ -101,7 +103,7 @@ export function AdminDashboard() {
       </p>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
-        <StatCard label="Total income" value={formatMoney(finance.totalIncome)} icon={DollarSign} tone="green" />
+        <StatCard label="Total income" value={formatMoney(finance.totalIncome)} icon={DollarSign} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
         <StatCard label="Total expenses" value={formatMoney(finance.totalExpenses)} icon={Wallet} tone="rose" />
         <StatCard label="Referrer cost" value={formatMoney(finance.referrerCost)} icon={HandCoins} tone="rose" hint="View breakdown →" onClick={() => setShowReferrerCost(true)} />
         <StatCard label="Net profit" value={formatMoney(finance.netProfit)} icon={PiggyBank} tone={finance.netProfit >= 0 ? "brand" : "rose"} />
@@ -114,6 +116,14 @@ export function AdminDashboard() {
         onClose={() => setShowReferrerCost(false)}
         periodLabel={rangeLabel(range.from, range.to)}
         report={data.referrerCostReport}
+      />
+
+      <PaymentMethodBreakdown
+        open={showIncomeMethods}
+        onClose={() => setShowIncomeMethods(false)}
+        title="Total income by method"
+        periodLabel={rangeLabel(range.from, range.to)}
+        byMethod={finance.incomeByMethod}
       />
 
       <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">

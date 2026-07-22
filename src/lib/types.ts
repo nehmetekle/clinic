@@ -8,20 +8,54 @@ export type Currency = "USD" | "LBP";
 export const PAYMENT_METHOD_VALUES = [
   "cash",
   "card",
-  "bank_transfer",
-  "online",
   "whish",
-  "other",
+  "omt",
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHOD_VALUES)[number];
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: "Cash",
   card: "Card",
-  bank_transfer: "Bank transfer",
-  online: "Online",
   whish: "Whish",
-  other: "Other",
+  omt: "OMT",
 };
+
+// Sentinel bucket for payments whose stored method is genuinely blank/missing.
+// A real, non-empty method value NEVER lands here — not even one that was once
+// offered and later removed from the active choices above; those keep their own
+// original value (see paymentMethodLabel).
+export const PAYMENT_METHOD_OTHER_LABEL = "Other";
+
+// Display label for whatever method value is actually stored on a payment record.
+// Reads the record dynamically, not the currently-offered list: a known method
+// uses its configured label; any OTHER non-empty stored value (e.g. a method
+// retired from the choices above) displays under its own real, original value,
+// forever. Only a blank/whitespace value falls back to "Other".
+export function paymentMethodLabel(method: string | null | undefined): string {
+  const raw = (method ?? "").trim();
+  if (raw === "") return PAYMENT_METHOD_OTHER_LABEL;
+  return PAYMENT_METHOD_LABELS[raw as PaymentMethod] ?? raw;
+}
+
+// Turns a {rawStoredMethod → amount} map into the ordered, non-zero rows the
+// breakdown modal renders. Active methods come first in their configured order,
+// then any other real (retired-but-recorded) method alphabetically, and the
+// blank "Other" bucket always last. Pure + UI-free so it can be unit-tested.
+export function paymentMethodBreakdownRows(
+  byMethod: Record<string, number>,
+): { key: string; label: string; amount: number }[] {
+  const order = new Map<string, number>(PAYMENT_METHOD_VALUES.map((m, i) => [m as string, i]));
+  const isOther = (key: string) => key.trim() === "";
+  return Object.entries(byMethod)
+    .map(([key, amount]) => ({ key, label: paymentMethodLabel(key), amount }))
+    .filter((r) => r.amount > 0)
+    .sort((a, b) => {
+      if (isOther(a.key) !== isOther(b.key)) return isOther(a.key) ? 1 : -1;
+      const ai = order.has(a.key) ? (order.get(a.key) as number) : Number.POSITIVE_INFINITY;
+      const bi = order.has(b.key) ? (order.get(b.key) as number) : Number.POSITIVE_INFINITY;
+      if (ai !== bi) return ai - bi;
+      return a.label.localeCompare(b.label);
+    });
+}
 export type ServicePriceKind = "blood_test" | "treatment";
 
 export interface ClinicSettings {
@@ -366,7 +400,15 @@ export interface VisitBasket {
   sentAt: string;
   paidAt?: string;
   paymentId?: string;
+  // Primary (first) receipt of the settlement — kept for existing single-receipt
+  // display. When the settlement was split across methods, every portion's method,
+  // USD amount, and receipt is in `paymentSplits` (and `receiptNumber` is the
+  // first of them).
   receiptNumber?: string;
+  // One entry per method the settlement was collected with (empty for an unpaid
+  // or $0 basket). Lets a settled basket show the split clearly, e.g. Cash $100 ·
+  // Whish $200, each with its own receipt.
+  paymentSplits?: { method: PaymentMethod; amount: number; receiptNumber: string }[];
 }
 
 // ---- Blood sample tracking (lab logistics) ----
@@ -640,6 +682,14 @@ export interface DashboardSummary {
     referrerCost: number;
     unpaidBalance: number; // total outstanding tracked debt in USD (money owed) — current snapshot
     paymentsToday: number;
+    // Payment-method split (USD) behind the collected-money figures, for the
+    // click-to-open breakdown on the "amount collected" stat cards. `incomeByMethod`
+    // mirrors `totalIncome` (windowed by the selected period); `paymentsTodayByMethod`
+    // mirrors `paymentsToday` (today only). Each is redacted alongside its parent
+    // total. Keyed by the RAW method value stored on each payment (an empty-string
+    // key is the blank/"Other" bucket), so a retired method keeps its own label.
+    incomeByMethod: Record<string, number>;
+    paymentsTodayByMethod: Record<string, number>;
   };
   packagesSold: number;
   mostPopularPackage: string;

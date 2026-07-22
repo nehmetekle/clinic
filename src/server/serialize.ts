@@ -105,7 +105,7 @@ export function toExpense(e: PExpense): Expense {
     usdToLbp: e.usdToLbp,
     date: dateOnly(e.date)!,
     paidBy: e.paidBy ?? "",
-    method: asPaymentMethod(e.method ?? "other"),
+    method: asPaymentMethod(e.method ?? "cash"),
     notes: e.notes ?? undefined,
     amountEdited: e.amountEdited,
   };
