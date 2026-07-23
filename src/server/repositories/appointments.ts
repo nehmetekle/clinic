@@ -23,6 +23,7 @@ export function toAppointment(
     id: a.id,
     clientId: a.clientId,
     clientName: `${a.client.firstName} ${a.client.lastName}`,
+    dietitianId: a.dietitianId ?? undefined,
     dietitianName: a.dietitian?.fullName ?? "Unassigned",
     date: dateOnly(a.date)!,
     time: a.time,
@@ -99,14 +100,24 @@ export async function createAppointment(
 export async function updateAppointmentStatus(
   id: string,
   status: string,
-  opts: { includeMedicalHistoryStatus?: boolean } = {},
+  opts: {
+    includeMedicalHistoryStatus?: boolean;
+    // When provided (undefined = leave unchanged), reassigns the visit's doctor
+    // in the same write as the status change — used by check-in to bind the
+    // patient to the confirmed doctor so they land in only that doctor's queue.
+    dietitianId?: string | null;
+  } = {},
 ): Promise<Appointment> {
   const row = await db.appointment.update({
     where: { id },
     // Keep completedAt in step with the status: stamp it when an appointment
     // becomes completed, clear it if it's ever moved back out — so "Done" only
     // treats a genuinely-completed appointment as finished today.
-    data: { status, completedAt: status === "completed" ? new Date() : null },
+    data: {
+      status,
+      completedAt: status === "completed" ? new Date() : null,
+      ...(opts.dietitianId !== undefined ? { dietitianId: opts.dietitianId } : {}),
+    },
     include,
   });
   return toAppointment(row, opts);

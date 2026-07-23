@@ -82,6 +82,7 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     clientId: b.clientId,
     clientName: `${b.client.firstName} ${b.client.lastName}`,
     consultationId: b.consultationId ?? undefined,
+    dietitianId: b.dietitianId ?? undefined,
     dietitianName: b.dietitian?.fullName ?? "Unassigned",
     status: b.status as VisitBasketStatus,
     discountType: (b.discountType ?? undefined) as VisitBasket["discountType"],

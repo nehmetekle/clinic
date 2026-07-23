@@ -8,6 +8,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { CountrySelect, FieldGrid, FormRow, Input, PhoneInput, Select, SectionDivider, Textarea, isValidPhone } from "@/components/ui/Field";
 import { Loading, ErrorState } from "@/components/ui/States";
+import { CheckInDoctorModal } from "@/components/CheckInDoctorModal";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -42,6 +43,10 @@ function CheckInForm() {
   const router = useRouter();
   const search = useSearchParams();
   const apptId = search.get("appt") ?? "";
+  // The doctor the appointment was booked with, passed from the queue so the
+  // confirmation modal can default to them (falls back to the client's regular
+  // doctor if absent).
+  const bookedDoctorId = search.get("doctor") ?? "";
   // Where to go after check-in (or cancel); the queue board by default.
   const returnTo = search.get("return") || "/queue";
   const { user } = useSession();
@@ -54,6 +59,8 @@ function CheckInForm() {
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  // The check-in doctor-confirmation gate (only for the arrival flow, not edits).
+  const [showDoctorModal, setShowDoctorModal] = useState(false);
 
   // Pre-fill from whatever was captured at booking so the secretary only fills gaps.
   useEffect(() => {
@@ -114,8 +121,14 @@ function CheckInForm() {
     isValidPhone(form.phone) &&
     (editOnly || intakeFieldsComplete);
 
-  async function proceed() {
+  // Persist the registration details. `checkInDoctorId` is supplied only by the
+  // check-in flow (from the confirmation modal): it both binds the appointment to
+  // that doctor — so the patient lands in only their queue — and syncs the
+  // client's regular doctor to match. The edit flow passes undefined and keeps
+  // whatever the inline field held.
+  async function save(checkInDoctorId?: string) {
     if (!canProceed) return;
+    const isCheckIn = !!apptId && checkInDoctorId !== undefined;
     setSaving(true);
     try {
       await api.updateClient(params.id, {
@@ -136,18 +149,34 @@ function CheckInForm() {
         ...(canEditClinical
           ? { medicalNotes: form.medicalNotes.trim(), allergies: form.allergies.trim() }
           : {}),
-        assignedDietitianId: form.assignedDietitianId || null,
+        // Check-in syncs the client's regular doctor to the confirmed choice;
+        // the edit flow keeps the inline field's value.
+        assignedDietitianId: isCheckIn
+          ? checkInDoctorId || null
+          : form.assignedDietitianId || null,
         // Clearing an intake field (edit flow) sends the record back to
         // intake-incomplete, so the next check-in asks for it again.
         intakeComplete: intakeFieldsComplete,
       });
-      if (apptId) await api.setAppointmentStatus(apptId, "checked_in");
+      if (isCheckIn) {
+        await api.checkInAppointment(apptId, checkInDoctorId || null);
+      }
       toast(editOnly ? "Patient details updated" : `${form.firstName} checked in`);
       router.push(returnTo);
     } catch (e) {
       toast((e as Error).message);
-    } finally {
       setSaving(false);
+    }
+  }
+
+  // Primary action: the edit flow saves straight away; the check-in flow first
+  // opens the doctor-confirmation gate (a doctor must be locked in before entry).
+  function onPrimary() {
+    if (!canProceed) return;
+    if (editOnly || !apptId) {
+      void save();
+    } else {
+      setShowDoctorModal(true);
     }
   }
 
@@ -234,20 +263,25 @@ function CheckInForm() {
                 <option value="other">Other</option>
               </Select>
             </FormRow>
-            <FormRow label="Assigned doctor (seen in clinic)">
-              <Select value={form.assignedDietitianId} onChange={(e) => set({ assignedDietitianId: e.target.value })}>
-                <option value="">Unassigned</option>
-                {dietitians.map((dt) => (
-                  <option key={dt.id} value={dt.id}>{dt.fullName}</option>
-                ))}
-                {/* Preserve a current dietitian who is no longer active so the
-                    assignment still displays and isn't silently dropped on save. */}
-                {form.assignedDietitianId !== "" &&
-                  !dietitians.some((dt) => dt.id === form.assignedDietitianId) && (
-                    <option value={form.assignedDietitianId}>{client.assignedDietitian ?? "Current dietitian"}</option>
-                  )}
-              </Select>
-            </FormRow>
+            {/* In the check-in flow the doctor is confirmed in the modal gate
+                (it decides whose queue the patient enters), so the inline field
+                is only for the profile edit flow. */}
+            {editOnly && (
+              <FormRow label="Assigned doctor (seen in clinic)">
+                <Select value={form.assignedDietitianId} onChange={(e) => set({ assignedDietitianId: e.target.value })}>
+                  <option value="">Unassigned</option>
+                  {dietitians.map((dt) => (
+                    <option key={dt.id} value={dt.id}>{dt.fullName}</option>
+                  ))}
+                  {/* Preserve a current dietitian who is no longer active so the
+                      assignment still displays and isn't silently dropped on save. */}
+                  {form.assignedDietitianId !== "" &&
+                    !dietitians.some((dt) => dt.id === form.assignedDietitianId) && (
+                      <option value={form.assignedDietitianId}>{client.assignedDietitian ?? "Current dietitian"}</option>
+                    )}
+                </Select>
+              </FormRow>
+            )}
             <FormRow label="Address" className="sm:col-span-2"><Input value={form.address} onChange={(e) => set({ address: e.target.value })} placeholder="City, area" /></FormRow>
             <FormRow label="Emergency contact" className="sm:col-span-2"><Input value={form.emergencyContact} onChange={(e) => set({ emergencyContact: e.target.value })} placeholder="Name + phone" /></FormRow>
             {canEditClinical && (
@@ -266,7 +300,7 @@ function CheckInForm() {
         </p>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => router.push(returnTo)}>Cancel</Button>
-          <Button onClick={proceed} disabled={!canProceed || saving}>
+          <Button onClick={onPrimary} disabled={!canProceed || saving}>
             <Check className="h-4 w-4" />{" "}
             {saving
               ? editOnly ? "Saving…" : "Checking in…"
@@ -274,6 +308,16 @@ function CheckInForm() {
           </Button>
         </div>
       </div>
+
+      <CheckInDoctorModal
+        open={showDoctorModal}
+        onClose={() => setShowDoctorModal(false)}
+        clientName={form.firstName || client.firstName}
+        doctors={dietitians}
+        defaultDoctorId={bookedDoctorId || client.assignedDietitianId || null}
+        confirming={saving}
+        onConfirm={(doctorId) => void save(doctorId)}
+      />
     </div>
   );
 }

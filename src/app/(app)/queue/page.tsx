@@ -184,6 +184,16 @@ export default function QueuePage() {
   const hideMedicalHistoryStatus = user?.role === "secretary" || user?.role === "admin";
   const hideIntakeStatus = user?.role === "secretary" || user?.role === "admin";
 
+  // A doctor's board is their own patient flow only — appointments assigned to
+  // them (at booking or confirmed at check-in). Secretary and admin run the
+  // whole-clinic desk, so they see everyone across every doctor. `items` stays
+  // the full board (so optimistic status writes still resolve); every rendered
+  // lane, count, and the Done list derive from this scoped view.
+  const isDietitian = user?.role === "dietitian";
+  const visibleItems = isDietitian
+    ? items.filter((a) => a.dietitianId === user?.id)
+    : items;
+
   // Settlement column: pending baskets first (actionable), then recently paid.
   // Only live baskets belong on the board: `pending` (awaiting settlement) and
   // `paid` (settled, but the dietitian hasn't closed the visit yet — the client is
@@ -192,7 +202,12 @@ export default function QueuePage() {
   // Settlement is a live activity, so the Payment lane only carries baskets on
   // today's board; another day's view has nothing to settle.
   const paymentBaskets = (isToday ? (basketData ?? []) : [])
-    .filter((b) => b.status === "pending" || b.status === "paid")
+    .filter(
+      (b) =>
+        (b.status === "pending" || b.status === "paid") &&
+        // A doctor only sees baskets for their own patients; the desk sees all.
+        (!isDietitian || b.dietitianId === user?.id),
+    )
     .sort((a, b) =>
       a.status !== b.status
         ? a.status === "pending"
@@ -217,7 +232,9 @@ export default function QueuePage() {
   // Check-in opens the full registration form so missing details are completed
   // before the patient moves into the clinic.
   function startCheckIn(appt: Appointment) {
-    router.push(`/clients/${appt.clientId}/checkin?appt=${appt.id}`);
+    // Carry the booked doctor along so the check-in confirmation defaults to them.
+    const doctorParam = appt.dietitianId ? `&doctor=${appt.dietitianId}` : "";
+    router.push(`/clients/${appt.clientId}/checkin?appt=${appt.id}${doctorParam}`);
   }
 
   async function advance(appt: Appointment) {
@@ -262,11 +279,12 @@ export default function QueuePage() {
 
   // Finished appointments are listed as rows below the board rather than a column.
   const doneStatuses: AppointmentStatus[] = ["completed", "no_show", "cancelled"];
-  const doneItems = items
+  const doneItems = visibleItems
     .filter((a) => doneStatuses.includes(a.status))
     .sort((a, b) => a.time.localeCompare(b.time));
 
-  const countOf = (status: AppointmentStatus) => items.filter((a) => a.status === status).length;
+  const countOf = (status: AppointmentStatus) =>
+    visibleItems.filter((a) => a.status === status).length;
 
   // Day-at-a-glance pipeline: the same counts already shown on each column, lifted
   // to the top so staff read the shape of the day in one pass.
@@ -335,7 +353,7 @@ export default function QueuePage() {
             {STAGES.map((stage) => {
               const st = STAGE_STYLES[stage.key];
               const Icon = stage.icon;
-              const colItems = items.filter((a) => stage.statuses.includes(a.status));
+              const colItems = visibleItems.filter((a) => stage.statuses.includes(a.status));
               return (
                 <section
                   key={stage.key}

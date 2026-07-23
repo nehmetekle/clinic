@@ -311,6 +311,9 @@ export interface Appointment {
   id: string;
   clientId: string;
   clientName: string;
+  // The doctor this visit is booked with / checked in to. Drives per-doctor
+  // queue filtering — a doctor's board shows only their own appointments.
+  dietitianId?: string;
   dietitianName: string;
   date: string;
   time: string;
@@ -386,6 +389,8 @@ export interface VisitBasket {
   clientId: string;
   clientName: string;
   consultationId?: string;
+  // The doctor who owns this basket, used to scope a doctor's own queue view.
+  dietitianId?: string;
   dietitianName: string;
   status: VisitBasketStatus;
   discountType?: "percent" | "amount";

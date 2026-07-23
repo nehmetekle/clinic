@@ -1,7 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { toStaff } from "../serialize";
 import { hashPassword } from "../password";
 import { revokeAllSessionsForUser } from "../session";
+import { ConflictError, NotFoundError } from "../http";
 import { SUPPLEMENTS } from "@/lib/types";
 import type { StaffUser } from "@/lib/types";
 
@@ -22,12 +24,74 @@ export async function listStaff(): Promise<StaffUser[]> {
   return rows.map(toStaff);
 }
 
-export async function updateStaffStatus(
+/**
+ * Admin edit of an existing staff member's details. Only the provided fields are
+ * touched (a status-only toggle is just the `status` field). Email carries a
+ * unique constraint, so a collision surfaces as a clean 409 rather than a 500.
+ * Promoting someone to dietitian seeds the standard supplement list if they have
+ * none yet, so their consultation screen has a usable set (mirrors createStaff).
+ *
+ * Guards the clinic against being left with no way in: an edit that would drop
+ * the last active admin (by demotion or deactivation) is refused. The route
+ * separately stops an admin editing their own role/status; this covers one admin
+ * demoting another.
+ */
+export async function updateStaff(
   id: string,
-  status: string,
+  input: {
+    fullName?: string;
+    email?: string;
+    phone?: string;
+    role?: string;
+    status?: string;
+  },
 ): Promise<StaffUser> {
-  const row = await db.user.update({ where: { id }, data: { status } });
-  return toStaff(row);
+  const current = await db.user.findUnique({
+    where: { id },
+    select: { role: true, status: true, supplements: true },
+  });
+  if (!current) throw new NotFoundError("Staff member not found.");
+
+  // Last-active-admin safeguard. Compute the effective role/status this edit
+  // produces; if it turns an active admin into a non-active-admin and no other
+  // active admin remains, block it.
+  const effectiveRole = input.role ?? current.role;
+  const effectiveStatus = input.status ?? current.status;
+  const wasActiveAdmin = current.role === "admin" && current.status === "active";
+  const willBeActiveAdmin = effectiveRole === "admin" && effectiveStatus === "active";
+  if (wasActiveAdmin && !willBeActiveAdmin) {
+    const otherActiveAdmins = await db.user.count({
+      where: { id: { not: id }, role: "admin", status: "active" },
+    });
+    if (otherActiveAdmins === 0) {
+      throw new ConflictError(
+        "This is the only active admin — promote or activate another admin first.",
+      );
+    }
+  }
+
+  const data: Prisma.UserUpdateInput = {};
+  if (input.fullName !== undefined) data.fullName = input.fullName;
+  if (input.email !== undefined) data.email = input.email;
+  if (input.phone !== undefined) data.phone = input.phone;
+  if (input.status !== undefined) data.status = input.status;
+  if (input.role !== undefined) {
+    data.role = input.role;
+    if (input.role === "dietitian") {
+      const list = JSON.parse(current.supplements) as string[];
+      if (list.length === 0) data.supplements = JSON.stringify([...SUPPLEMENTS]);
+    }
+  }
+
+  try {
+    const row = await db.user.update({ where: { id }, data });
+    return toStaff(row);
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw new ConflictError("That email is already in use by another account.");
+    }
+    throw e;
+  }
 }
 
 export async function createStaff(input: {

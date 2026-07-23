@@ -541,6 +541,23 @@ export const createStaffSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+// Edit an existing staff member's details. Every field is optional so callers
+// can send only what changed (the status-only toggle still goes through here).
+// Password is deliberately absent — it has its own admin-reset flow (which also
+// revokes sessions). At least one field must be present so an empty PATCH is a
+// no-op error rather than a silent success.
+export const updateStaffSchema = z
+  .object({
+    fullName: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    phone: z.string().optional(),
+    role: z.enum(["secretary", "dietitian", "admin"]).optional(),
+    status: z.enum(["active", "inactive"]).optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+    message: "No changes provided",
+  });
+
 // A dietitian's personal recommended-supplement options. Trimmed, de-duplicated
 // and capped so the list stays sane; free-text so custom supplements are allowed.
 export const updateStaffSupplementsSchema = z.object({
@@ -569,6 +586,7 @@ export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
 export type UpdateExpenseInput = z.infer<typeof updateExpenseSchema>;
 export type CreateSessionPlanInput = z.infer<typeof createSessionPlanSchema>;
 export type CreateStaffInput = z.infer<typeof createStaffSchema>;
+export type UpdateStaffInput = z.infer<typeof updateStaffSchema>;
 export type UpdateStaffSupplementsInput = z.infer<typeof updateStaffSupplementsSchema>;
 export type UpdateStaffConsultationFeeInput = z.infer<typeof updateStaffConsultationFeeSchema>;
 export type CreateProductInput = z.infer<typeof createProductSchema>;

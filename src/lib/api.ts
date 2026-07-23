@@ -39,6 +39,7 @@ import type {
   CreateServicePriceInput,
   CreateSessionPlanInput,
   CreateStaffInput,
+  UpdateStaffInput,
   MedicalHistoryInput,
   SettleVisitBasketInput,
   UpdateBloodSampleInput,
@@ -196,6 +197,10 @@ export const api = {
     postJson<Appointment>("/api/appointments", body),
   setAppointmentStatus: (id: string, status: AppointmentStatus) =>
     patchJson<Appointment>(`/api/appointments/${id}`, { status }),
+  // Check-in with the confirmed doctor: flips status to checked_in and binds the
+  // visit to that doctor in one write, so the patient lands in only their queue.
+  checkInAppointment: (id: string, dietitianId: string | null) =>
+    patchJson<Appointment>(`/api/appointments/${id}`, { status: "checked_in", dietitianId }),
 
   listConsultations: (filter?: {
     clientId?: string;
@@ -263,6 +268,8 @@ export const api = {
 
   listStaff: () => getJson<StaffUser[]>("/api/staff"),
   createStaff: (body: CreateStaffInput) => postJson<StaffUser>("/api/staff", body),
+  updateStaff: (id: string, body: UpdateStaffInput) =>
+    patchJson<StaffUser>(`/api/staff/${id}`, body),
   setStaffStatus: (id: string, status: "active" | "inactive") =>
     patchJson<StaffUser>(`/api/staff/${id}`, { status }),
   updateStaffSupplements: (id: string, supplements: string[]) =>
