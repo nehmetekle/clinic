@@ -390,7 +390,7 @@ export async function updateVisitBasket(
   const feeWaivedHere = existingFee.some((i) => !incomingFeeSigs.has(lineSig(i)));
   if (feeWaivedHere && actor?.role !== "admin") {
     throw new ConflictError(
-      "Only the dietitian or an admin can remove the consultation fee.",
+      "Only the doctor or an admin can remove the consultation fee.",
     );
   }
 
@@ -432,7 +432,7 @@ export async function updateVisitBasket(
         userName: actor?.name,
         action: "Consultation fee waived",
         entityType: "VisitBasket",
-        entityLabel: `${clientName} (client) · ${dietitianName} (dietitian) — consultation fee ${auditMoney(fee?.unitPrice ?? 0, fee?.currency ?? "USD")} waived at settlement`,
+        entityLabel: `${clientName} (client) · ${dietitianName} (doctor) — consultation fee ${auditMoney(fee?.unitPrice ?? 0, fee?.currency ?? "USD")} waived at settlement`,
       });
     }
 

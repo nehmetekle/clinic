@@ -443,7 +443,7 @@ export default function ClientProfilePage() {
               ) : (
                 <Card><CardBody>
                   <p className="text-sm text-slate-500">
-                    Medical history is restricted to the dietitian and admin.
+                    Medical history is restricted to the doctor and admin.
                   </p>
                 </CardBody></Card>
               ))}
@@ -513,7 +513,7 @@ export default function ClientProfilePage() {
             {active === "Appointments" && (
               <Card>
                 <Table>
-                  <THead><TR><TH>Date</TH><TH>Time</TH><TH>Visit</TH><TH>Dietitian</TH><TH>Status</TH>{canManageAppointments && <TH>Actions</TH>}</TR></THead>
+                  <THead><TR><TH>Date</TH><TH>Time</TH><TH>Visit</TH><TH>Doctor</TH><TH>Status</TH>{canManageAppointments && <TH>Actions</TH>}</TR></THead>
                   <TBody>
                     {appts.map((a) => (
                       <TR key={a.id}>
@@ -781,7 +781,7 @@ export default function ClientProfilePage() {
                 {canEditClinical && (
                   <CardHeader
                     title="Clinical notes"
-                    subtitle="Medical notes and allergies — dietitian and admin only"
+                    subtitle="Medical notes and allergies — doctor and admin only"
                     action={
                       <Button size="sm" variant="outline" onClick={() => setEditNotesOpen(true)}>
                         <Pencil className="h-4 w-4" /> Edit
@@ -803,7 +803,7 @@ export default function ClientProfilePage() {
                   </>
                 ) : (
                   <p className="text-sm text-slate-500">
-                    Clinical notes are restricted to the dietitian and admin.
+                    Clinical notes are restricted to the doctor and admin.
                   </p>
                 )}
                 </CardBody>
@@ -844,7 +844,7 @@ export default function ClientProfilePage() {
                     </ul>
                   ) : (
                     <p className="text-sm text-slate-500">
-                      Client files are restricted to the dietitian and admin.
+                      Client files are restricted to the doctor and admin.
                     </p>
                   )}
                 </CardBody>

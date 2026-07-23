@@ -638,15 +638,15 @@ function ConsultationFeesCard() {
     <Card>
       <CardHeader
         title="Consultation fees"
-        subtitle="Per-dietitian fee auto-added to the visit basket when that dietitian runs the consultation. Charged in USD; set 0 for no fee. The dietitian can remove it from an individual visit."
+        subtitle="Per-doctor fee auto-added to the visit basket when that doctor runs the consultation. Charged in USD; set 0 for no fee. The doctor can remove it from an individual visit."
       />
       <CardBody className="space-y-2">
         {staff.loading ? (
-          <p className="text-sm text-slate-400">Loading dietitians…</p>
+          <p className="text-sm text-slate-400">Loading doctors…</p>
         ) : staff.error ? (
           <p className="text-sm text-rose-600">{staff.error}</p>
         ) : dietitians.length === 0 ? (
-          <p className="text-sm text-slate-400">No dietitians yet.</p>
+          <p className="text-sm text-slate-400">No doctors yet.</p>
         ) : (
           dietitians.map((d) => (
             <ConsultationFeeRow key={d.id} dietitian={d} onChanged={() => staff.refetch()} />
@@ -764,7 +764,7 @@ function ProductsCard() {
     <Card>
       <CardHeader
         title="Products"
-        subtitle="Sellable add-ons the secretary and dietitian can sell during a visit. Cost stays owner-only."
+        subtitle="Sellable add-ons the secretary and doctor can sell during a visit. Cost stays owner-only."
       />
       <CardBody className="space-y-4">
         <div className="space-y-2">

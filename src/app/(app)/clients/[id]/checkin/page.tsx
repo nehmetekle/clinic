@@ -234,7 +234,7 @@ function CheckInForm() {
                 <option value="other">Other</option>
               </Select>
             </FormRow>
-            <FormRow label="Assigned dietitian (seen in clinic)">
+            <FormRow label="Assigned doctor (seen in clinic)">
               <Select value={form.assignedDietitianId} onChange={(e) => set({ assignedDietitianId: e.target.value })}>
                 <option value="">Unassigned</option>
                 {dietitians.map((dt) => (

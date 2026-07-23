@@ -45,7 +45,7 @@ const apptTone: Record<AppointmentStatus, keyof typeof tones> = {
 const apptLabel: Record<AppointmentStatus, string> = {
   scheduled: "Scheduled",
   checked_in: "Checked in",
-  with_dietitian: "With dietitian",
+  with_dietitian: "With doctor",
   completed: "Completed",
   cancelled: "Cancelled",
   no_show: "No-show",

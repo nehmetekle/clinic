@@ -160,7 +160,7 @@ export default function StaffPage() {
           <FormRow label="Role">
             <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
               <option value="secretary">Secretary / Receptionist</option>
-              <option value="dietitian">Dietitian</option>
+              <option value="dietitian">Doctor</option>
               <option value="admin">Admin / Owner</option>
             </Select>
           </FormRow>

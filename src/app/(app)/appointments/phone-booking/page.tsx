@@ -338,9 +338,9 @@ export default function PhoneBookingPage() {
                     {SLOTS.map((t) => <option key={t} value={t}>{formatTime(t)}</option>)}
                   </Select>
                 </FormRow>
-                <FormRow label="Dietitian">
+                <FormRow label="Doctor">
                   <Select value={booking.dietitianId} onChange={(e) => setBooking({ ...booking, dietitianId: e.target.value })}>
-                    <option value="">Select dietitian…</option>
+                    <option value="">Select doctor…</option>
                     {dietitians.map((d) => <option key={d.id} value={d.id}>{d.fullName}</option>)}
                   </Select>
                 </FormRow>

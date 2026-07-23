@@ -48,7 +48,7 @@ const NEXT_STATUS: Partial<Record<AppointmentStatus, AppointmentStatus>> = {
 
 const NEXT_LABEL: Partial<Record<AppointmentStatus, string>> = {
   scheduled: "Check in",
-  checked_in: "Send to dietitian",
+  checked_in: "Send to doctor",
 };
 
 // A client who is checked in or in with the dietitian is physically present now,
@@ -81,7 +81,7 @@ const STAGES: {
   { key: "checked_in", title: "In clinic", statuses: ["checked_in"], icon: UserCheck, emptyText: "No one waiting" },
   {
     key: "with_dietitian",
-    title: "With dietitian",
+    title: "With doctor",
     statuses: ["with_dietitian"],
     icon: Stethoscope,
     emptyText: "No active consults",
@@ -273,7 +273,7 @@ export default function QueuePage() {
   const pipeline = [
     { label: "Scheduled", value: countOf("scheduled"), dot: "bg-slate-400" },
     { label: "In clinic", value: countOf("checked_in"), dot: "bg-blue-500" },
-    { label: "With dietitian", value: countOf("with_dietitian"), dot: "bg-purple-500" },
+    { label: "With doctor", value: countOf("with_dietitian"), dot: "bg-purple-500" },
     { label: "To settle", value: pendingCount, dot: "bg-amber-500" },
     { label: "Done", value: doneItems.length, dot: "bg-emerald-500" },
   ];

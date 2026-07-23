@@ -330,7 +330,7 @@ export default function PaymentsPage() {
             </Select>
           </FormRow>
           <p className="sm:col-span-2 text-xs text-slate-400">
-            Records the amount actually collected. Bundles are not sold here — the dietitian starts
+            Records the amount actually collected. Bundles are not sold here — the doctor starts
             one during a consultation, which charges it and grants its sessions. If the client still
             owes a balance, settle it at the visit basket so the remainder is tracked as a debt.
             Receipt number is generated automatically.

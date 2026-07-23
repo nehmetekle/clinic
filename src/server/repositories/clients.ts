@@ -343,7 +343,7 @@ function assertCanEditClientFields(
   const frontDesk = supplied.some((k) => !CLINICAL_FIELDS.includes(k));
   if (clinical && !(role === "dietitian" || role === "admin")) {
     throw new ForbiddenError(
-      "Medical notes and allergies can only be edited by the dietitian or admin.",
+      "Medical notes and allergies can only be edited by the doctor or admin.",
     );
   }
   if (frontDesk && !(role === "secretary" || role === "admin")) {

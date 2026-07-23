@@ -2,9 +2,22 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronLeft, Pencil, Plus, Trash2, X } from "lucide-react";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { Card, CardBody, CardHeader } from "@/components/ui/Card";
+import {
+  Activity,
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ClipboardList,
+  History,
+  Layers,
+  Pencil,
+  Plus,
+  Stethoscope,
+  Trash2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { FormRow, Input, Select, Textarea } from "@/components/ui/Field";
@@ -75,6 +88,7 @@ function Section({
   defaultOpen = false,
   open: openProp,
   onOpenChange,
+  accent,
 }: {
   title: string;
   subtitle?: string;
@@ -82,13 +96,16 @@ function Section({
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  // Hairline coloured top-edge marking the sub-section's category (blood /
+  // treatments / products) so each is identifiable inside the Visit services card.
+  accent?: string;
 }) {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const open = openProp ?? internalOpen;
   const setOpen = (next: boolean) =>
     onOpenChange ? onOpenChange(next) : setInternalOpen(next);
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200">
+    <div className={cn("overflow-hidden rounded-xl border border-slate-200", accent)}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -105,6 +122,109 @@ function Section({
       {open && <div className="border-t border-slate-100 px-4 py-4">{children}</div>}
     </div>
   );
+}
+
+// Section colour system — a semantic identity per card so the doctor can tell
+// measurements / notes / reference / money apart at a glance without reading the
+// label. Every hue is one already in the app's palette (brand teal, the amber
+// alert banner, the emerald "covered/paid" green, neutral slate). The card body
+// stays clean white; identity lives in a soft gradient header band, a gradient
+// icon chip and a matching soft ring, so the page reads premium, not washed out.
+const SECTION_TONES = {
+  teal: {
+    ring: "ring-brand-100",
+    band: "from-brand-50 to-white",
+    chip: "from-brand-500 to-brand-600 shadow-brand-500/30",
+  },
+  amber: {
+    ring: "ring-amber-100",
+    band: "from-amber-50 to-white",
+    chip: "from-amber-400 to-amber-500 shadow-amber-500/30",
+  },
+  emerald: {
+    ring: "ring-emerald-100",
+    band: "from-emerald-50 to-white",
+    chip: "from-emerald-500 to-emerald-600 shadow-emerald-500/30",
+  },
+  slate: {
+    ring: "ring-slate-200",
+    band: "from-slate-100 to-white",
+    chip: "from-slate-500 to-slate-600 shadow-slate-500/25",
+  },
+} as const;
+
+// Hairline top-edge accents for the sub-cards inside "Visit services" — each
+// category gets its own colour, and stacked treatment rows alternate between two
+// so consecutive additions stay visually separable. Same palette hues, kept to a
+// 2px edge so the effect is a quiet cue, not a border.
+const SERVICE_ACCENTS = {
+  blood: "border-t-2 border-t-brand-300",
+  treatments: "border-t-2 border-t-amber-300",
+  products: "border-t-2 border-t-emerald-300",
+} as const;
+const TREATMENT_ROW_ACCENTS = ["border-t-2 border-t-amber-300", "border-t-2 border-t-brand-300"];
+
+/**
+ * A titled card built for scannable hierarchy: a soft gradient header band, a
+ * gradient icon chip and a matching soft ring give each section a clear identity
+ * while the body stays clean white. `tone` picks the semantic colour;
+ * `bodyClassName` styles the body.
+ */
+function SectionCard({
+  tone,
+  icon: Icon,
+  title,
+  subtitle,
+  action,
+  children,
+  bodyClassName,
+}: {
+  tone: keyof typeof SECTION_TONES;
+  icon: LucideIcon;
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  bodyClassName?: string;
+}) {
+  const t = SECTION_TONES[tone];
+  return (
+    <div className={cn("overflow-hidden rounded-2xl bg-white shadow-card ring-1", t.ring)}>
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3 bg-gradient-to-br px-5 py-4",
+          t.band,
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-sm",
+              t.chip,
+            )}
+          >
+            <Icon className="h-[18px] w-[18px]" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-semibold tracking-tight text-slate-900">{title}</h3>
+            {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
+          </div>
+        </div>
+        {action}
+      </div>
+      <div className={cn("p-5", bodyClassName)}>{children}</div>
+    </div>
+  );
+}
+
+// Colour a BMI value by its clinical category (Normal reads calm/green; the
+// rest lean amber/rose) so the doctor registers it without parsing the number.
+function bmiTone(bmi?: number): { text: string; pill: string } {
+  if (!bmi) return { text: "text-slate-400", pill: "bg-slate-100 text-slate-500" };
+  if (bmi < 18.5) return { text: "text-amber-700", pill: "bg-amber-100 text-amber-700" };
+  if (bmi < 25) return { text: "text-emerald-700", pill: "bg-emerald-100 text-emerald-700" };
+  if (bmi < 30) return { text: "text-amber-700", pill: "bg-amber-100 text-amber-700" };
+  return { text: "text-rose-700", pill: "bg-rose-100 text-rose-700" };
 }
 
 /** Inline checkbox + label row. */
@@ -982,31 +1102,77 @@ function ConsultationEditor() {
     );
   }
 
+  const initials =
+    `${client.firstName?.[0] ?? ""}${client.lastName?.[0] ?? ""}`.toUpperCase() || "—";
+
   return (
     <div>
       <button
         onClick={() => router.back()}
-        className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
+        className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 transition-colors hover:text-slate-700"
       >
         <ChevronLeft className="h-4 w-4" /> Back
       </button>
-      <PageHeader
-        title={`${editId ? "Continue consultation" : "New consultation"} — ${client.firstName} ${client.lastName}`}
-        subtitle={`Visit #${visitNumber} · ${client.assignedDietitian ?? "Dietitian"}`}
-      />
+
+      {/* Patient hero — the visit's anchor: who, which visit, and the headline
+          weight change, on a brand-gradient panel for instant identity. */}
+      <div className="mb-6 overflow-hidden rounded-2xl bg-gradient-to-br from-brand-600 via-brand-600 to-brand-700 shadow-card">
+        <div className="flex flex-wrap items-center gap-4 px-6 py-5">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-lg font-semibold text-white ring-1 ring-white/25 backdrop-blur-sm">
+            {initials}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight text-white">
+                {client.firstName} {client.lastName}
+              </h1>
+              <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-xs font-medium text-white ring-1 ring-white/25">
+                Visit #{visitNumber}
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-brand-50/90">
+              {editId ? "Continuing consultation" : "New consultation"} ·{" "}
+              {client.assignedDietitian ?? "Doctor"}
+            </p>
+          </div>
+          {delta && (
+            <div className="rounded-xl bg-white/10 px-4 py-2 text-right ring-1 ring-white/20 backdrop-blur-sm">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-brand-50/80">
+                Weight change
+              </p>
+              <p
+                className={cn(
+                  "text-lg font-semibold",
+                  Number(delta) <= 0 ? "text-emerald-200" : "text-amber-200",
+                )}
+              >
+                {Number(delta) > 0 ? "+" : ""}
+                {delta} kg
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {!client.hasMedicalHistory && (
-        <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <span className="font-semibold">Medical history needs to be taken.</span> Capture the full
-          medical history and baseline measurements for this visit.
+        <div className="mb-6 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <div>
+            <span className="font-semibold">Medical history needs to be taken.</span> Capture the full
+            medical history and baseline measurements for this visit.
+          </div>
         </div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          <Card>
-            <CardHeader title="Measurements" subtitle="BMI is calculated automatically." />
-            <CardBody className="grid gap-4 sm:grid-cols-3">
+          <SectionCard
+            tone="teal"
+            icon={Activity}
+            title="Measurements"
+            subtitle="BMI is calculated automatically."
+            bodyClassName="grid gap-4 sm:grid-cols-3"
+          >
               <FormRow label="Weight (kg)">
                 <Input type="number" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} placeholder="e.g. 70.5" />
               </FormRow>
@@ -1014,11 +1180,23 @@ function ConsultationEditor() {
                 <Input type="number" value={height} onChange={(e) => setForm({ ...form, height: e.target.value })} placeholder="e.g. 165" />
               </FormRow>
               <FormRow label="BMI (auto)">
-                <div className="flex h-10 items-center rounded-lg bg-slate-50 px-3 text-sm">
+                <div className="flex h-10 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3">
                   {bmi ? (
-                    <span className="font-medium text-slate-800">{bmi} <span className="font-normal text-slate-400">· {bmiCategory(bmi)}</span></span>
+                    <>
+                      <span className={cn("text-base font-semibold tabular-nums", bmiTone(bmi).text)}>
+                        {bmi}
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                          bmiTone(bmi).pill,
+                        )}
+                      >
+                        {bmiCategory(bmi)}
+                      </span>
+                    </>
                   ) : (
-                    <span className="text-slate-400">—</span>
+                    <span className="text-sm text-slate-400">—</span>
                   )}
                 </div>
               </FormRow>
@@ -1027,14 +1205,11 @@ function ConsultationEditor() {
               <FormRow label="Body fat (%)"><Input type="number" value={form.bodyFat} onChange={(e) => setForm({ ...form, bodyFat: e.target.value })} /></FormRow>
               <FormRow label="Muscle mass (kg)"><Input type="number" value={form.muscle} onChange={(e) => setForm({ ...form, muscle: e.target.value })} /></FormRow>
               <FormRow label="Goal weight (kg)"><Input type="number" value={form.goalWeight} onChange={(e) => setForm({ ...form, goalWeight: e.target.value })} placeholder={prev?.goalWeightKg ? String(prev.goalWeightKg) : ""} /></FormRow>
-            </CardBody>
-          </Card>
+          </SectionCard>
 
-          <Card>
-            <CardHeader title="Consultation notes" />
-            <CardBody className="space-y-4">
+          <SectionCard tone="amber" icon={ClipboardList} title="Consultation notes" bodyClassName="space-y-4">
               <FormRow label="Client goals"><Textarea rows={2} value={form.clientGoals} onChange={(e) => setForm({ ...form, clientGoals: e.target.value })} /></FormRow>
-              <FormRow label="Dietitian notes"><Textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Observations, adherence, discussion…" /></FormRow>
+              <FormRow label="Doctor notes"><Textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Observations, adherence, discussion…" /></FormRow>
               <FormRow label="Recommended supplements">
                 {canManageSupplements && (
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -1071,15 +1246,15 @@ function ConsultationEditor() {
                 </FormRow>
               )}
               <FormRow label="Follow-up plan"><Input value={form.followUpPlan} onChange={(e) => setForm({ ...form, followUpPlan: e.target.value })} placeholder="e.g. Review in 2 weeks" /></FormRow>
-            </CardBody>
-          </Card>
+          </SectionCard>
 
-          <Card>
-            <CardHeader
-              title="Visit services"
-              subtitle="Optional — open only the parts you need for this visit."
-            />
-            <CardBody className="space-y-3">
+          <SectionCard
+            tone="slate"
+            icon={Stethoscope}
+            title="Visit services"
+            subtitle="Optional — open only the parts you need for this visit."
+            bodyClassName="space-y-3"
+          >
               {/* Nurse needed — single tick, no dropdown */}
               <div className="overflow-hidden rounded-xl border border-slate-200">
                 <label className="flex cursor-pointer items-center gap-3 bg-slate-50/60 px-4 py-3">
@@ -1097,7 +1272,11 @@ function ConsultationEditor() {
               </div>
 
               {/* 1. Blood collection */}
-              <Section title="Blood collection" subtitle="Order lab tests for this visit.">
+              <Section
+                title="Blood collection"
+                subtitle="Order lab tests for this visit."
+                accent={SERVICE_ACCENTS.blood}
+              >
                 <div className="space-y-3">
                   <p className="text-xs font-medium text-slate-500">Select the tests to order</p>
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -1131,6 +1310,7 @@ function ConsultationEditor() {
                 subtitle="Machines, body parts and session usage."
                 open={treatmentsOpen}
                 onOpenChange={setTreatmentsOpen}
+                accent={SERVICE_ACCENTS.treatments}
               >
                 <div className="space-y-4">
                   {treatments.length === 0 && (
@@ -1162,7 +1342,13 @@ function ConsultationEditor() {
                     const sessionPlan = t.sessionPlan ? linkedSessionPlan(t) : undefined;
                     const sessionCredit = sessionPlan?.credit ?? 0;
                     return (
-                      <div key={i} className="space-y-3 rounded-lg border border-slate-200 p-4">
+                      <div
+                        key={i}
+                        className={cn(
+                          "space-y-3 rounded-lg border border-slate-200 p-4",
+                          TREATMENT_ROW_ACCENTS[i % TREATMENT_ROW_ACCENTS.length],
+                        )}
+                      >
                         <div className="flex items-center justify-between">
                           <p className="text-sm font-medium text-slate-700">Treatment {i + 1}</p>
                           <button
@@ -1456,7 +1642,11 @@ function ConsultationEditor() {
               </Section>
 
               {/* 5. Product sale / add-on — pick a product; price comes from the catalog */}
-              <Section title="Product sale / add-on items" subtitle="Products sold during the visit.">
+              <Section
+                title="Product sale / add-on items"
+                subtitle="Products sold during the visit."
+                accent={SERVICE_ACCENTS.products}
+              >
                 <div className="space-y-3">
                   {sellableProducts.length === 0 ? (
                     <p className="text-sm text-slate-400">
@@ -1475,7 +1665,7 @@ function ConsultationEditor() {
                         const info = p.productId ? resolveProductLine(p.productId) : undefined;
                         const qty = Number(p.quantity) || 1;
                         return (
-                          <div key={i} className="rounded-lg border border-slate-200 p-3">
+                          <div key={i} className={cn("rounded-lg border border-slate-200 p-3", SERVICE_ACCENTS.products)}>
                             <div className="grid gap-3 sm:grid-cols-2">
                               <FormRow label="Product / item">
                                 {isSold ? (
@@ -1525,8 +1715,7 @@ function ConsultationEditor() {
                 </div>
               </Section>
 
-            </CardBody>
-          </Card>
+          </SectionCard>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1559,12 +1748,13 @@ function ConsultationEditor() {
         <div className="space-y-6">
           <div className="space-y-6 lg:sticky lg:top-20">
             {(sessionPackages.length > 0 || creditPlans.length > 0) && (
-              <Card>
-                <CardHeader
-                  title="Sessions available"
-                  subtitle="Remaining balances — quick-add to this visit"
-                />
-                <CardBody className="space-y-2">
+              <SectionCard
+                tone="emerald"
+                icon={Layers}
+                title="Sessions available"
+                subtitle="Remaining balances — quick-add to this visit"
+                bodyClassName="space-y-2"
+              >
                   {creditPlans.map((plan) => (
                     <div
                       key={plan.id}
@@ -1604,16 +1794,16 @@ function ConsultationEditor() {
                       </div>
                     );
                   })}
-                </CardBody>
-              </Card>
+              </SectionCard>
             )}
 
-            <Card>
-              <CardHeader
-                title="Previous visit"
-                subtitle={prev ? `Visit #${prev.visitNumber} · ${formatDate(prev.date)}` : "No previous visit"}
-              />
-              <CardBody className="space-y-3 text-sm">
+            <SectionCard
+              tone="slate"
+              icon={History}
+              title="Previous visit"
+              subtitle={prev ? `Visit #${prev.visitNumber} · ${formatDate(prev.date)}` : "No previous visit"}
+              bodyClassName="space-y-3 text-sm"
+            >
                 {prev ? (
                   <>
                     <Row label="Weight" value={prev.weightKg ? `${prev.weightKg} kg` : "—"} />
@@ -1644,10 +1834,10 @@ function ConsultationEditor() {
                 ) : (
                   <p className="text-slate-400">This is the client&apos;s first consultation.</p>
                 )}
-              </CardBody>
-            </Card>
+            </SectionCard>
 
             <VisitBasketCard
+              tone="emerald"
               items={basketItems.map((i) => ({
                 id: i.id,
                 label: i.label,
@@ -1703,7 +1893,7 @@ function ConsultationEditor() {
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-500">
-            This list is personal to {myStaff?.fullName ?? "you"}. Other dietitians keep their own list — changes here won&apos;t affect them.
+            This list is personal to {myStaff?.fullName ?? "you"}. Other doctors keep their own list — changes here won&apos;t affect them.
           </p>
           <div className="flex gap-2">
             <Input

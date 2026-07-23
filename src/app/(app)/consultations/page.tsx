@@ -28,7 +28,7 @@ export default function ConsultationsPage() {
                 <TH>Date</TH>
                 <TH>Client</TH>
                 <TH>Visit</TH>
-                <TH>Dietitian</TH>
+                <TH>Doctor</TH>
                 <TH>Weight</TH>
                 <TH>BMI</TH>
                 <TH>Category</TH>

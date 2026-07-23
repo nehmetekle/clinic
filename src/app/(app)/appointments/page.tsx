@@ -87,7 +87,7 @@ export default function AppointmentsPage() {
                 <TR>
                   <TH>Time</TH>
                   <TH>Patient</TH>
-                  <TH>Dietitian</TH>
+                  <TH>Doctor</TH>
                   <TH>Visit type</TH>
                   <TH>Status</TH>
                   <TH />
@@ -133,7 +133,7 @@ export default function AppointmentsPage() {
                   <TH>Visit</TH>
                   <TH>Weight</TH>
                   <TH>BMI</TH>
-                  <TH>Dietitian</TH>
+                  <TH>Doctor</TH>
                   <TH>Status</TH>
                   <TH />
                 </TR>

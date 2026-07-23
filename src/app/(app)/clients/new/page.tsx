@@ -200,7 +200,7 @@ export default function NewClientPage() {
                 <option value="other">Other</option>
               </Select>
             </FormRow>
-            <FormRow label="Assigned dietitian">
+            <FormRow label="Assigned doctor">
               <Select value={form.assignedDietitianId} onChange={(e) => setForm({ ...form, assignedDietitianId: e.target.value })}>
                 <option value="">Unassigned</option>
                 {dietitians.map((dt) => (

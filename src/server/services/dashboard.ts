@@ -17,7 +17,7 @@ import type {
 const STATUS_META: Record<AppointmentStatus, { name: string; color: string }> = {
   completed: { name: "Completed", color: "#16a34a" },
   checked_in: { name: "Checked-in", color: "#2563eb" },
-  with_dietitian: { name: "With dietitian", color: "#7c3aed" },
+  with_dietitian: { name: "With doctor", color: "#7c3aed" },
   scheduled: { name: "Scheduled", color: "#64748b" },
   no_show: { name: "No-show", color: "#9f1239" },
   cancelled: { name: "Cancelled", color: "#e11d48" },
