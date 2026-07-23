@@ -185,6 +185,7 @@ export async function findClientsByPhone(
 export async function getClientDetail(
   id: string,
   includeClinical = true,
+  role?: Role | null,
 ): Promise<ClientDetail | null> {
   const client = await db.client.findUnique({ where: { id }, include: listInclude });
   if (!client) return null;
@@ -233,9 +234,26 @@ export async function getClientDetail(
   // Non-clinical roles (secretary) get contact + visit/package + payment data,
   // but no medical notes/allergies and no consultation records (weight, BMI,
   // measurements, clinical notes). Enforced here so the data never leaves the server.
-  const clientView = includeClinical
+  let clientView = includeClinical
     ? mapped
     : { ...mapped, medicalNotes: undefined, allergies: undefined };
+
+  // A plain doctor (dietitian, not admin) only needs a narrow slice of the
+  // personal record — name, gender, referrer, age (dateOfBirth) and first-time
+  // status. Drop the rest here so it never leaves the server, matching the
+  // narrowed Personal tab in the client profile UI.
+  if (role === "dietitian") {
+    clientView = {
+      ...clientView,
+      phone: "",
+      email: undefined,
+      address: undefined,
+      emergencyContact: undefined,
+      passportNumber: undefined,
+      country: undefined,
+      maritalStatus: undefined,
+    };
+  }
 
   return {
     client: clientView,

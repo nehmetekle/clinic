@@ -30,6 +30,7 @@ model User {
   appointments        Appointment[]
   auditLogs           AuditLog[]
   bloodSamples        BloodSample[]
+  bloodSampleFiles    BloodSampleFile[]
   assignedClients     Client[]           @relation("AssignedDietitian")
   createdClients      Client[]           @relation("CreatedByUser")
   consultations       Consultation[]
@@ -420,9 +421,33 @@ model BloodSample {
   client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   consultation   Consultation? @relation(fields: [consultationId], references: [id])
   dietitian      User?         @relation(fields: [dietitianId], references: [id])
+  files          BloodSampleFile[]
 
   @@index([sentAt])
   @@index([receivedAt])
+}
+
+// A file (lab-result PDF or scan) attached to a specific blood test/order. The
+// bytes live inline in Postgres (`data`) — the app is Postgres-everywhere and no
+// external blob store is in scope; lab results are small and size-capped in the
+// upload route. List/metadata queries never select `data`, so browsing files
+// stays cheap; only the download endpoint pulls the bytes. `uploadedByName` is a
+// frozen snapshot of who uploaded (same pattern as BloodSample.dietitianName),
+// so a later rename never rewrites the attribution.
+model BloodSampleFile {
+  id             String      @id @default(cuid())
+  bloodSampleId  String
+  filename       String
+  mimeType       String
+  size           Int
+  data           Bytes
+  uploadedById   String?
+  uploadedByName String
+  createdAt      DateTime    @default(now())
+  bloodSample    BloodSample @relation(fields: [bloodSampleId], references: [id], onDelete: Cascade)
+  uploadedBy     User?       @relation(fields: [uploadedById], references: [id])
+
+  @@index([bloodSampleId])
 }
 
 model Expense {

@@ -1,8 +1,10 @@
 "use client";
 
+import { Fragment } from "react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
+import { BloodSampleFiles } from "@/components/BloodSampleFiles";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -53,7 +55,8 @@ export function BloodTestsTab({ clientId }: { clientId: string }) {
           </THead>
           <TBody>
             {samples.map((s) => (
-              <TR key={s.id}>
+              <Fragment key={s.id}>
+              <TR>
                 <TD className="text-slate-500">{formatDate(s.orderedAt)}</TD>
                 <TD className="whitespace-normal">
                   <div className="flex flex-wrap gap-1">
@@ -87,6 +90,16 @@ export function BloodTestsTab({ clientId }: { clientId: string }) {
                   )}
                 </TD>
               </TR>
+              {/* Result files only exist once results are in — no files row for a
+                  sample still awaiting send or at the lab. */}
+              {s.status === "received" && (
+                <TR>
+                  <TD colSpan={5} className="bg-slate-50/40 pt-0">
+                    <BloodSampleFiles sampleId={s.id} status={s.status} />
+                  </TD>
+                </TR>
+              )}
+              </Fragment>
             ))}
           </TBody>
         </Table>

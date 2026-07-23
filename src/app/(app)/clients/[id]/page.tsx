@@ -7,11 +7,9 @@ import {
   CalendarX,
   ChevronLeft,
   CreditCard,
-  FileText,
   Pencil,
   Phone,
   Stethoscope,
-  Upload,
 } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -28,6 +26,7 @@ import { Loading } from "@/components/ui/States";
 import { WeightTrendChart } from "@/components/charts/Charts";
 import { MedicalHistoryTab } from "./MedicalHistoryTab";
 import { BloodTestsTab } from "./BloodTestsTab";
+import { FilesTab } from "./FilesTab";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -103,6 +102,9 @@ export default function ClientProfilePage() {
   const { client, consultations: consults, appointments: appts, payments: pays, sessionPlans, debts, debtTotal } = data;
   const outstandingDebts = debts.filter((d) => d.status === "outstanding").length;
   const isDietitian = user?.role === "dietitian" || user?.role === "admin";
+  // A plain doctor (dietitian, not admin) gets a narrowed personal-details view:
+  // only name, gender, referrer, age and first-time status.
+  const isDoctorLimitedView = user?.role === "dietitian";
   // Money is the secretary's (and admin's) domain — the dietitian never handles it.
   const canHandleMoney = user?.role === "secretary" || user?.role === "admin";
   // Writing off (voiding) a debt forgives money owed — admin only (enforced server-side).
@@ -134,14 +136,15 @@ export default function ClientProfilePage() {
   const tabs = [
     "Overview",
     "Personal",
-    "Medical History",
+    // Medical history and clinical notes are the doctor's/admin's — the
+    // secretary doesn't get these tabs at all (not just a locked message).
+    ...(isDietitian ? ["Medical History"] : []),
     "Bundles",
     "Appointments",
     "Blood Tests",
     ...(isDietitian ? ["Consultations", "Measurements", "Progress"] : []),
     ...(canHandleMoney ? ["Payments"] : []),
-    "Notes",
-    "Files",
+    ...(isDietitian ? ["Notes", "Files"] : []),
   ];
 
   const weightSeries = consults
@@ -262,9 +265,11 @@ export default function ClientProfilePage() {
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
-                <span className="inline-flex items-center gap-1">
-                  <Phone className="h-3.5 w-3.5" /> {client.phone}
-                </span>
+                {client.phone && (
+                  <span className="inline-flex items-center gap-1">
+                    <Phone className="h-3.5 w-3.5" /> {client.phone}
+                  </span>
+                )}
                 {client.assignedDietitian && <span>· {client.assignedDietitian}</span>}
                 {cp && <span>· {cp.usedSessions}/{cp.totalSessions} sessions</span>}
                 {canHandleMoney && debtTotal > 0 && (
@@ -417,36 +422,47 @@ export default function ClientProfilePage() {
                 />
                 <CardBody>
                 <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                  <Info label="Full name" value={`${client.firstName} ${client.lastName}`} />
-                  <Info label="Phone" value={client.phone} />
-                  <Info label="Email" value={client.email ?? "—"} />
-                  <Info label="Age" value={age(client.dateOfBirth) ? `${age(client.dateOfBirth)} yrs` : "—"} />
-                  <Info label="Gender" value={client.gender ?? "—"} />
-                  <Info label="Marital status" value={client.maritalStatus ?? "—"} />
-                  <Info label="Passport / ID" value={client.passportNumber ?? "—"} />
-                  <Info label="Country" value={client.country ?? "—"} />
-                  <Info label="Referrer" value={client.referralSource ?? "—"} />
-                  <Info label="First-time patient" value={client.firstTimePatient ? "Yes" : "No"} />
-                  <Info label="Address" value={client.address ?? "—"} />
-                  <Info label="Emergency contact" value={client.emergencyContact ?? "—"} />
-                  <Info label="Registered" value={formatDate(client.registeredAt)} />
-                  {isDietitian && <Info label="Medical notes" value={client.medicalNotes ?? "—"} />}
-                  {isDietitian && <Info label="Allergies" value={client.allergies ?? "—"} />}
+                  {/* A doctor (dietitian) sees a deliberately narrowed set of
+                      personal fields — full name, gender, referrer, age and
+                      first-time status. The remaining registration details are
+                      not shown to that role (and the layout is kept complete so
+                      it doesn't read as if data is missing). Admin/secretary see
+                      the full record. */}
+                  {isDoctorLimitedView ? (
+                    <>
+                      <Info label="Full name" value={`${client.firstName} ${client.lastName}`} />
+                      <Info label="Age" value={age(client.dateOfBirth) ? `${age(client.dateOfBirth)} yrs` : "—"} />
+                      <Info label="Gender" value={client.gender ?? "—"} />
+                      <Info label="First-time patient" value={client.firstTimePatient ? "Yes" : "No"} />
+                      <Info label="Referrer" value={client.referralSource ?? "—"} />
+                    </>
+                  ) : (
+                    <>
+                      <Info label="Full name" value={`${client.firstName} ${client.lastName}`} />
+                      <Info label="Phone" value={client.phone} />
+                      <Info label="Email" value={client.email ?? "—"} />
+                      <Info label="Age" value={age(client.dateOfBirth) ? `${age(client.dateOfBirth)} yrs` : "—"} />
+                      <Info label="Gender" value={client.gender ?? "—"} />
+                      <Info label="Marital status" value={client.maritalStatus ?? "—"} />
+                      <Info label="Passport / ID" value={client.passportNumber ?? "—"} />
+                      <Info label="Country" value={client.country ?? "—"} />
+                      <Info label="Referrer" value={client.referralSource ?? "—"} />
+                      <Info label="First-time patient" value={client.firstTimePatient ? "Yes" : "No"} />
+                      <Info label="Address" value={client.address ?? "—"} />
+                      <Info label="Emergency contact" value={client.emergencyContact ?? "—"} />
+                      <Info label="Registered" value={formatDate(client.registeredAt)} />
+                      {isDietitian && <Info label="Medical notes" value={client.medicalNotes ?? "—"} />}
+                      {isDietitian && <Info label="Allergies" value={client.allergies ?? "—"} />}
+                    </>
+                  )}
                 </dl>
                 </CardBody>
               </Card>
             )}
 
-            {active === "Medical History" &&
-              (isDietitian ? (
-                <MedicalHistoryTab clientId={client.id} />
-              ) : (
-                <Card><CardBody>
-                  <p className="text-sm text-slate-500">
-                    Medical history is restricted to the doctor and admin.
-                  </p>
-                </CardBody></Card>
-              ))}
+            {active === "Medical History" && isDietitian && (
+              <MedicalHistoryTab clientId={client.id} />
+            )}
 
             {active === "Bundles" && (
               <div className="space-y-6">
@@ -776,7 +792,7 @@ export default function ClientProfilePage() {
               </div>
             )}
 
-            {active === "Notes" && (
+            {active === "Notes" && isDietitian && (
               <Card>
                 {canEditClinical && (
                   <CardHeader
@@ -790,66 +806,19 @@ export default function ClientProfilePage() {
                   />
                 )}
                 <CardBody className="space-y-4">
-                {isDietitian ? (
-                  <>
-                    <div>
-                      <p className="text-xs uppercase text-slate-400">Medical notes</p>
-                      <p className="mt-1 text-sm text-slate-600">{client.medicalNotes ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase text-slate-400">Allergies / restrictions</p>
-                      <p className="mt-1 text-sm text-slate-600">{client.allergies ?? "—"}</p>
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-sm text-slate-500">
-                    Clinical notes are restricted to the doctor and admin.
-                  </p>
-                )}
+                  <div>
+                    <p className="text-xs uppercase text-slate-400">Medical notes</p>
+                    <p className="mt-1 text-sm text-slate-600">{client.medicalNotes ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase text-slate-400">Allergies / restrictions</p>
+                    <p className="mt-1 text-sm text-slate-600">{client.allergies ?? "—"}</p>
+                  </div>
                 </CardBody>
               </Card>
             )}
 
-            {active === "Files" && (
-              <Card>
-                <CardHeader
-                  title="Files"
-                  subtitle="Lab results, meal plans and documents"
-                  action={
-                    <Button size="sm" variant="outline" onClick={() => toast("File uploads arrive in Version 4")}>
-                      <Upload className="h-4 w-4" /> Upload
-                    </Button>
-                  }
-                />
-                <CardBody>
-                  {isDietitian ? (
-                    <ul className="divide-y divide-slate-100">
-                      {[
-                        { name: "Meal-plan-week1.pdf", size: "184 KB", date: client.registeredAt },
-                        { name: "Blood-panel.pdf", size: "512 KB", date: client.registeredAt },
-                      ].map((f) => (
-                        <li key={f.name} className="flex items-center justify-between py-3">
-                          <span className="flex items-center gap-3">
-                            <FileText className="h-5 w-5 text-slate-400" />
-                            <span>
-                              <span className="block text-sm font-medium text-slate-700">{f.name}</span>
-                              <span className="block text-xs text-slate-400">
-                                {f.size} · {formatDate(f.date)}
-                              </span>
-                            </span>
-                          </span>
-                          <Button size="sm" variant="ghost" onClick={() => toast("File downloads arrive in Version 4")}>Download</Button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      Client files are restricted to the doctor and admin.
-                    </p>
-                  )}
-                </CardBody>
-              </Card>
-            )}
+            {active === "Files" && isDietitian && <FilesTab clientId={client.id} />}
           </>
         )}
       </Tabs>

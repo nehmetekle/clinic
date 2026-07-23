@@ -430,6 +430,27 @@ export interface BloodSample {
   notes?: string;
 }
 
+/** A file (lab result / scan) attached to a specific blood test. Metadata only —
+ * the bytes are streamed from the download endpoint, never carried in JSON. */
+export interface BloodSampleFile {
+  id: string;
+  bloodSampleId: string;
+  filename: string;
+  mimeType: string;
+  size: number; // bytes
+  uploadedById: string | null; // User who uploaded (null if since removed) — lets the UI offer self-delete
+  uploadedByName: string;
+  createdAt: string; // ISO timestamp of upload
+}
+
+/** A blood-test file plus the context of the test it hangs off — powers the
+ * client profile's Files tab, which lists every blood attachment for a patient. */
+export interface ClientBloodFile extends BloodSampleFile {
+  clientId: string;
+  tests: string[];
+  orderedAt: string; // ISO timestamp of the order the file belongs to
+}
+
 export interface Expense {
   id: string;
   title: string;

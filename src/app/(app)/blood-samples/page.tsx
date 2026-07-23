@@ -22,6 +22,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
+import { BloodSampleFiles } from "@/components/BloodSampleFiles";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
@@ -349,6 +350,8 @@ function SampleCard({
           )}
         </div>
       )}
+
+      <BloodSampleFiles sampleId={sample.id} status={sample.status} className="mt-3" />
     </div>
   );
 }

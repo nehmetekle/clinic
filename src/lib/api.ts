@@ -3,6 +3,8 @@ import type {
   AppointmentStatus,
   AuditEntry,
   BloodSample,
+  BloodSampleFile,
+  ClientBloodFile,
   Client,
   ClientDebt,
   ClientDetail,
@@ -120,6 +122,22 @@ const postJson = <T>(url: string, body: unknown) => sendJson<T>("POST", url, bod
 const patchJson = <T>(url: string, body: unknown) => sendJson<T>("PATCH", url, body);
 const putJson = <T>(url: string, body: unknown) => sendJson<T>("PUT", url, body);
 
+/**
+ * Multipart POST for a single file upload. The browser sets the multipart
+ * Content-Type (with boundary) itself, so we only attach the CSRF marker header —
+ * setting Content-Type by hand would break the boundary.
+ */
+async function postForm<T>(url: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(url, { method: "POST", headers: CSRF_HEADER, body });
+  if (!res.ok) {
+    const err: ApiErrorBody | null = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(err, res.status));
+  }
+  return res.json();
+}
+
 async function deleteJson(url: string): Promise<void> {
   const res = await fetch(url, { method: "DELETE", headers: CSRF_HEADER });
   if (!res.ok) {
@@ -223,6 +241,19 @@ export const api = {
     getJson<BloodSample[]>(`/api/blood-samples${clientId ? `?clientId=${clientId}` : ""}`),
   updateBloodSample: (id: string, body: UpdateBloodSampleInput) =>
     patchJson<BloodSample>(`/api/blood-samples/${id}`, body),
+
+  // Files attached to a specific blood test (lab-result PDFs / scans).
+  listBloodSampleFiles: (sampleId: string) =>
+    getJson<BloodSampleFile[]>(`/api/blood-samples/${sampleId}/files`),
+  uploadBloodSampleFile: (sampleId: string, file: File) =>
+    postForm<BloodSampleFile>(`/api/blood-samples/${sampleId}/files`, file),
+  deleteBloodSampleFile: (fileId: string) => deleteJson(`/api/blood-sample-files/${fileId}`),
+  // Direct URL for an <a href> download (GET rides the session cookie; no CSRF
+  // header needed on GET). Content is served doctor/admin-only server-side.
+  bloodSampleFileUrl: (fileId: string) => `/api/blood-sample-files/${fileId}`,
+  // Every blood-test file for a patient (client profile Files tab).
+  listClientBloodFiles: (clientId: string) =>
+    getJson<ClientBloodFile[]>(`/api/clients/${clientId}/blood-files`),
 
   listExpenses: () => getJson<Expense[]>("/api/expenses"),
   createExpense: (body: CreateExpenseInput) => postJson<Expense>("/api/expenses", body),
