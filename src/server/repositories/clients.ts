@@ -4,6 +4,7 @@ import { ConflictError, DuplicatePhoneError, ForbiddenError, NotFoundError } fro
 import { dateOnly, toClientPackage } from "../serialize";
 import { expirePastScheduledAppointments, toAppointment } from "./appointments";
 import { listClientDebts } from "./clientDebts";
+import { resolveReferralFee } from "./referrers";
 import { consultationInclude, toConsultation } from "./consultations";
 import { paymentInclude, toPayment } from "./payments";
 import { listSessionPlans } from "./sessionPlans";
@@ -184,6 +185,7 @@ export async function findClientsByPhone(
 export async function getClientDetail(
   id: string,
   includeClinical = true,
+  role?: Role | null,
 ): Promise<ClientDetail | null> {
   const client = await db.client.findUnique({ where: { id }, include: listInclude });
   if (!client) return null;
@@ -232,9 +234,26 @@ export async function getClientDetail(
   // Non-clinical roles (secretary) get contact + visit/package + payment data,
   // but no medical notes/allergies and no consultation records (weight, BMI,
   // measurements, clinical notes). Enforced here so the data never leaves the server.
-  const clientView = includeClinical
+  let clientView = includeClinical
     ? mapped
     : { ...mapped, medicalNotes: undefined, allergies: undefined };
+
+  // A plain doctor (dietitian, not admin) only needs a narrow slice of the
+  // personal record — name, gender, referrer, age (dateOfBirth) and first-time
+  // status. Drop the rest here so it never leaves the server, matching the
+  // narrowed Personal tab in the client profile UI.
+  if (role === "dietitian") {
+    clientView = {
+      ...clientView,
+      phone: "",
+      email: undefined,
+      address: undefined,
+      emergencyContact: undefined,
+      passportNumber: undefined,
+      country: undefined,
+      maritalStatus: undefined,
+    };
+  }
 
   return {
     client: clientView,
@@ -284,6 +303,13 @@ export async function createClient(input: {
     if (matches.length > 0) throw new DuplicatePhoneError(matches);
   }
 
+  // Freeze the referrer's commission onto the patient at THIS registration moment —
+  // whether it's the full new-client form or a phone booking, both capture the
+  // referrer here. A one-time fee, snapshotted from the referrer's LIVE rate at
+  // registration so a later rate change never re-prices this patient. null when
+  // self-referred or the referrer has no fee at registration.
+  const referralFee = await resolveReferralFee(input.referralSource);
+
   const created = await db.client.create({
     data: {
       firstName: input.firstName,
@@ -300,6 +326,7 @@ export async function createClient(input: {
       country: input.country,
       maritalStatus: input.maritalStatus,
       referralSource: input.referralSource,
+      referralFee,
       firstTimePatient: input.firstTimePatient ?? false,
       intakeComplete: input.intakeComplete ?? deriveIntakeComplete(input),
       assignedDietitianId: input.assignedDietitianId ?? null,
@@ -334,7 +361,7 @@ function assertCanEditClientFields(
   const frontDesk = supplied.some((k) => !CLINICAL_FIELDS.includes(k));
   if (clinical && !(role === "dietitian" || role === "admin")) {
     throw new ForbiddenError(
-      "Medical notes and allergies can only be edited by the dietitian or admin.",
+      "Medical notes and allergies can only be edited by the doctor or admin.",
     );
   }
   if (frontDesk && !(role === "secretary" || role === "admin")) {
@@ -395,6 +422,11 @@ export async function updateClient(
     data.passportNumber = input.passportNumber || null;
   if (input.country !== undefined) data.country = input.country || null;
   if (input.maritalStatus !== undefined) data.maritalStatus = input.maritalStatus || null;
+  // referralFee is deliberately NOT (re)frozen here. The commission is snapshotted
+  // once, at the registration moment (createClient) — which includes a phone
+  // booking, since that captures the referrer too. Editing referralSource later is
+  // a correction to the record, not a new registration, so it never re-prices the
+  // frozen fee (nor retroactively attaches a rate the referrer only got afterwards).
   if (input.referralSource !== undefined) data.referralSource = input.referralSource;
   if (input.firstTimePatient !== undefined) data.firstTimePatient = input.firstTimePatient;
   if (input.intakeComplete !== undefined) data.intakeComplete = input.intakeComplete;

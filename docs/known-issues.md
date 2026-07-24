@@ -209,3 +209,38 @@ would change real workflows (e.g. whether one dietitian can currently pull up
 another's client during a walk-in). Deliberately left as an open decision
 rather than silently implemented — revisit before onboarding multiple
 dietitians who shouldn't see each other's caseloads.
+
+### 8. Referrer commission (per-referral fee) — behaviour notes
+The admin sets a per-referral fee on each `Referrer` (Settings → Referrers). The
+fee is **frozen onto the patient** (`Client.referralFee`, always USD) at the
+**registration moment** — `createClient`, which every registration path goes
+through: the full new-client form *and* a phone booking both capture the referrer
+there (`createClientSchema` requires `referralSource`). The rate is snapshotted at
+that day's `Referrer.fee`, so a later rate change never re-prices past referrals
+(same freeze-at-use rule as frozen prices / exchange rates). It's a one-time cost,
+deducted from **net profit** and **gross margin** (`services/dashboard.ts`),
+windowed by registration date like the other flow figures, and surfaced as the
+"Referrer cost" card + drill-down on the dashboard and reports (admin-only,
+redacted for other roles).
+
+Every referrer dropdown (new-client form, phone booking, check-in) also offers a
+built-in **"None — came on their own"** choice (`NONE_REFERRER` in `lib/config.ts`)
+for organic/walk-in patients. It's stored as the literal `referralSource` "None"
+and always carries **no fee**: `resolveReferralFee` short-circuits it to null even
+if a `Referrer` row named "None" somehow existed, and `create/updateReferrerSchema`
+reserve the name so an admin can't add a conflicting list entry. Organic patients
+still show as a "None" group in the referrer *count* report but never appear in the
+referrer *cost* breakdown.
+
+Editing a patient's `referralSource` later (`updateClient`, e.g. at check-in) is
+a **correction to the record, not a new registration** — it deliberately does
+**not** (re)freeze the fee. This keeps the semantics unambiguous: the commission
+is captured exactly once, at that day's rate, and a referrer whose fee was $0 at
+registration never has a later rate retroactively attached.
+
+Minor edge case, deliberately left as-is (retroactivity is a non-concern —
+feature shipped before real data): the freeze is genuinely one-time, so if an
+admin later **changes a patient's referrer** to a different one, the frozen fee
+does **not** move to the new referrer's rate. The money stays correct, but that
+patient then appears in the cost breakdown under their *current* `referralSource`
+name carrying the *old* referrer's frozen amount. Rare manual-edit path.

@@ -86,6 +86,10 @@ export async function createPayment(
     // more specific event for the same money (e.g. a debt clear logs "Debt
     // cleared" instead). The Payment row itself is always created.
     skipAudit?: boolean;
+    // Links this payment to the visit basket it settles (one portion of a split
+    // settlement). Set by settleVisitBasket so all method portions of a settlement
+    // are discoverable from the basket; null for standalone/manual payments.
+    visitBasketId?: string | null;
   },
   // Runs on the shared client by default, or inside the caller's transaction
   // (e.g. basket settlement) so the payment and its receipt number commit — or
@@ -135,6 +139,7 @@ export async function createPayment(
         idempotencyKey,
         notes: input.notes?.trim() || null,
         createdById: input.createdById ?? null,
+        visitBasketId: input.visitBasketId ?? null,
       },
       include: paymentInclude,
     });

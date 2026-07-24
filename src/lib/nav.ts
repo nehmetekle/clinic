@@ -71,6 +71,6 @@ export function roleHome(role: Role): string {
 
 export const ROLE_LABELS: Record<Role, string> = {
   secretary: "Secretary / Receptionist",
-  dietitian: "Dietitian",
+  dietitian: "Doctor",
   admin: "Admin / Owner",
 };

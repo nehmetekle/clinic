@@ -28,6 +28,41 @@ export default function StaffPage() {
   const [resetTarget, setResetTarget] = useState<StaffUser | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [editTarget, setEditTarget] = useState<StaffUser | null>(null);
+  const [editForm, setEditForm] = useState({ fullName: "", email: "", phone: "", role: "secretary" as Role, status: "active" });
+  const [editing, setEditing] = useState(false);
+
+  function openEdit(s: StaffUser) {
+    setEditForm({
+      fullName: s.fullName,
+      email: s.email,
+      phone: s.phone ?? "",
+      role: s.role,
+      status: s.status,
+    });
+    setEditTarget(s);
+  }
+
+  async function saveEdit() {
+    if (!editTarget) return;
+    setEditing(true);
+    try {
+      await api.updateStaff(editTarget.id, {
+        fullName: editForm.fullName,
+        email: editForm.email,
+        phone: editForm.phone || undefined,
+        role: editForm.role,
+        status: editForm.status as "active" | "inactive",
+      });
+      toast("Staff details updated");
+      setEditTarget(null);
+      refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setEditing(false);
+    }
+  }
 
   async function resetPasswordFor() {
     if (!resetTarget) return;
@@ -113,7 +148,7 @@ export default function StaffPage() {
                   <TD className="text-slate-500">{s.lastLoginAt ? formatDateTime(s.lastLoginAt) : "—"}</TD>
                   <TD>
                     <div className="flex gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => toast("Editing staff details arrives in a later version")}>Edit</Button>
+                      <Button size="sm" variant="ghost" onClick={() => openEdit(s)}>Edit</Button>
                       <Button size="sm" variant="ghost" onClick={() => setResetTarget(s)}>Reset password</Button>
                       <Button size="sm" variant="ghost" onClick={() => toggleStatus(s.id, s.status)}>
                         {s.status === "active" ? "Disable" : "Enable"}
@@ -160,7 +195,7 @@ export default function StaffPage() {
           <FormRow label="Role">
             <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
               <option value="secretary">Secretary / Receptionist</option>
-              <option value="dietitian">Dietitian</option>
+              <option value="dietitian">Doctor</option>
               <option value="admin">Admin / Owner</option>
             </Select>
           </FormRow>
@@ -197,6 +232,48 @@ export default function StaffPage() {
         </FormRow>
         <p className="mt-2 text-xs text-slate-500">
           This immediately signs them out everywhere; they&apos;ll need this new password next time.
+        </p>
+      </Modal>
+
+      <Modal
+        open={editTarget !== null}
+        onClose={() => setEditTarget(null)}
+        title={`Edit ${editTarget?.fullName ?? "staff member"}`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setEditTarget(null)}>Cancel</Button>
+            <Button onClick={saveEdit} disabled={editing || !editForm.fullName.trim() || !editForm.email.trim()}>
+              {editing ? "Saving…" : "Save changes"}
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormRow label="Full name" className="sm:col-span-2">
+            <Input value={editForm.fullName} onChange={(e) => setEditForm({ ...editForm, fullName: e.target.value })} />
+          </FormRow>
+          <FormRow label="Email" className="sm:col-span-2">
+            <Input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+          </FormRow>
+          <FormRow label="Phone">
+            <PhoneInput value={editForm.phone} onChange={(phone) => setEditForm({ ...editForm, phone })} />
+          </FormRow>
+          <FormRow label="Role">
+            <Select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value as Role })}>
+              <option value="secretary">Secretary / Receptionist</option>
+              <option value="dietitian">Doctor</option>
+              <option value="admin">Admin / Owner</option>
+            </Select>
+          </FormRow>
+          <FormRow label="Status" className="sm:col-span-2">
+            <Select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </Select>
+          </FormRow>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          To change the password, use “Reset password” instead.
         </p>
       </Modal>
     </div>

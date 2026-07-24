@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -15,6 +16,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
+import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
@@ -23,6 +25,7 @@ import { formatMoney, formatTime } from "@/lib/utils";
 export function SecretaryDashboard() {
   const router = useRouter();
   const { data, loading, error } = useApi(() => api.getDashboard());
+  const [showMethods, setShowMethods] = useState(false);
 
   if (loading) return <Loading />;
   if (error) return <ErrorState message={error} />;
@@ -53,8 +56,16 @@ export function SecretaryDashboard() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <StatCard label="Today's appointments" value={today.length} icon={CalendarDays} tone="blue" />
         <StatCard label="New clients today" value={data.counts.newToday} icon={UserPlus} tone="green" />
-        <StatCard label="Payments today" value={formatMoney(data.finance.paymentsToday)} icon={CreditCard} tone="brand" />
+        <StatCard label="Payments today" value={formatMoney(data.finance.paymentsToday)} icon={CreditCard} tone="brand" hint="By method →" onClick={() => setShowMethods(true)} />
       </div>
+
+      <PaymentMethodBreakdown
+        open={showMethods}
+        onClose={() => setShowMethods(false)}
+        title="Payments today by method"
+        periodLabel="today"
+        byMethod={data.finance.paymentsTodayByMethod}
+      />
 
       <div className="mt-6">
         <Card>

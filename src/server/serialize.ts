@@ -105,7 +105,7 @@ export function toExpense(e: PExpense): Expense {
     usdToLbp: e.usdToLbp,
     date: dateOnly(e.date)!,
     paidBy: e.paidBy ?? "",
-    method: asPaymentMethod(e.method ?? "other"),
+    method: asPaymentMethod(e.method ?? "cash"),
     notes: e.notes ?? undefined,
     amountEdited: e.amountEdited,
   };
@@ -136,7 +136,7 @@ function parseBodyParts(json: string | null): string[] | undefined {
 }
 
 export function toReferrer(r: PReferrer): Referrer {
-  return { id: r.id, name: r.name, active: r.active };
+  return { id: r.id, name: r.name, active: r.active, fee: r.fee };
 }
 
 export function toServicePrice(p: PServicePrice): ServicePrice {

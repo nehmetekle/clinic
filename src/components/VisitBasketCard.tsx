@@ -4,7 +4,7 @@ import { ShoppingBasket, Trash2 } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { FormRow, Input, Select, Textarea } from "@/components/ui/Field";
-import { basketTotals, formatMoney } from "@/lib/utils";
+import { basketTotals, cn, formatMoney } from "@/lib/utils";
 
 export type VisitBasketCardItem = {
   id: string;
@@ -53,6 +53,7 @@ export function VisitBasketCard({
   emptyText = "No billable items added yet.",
   currency = "USD",
   usdToLbp,
+  tone,
 }: {
   items: VisitBasketCardItem[];
   discountOpen: boolean;
@@ -77,6 +78,10 @@ export function VisitBasketCard({
   // Basket's frozen exchange rate — folds any LBP line into the USD total. When
   // omitted, basketTotals falls back to the default rate (items are USD anyway).
   usdToLbp?: number;
+  // Optional section tint so the card can carry the same "money" identity as the
+  // rest of a page's colour system (e.g. the dietitian's consultation editor).
+  // Defaults to the plain white card used by the secretary's settlement modal.
+  tone?: "emerald";
 }) {
   const { subtotal, discount, total } = basketTotals(
     items.map((i) => ({ quantity: i.quantity, unitPrice: i.unitPrice, covered: i.covered, currency: i.currency })),
@@ -88,12 +93,27 @@ export function VisitBasketCard({
   const reasonMissing =
     discountOpen && (Number(discountValue) || 0) > 0 && !discountReason.trim();
 
+  const tinted = tone === "emerald";
   return (
-    <Card>
+    <Card
+      className={cn(
+        tinted && "overflow-hidden rounded-2xl border-0 bg-white ring-1 ring-emerald-100",
+      )}
+    >
       <CardHeader
         title="Visit basket"
         subtitle={subtitle}
-        action={headerAction ?? <ShoppingBasket className="h-5 w-5 text-slate-400" />}
+        className={cn(tinted && "border-emerald-100 bg-gradient-to-br from-emerald-50 to-white")}
+        action={
+          headerAction ??
+          (tinted ? (
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-sm shadow-emerald-500/30">
+              <ShoppingBasket className="h-[18px] w-[18px]" />
+            </span>
+          ) : (
+            <ShoppingBasket className="h-5 w-5 text-slate-400" />
+          ))
+        }
       />
       <CardBody className="space-y-3">
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

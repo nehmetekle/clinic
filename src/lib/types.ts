@@ -8,24 +8,59 @@ export type Currency = "USD" | "LBP";
 export const PAYMENT_METHOD_VALUES = [
   "cash",
   "card",
-  "bank_transfer",
-  "online",
   "whish",
-  "other",
+  "omt",
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHOD_VALUES)[number];
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: "Cash",
   card: "Card",
-  bank_transfer: "Bank transfer",
-  online: "Online",
   whish: "Whish",
-  other: "Other",
+  omt: "OMT",
 };
+
+// Sentinel bucket for payments whose stored method is genuinely blank/missing.
+// A real, non-empty method value NEVER lands here — not even one that was once
+// offered and later removed from the active choices above; those keep their own
+// original value (see paymentMethodLabel).
+export const PAYMENT_METHOD_OTHER_LABEL = "Other";
+
+// Display label for whatever method value is actually stored on a payment record.
+// Reads the record dynamically, not the currently-offered list: a known method
+// uses its configured label; any OTHER non-empty stored value (e.g. a method
+// retired from the choices above) displays under its own real, original value,
+// forever. Only a blank/whitespace value falls back to "Other".
+export function paymentMethodLabel(method: string | null | undefined): string {
+  const raw = (method ?? "").trim();
+  if (raw === "") return PAYMENT_METHOD_OTHER_LABEL;
+  return PAYMENT_METHOD_LABELS[raw as PaymentMethod] ?? raw;
+}
+
+// Turns a {rawStoredMethod → amount} map into the ordered, non-zero rows the
+// breakdown modal renders. Active methods come first in their configured order,
+// then any other real (retired-but-recorded) method alphabetically, and the
+// blank "Other" bucket always last. Pure + UI-free so it can be unit-tested.
+export function paymentMethodBreakdownRows(
+  byMethod: Record<string, number>,
+): { key: string; label: string; amount: number }[] {
+  const order = new Map<string, number>(PAYMENT_METHOD_VALUES.map((m, i) => [m as string, i]));
+  const isOther = (key: string) => key.trim() === "";
+  return Object.entries(byMethod)
+    .map(([key, amount]) => ({ key, label: paymentMethodLabel(key), amount }))
+    .filter((r) => r.amount > 0)
+    .sort((a, b) => {
+      if (isOther(a.key) !== isOther(b.key)) return isOther(a.key) ? 1 : -1;
+      const ai = order.has(a.key) ? (order.get(a.key) as number) : Number.POSITIVE_INFINITY;
+      const bi = order.has(b.key) ? (order.get(b.key) as number) : Number.POSITIVE_INFINITY;
+      if (ai !== bi) return ai - bi;
+      return a.label.localeCompare(b.label);
+    });
+}
 export type ServicePriceKind = "blood_test" | "treatment";
 
 export interface ClinicSettings {
   usdToLbp: number;
+  usdToEur: number;
 }
 
 // Sellable product/add-on (catalog). Prices are admin-managed. `cost` is the
@@ -45,6 +80,9 @@ export interface Referrer {
   id: string;
   name: string;
   active: boolean;
+  // Admin-set per-referral commission in USD (0 = no fee). The LIVE rate; the
+  // amount owed for a given patient is frozen onto the client at registration.
+  fee: number;
 }
 
 // Admin-managed prices for blood tests and treatment services. `cost` is the
@@ -72,12 +110,14 @@ export type AppointmentStatus =
 // Single source of truth for appointment visit types: the option list every
 // visit-type dropdown renders (in order), the labels they show, and the values
 // the server validates against. Add or reorder here and it flows everywhere.
-export const VISIT_TYPE_VALUES = ["initial", "follow_up", "machines"] as const;
+export const VISIT_TYPE_VALUES = ["initial", "follow_up", "machines", "blood_test", "buy_products"] as const;
 export type VisitType = (typeof VISIT_TYPE_VALUES)[number];
 export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
   initial: "Initial",
   follow_up: "Follow-up",
   machines: "Machines",
+  blood_test: "Blood Test",
+  buy_products: "Buy Products",
 };
 export type MaritalStatus = "single" | "married" | "divorced" | "widowed" | "other";
 
@@ -271,6 +311,9 @@ export interface Appointment {
   id: string;
   clientId: string;
   clientName: string;
+  // The doctor this visit is booked with / checked in to. Drives per-doctor
+  // queue filtering — a doctor's board shows only their own appointments.
+  dietitianId?: string;
   dietitianName: string;
   date: string;
   time: string;
@@ -346,6 +389,8 @@ export interface VisitBasket {
   clientId: string;
   clientName: string;
   consultationId?: string;
+  // The doctor who owns this basket, used to scope a doctor's own queue view.
+  dietitianId?: string;
   dietitianName: string;
   status: VisitBasketStatus;
   discountType?: "percent" | "amount";
@@ -360,7 +405,15 @@ export interface VisitBasket {
   sentAt: string;
   paidAt?: string;
   paymentId?: string;
+  // Primary (first) receipt of the settlement — kept for existing single-receipt
+  // display. When the settlement was split across methods, every portion's method,
+  // USD amount, and receipt is in `paymentSplits` (and `receiptNumber` is the
+  // first of them).
   receiptNumber?: string;
+  // One entry per method the settlement was collected with (empty for an unpaid
+  // or $0 basket). Lets a settled basket show the split clearly, e.g. Cash $100 ·
+  // Whish $200, each with its own receipt.
+  paymentSplits?: { method: PaymentMethod; amount: number; receiptNumber: string }[];
 }
 
 // ---- Blood sample tracking (lab logistics) ----
@@ -380,6 +433,27 @@ export interface BloodSample {
   sentAt?: string; // ISO timestamp the sample left for the lab
   receivedAt?: string; // ISO timestamp the results came back
   notes?: string;
+}
+
+/** A file (lab result / scan) attached to a specific blood test. Metadata only —
+ * the bytes are streamed from the download endpoint, never carried in JSON. */
+export interface BloodSampleFile {
+  id: string;
+  bloodSampleId: string;
+  filename: string;
+  mimeType: string;
+  size: number; // bytes
+  uploadedById: string | null; // User who uploaded (null if since removed) — lets the UI offer self-delete
+  uploadedByName: string;
+  createdAt: string; // ISO timestamp of upload
+}
+
+/** A blood-test file plus the context of the test it hangs off — powers the
+ * client profile's Files tab, which lists every blood attachment for a patient. */
+export interface ClientBloodFile extends BloodSampleFile {
+  clientId: string;
+  tests: string[];
+  orderedAt: string; // ISO timestamp of the order the file belongs to
 }
 
 export interface Expense {
@@ -626,11 +700,22 @@ export interface DashboardSummary {
   finance: {
     totalIncome: number; // payments dated within the selected period (all-time if none)
     totalExpenses: number; // operating expenses dated within the selected period
-    netProfit: number; // income − operating expenses (COGS excluded, by design)
+    netProfit: number; // income − operating expenses − referrer cost (COGS excluded, by design)
     cogs: number; // cost of goods sold: frozen ClientPackage.cost for sales in the period
-    grossMargin: number; // income − (operating expenses + COGS)
+    grossMargin: number; // income − (operating expenses + COGS + referrer cost)
+    // Referrer commissions frozen onto patients registered in the period. A real
+    // clinic cost, deducted from net profit (and gross margin) like operating expenses.
+    referrerCost: number;
     unpaidBalance: number; // total outstanding tracked debt in USD (money owed) — current snapshot
     paymentsToday: number;
+    // Payment-method split (USD) behind the collected-money figures, for the
+    // click-to-open breakdown on the "amount collected" stat cards. `incomeByMethod`
+    // mirrors `totalIncome` (windowed by the selected period); `paymentsTodayByMethod`
+    // mirrors `paymentsToday` (today only). Each is redacted alongside its parent
+    // total. Keyed by the RAW method value stored on each payment (an empty-string
+    // key is the blank/"Other" bucket), so a retired method keeps its own label.
+    incomeByMethod: Record<string, number>;
+    paymentsTodayByMethod: Record<string, number>;
   };
   packagesSold: number;
   mostPopularPackage: string;
@@ -652,5 +737,15 @@ export interface DashboardSummary {
     name: string;
     count: number;
     patients: { id: string; name: string }[];
+  }[];
+  // Referrer-cost breakdown behind the "Referrer cost" figure: each referrer that
+  // was owed a commission for patients registered in the period, the total owed
+  // (sum of frozen per-patient fees, USD), and the patients that drove it. Only
+  // referrers with a non-zero owed total appear. `fee` on each patient is the
+  // frozen amount attributed to that specific registration. Admin-only.
+  referrerCostReport: {
+    name: string;
+    total: number;
+    patients: { id: string; name: string; fee: number }[];
   }[];
 }

@@ -8,9 +8,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    if (!(await actingRole(req))) return json({ error: "Not allowed" }, 403);
+    const role = await actingRole(req);
+    if (!role) return json({ error: "Not allowed" }, 403);
     const { id } = await params;
-    const detail = await getClientDetail(id, (await canViewClinical(req)));
+    const detail = await getClientDetail(id, await canViewClinical(req), role);
     if (!detail) return json({ error: "Client not found" }, 404);
     return json(detail);
   } catch (e) {

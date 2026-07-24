@@ -1,20 +1,33 @@
-import { z } from "zod";
-import { updateStaffStatus } from "@/server/repositories/staff";
-import { actingRole } from "@/server/auth";
+import { updateStaff } from "@/server/repositories/staff";
+import { updateStaffSchema } from "@/lib/validation";
+import { actingUser } from "@/server/auth";
+import { ForbiddenError } from "@/server/http";
 import { handleError, json, readJson } from "@/server/http";
-
-const patchSchema = z.object({ status: z.enum(["active", "inactive"]) });
 
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    // Activating/deactivating staff is owner territory — admin only.
-    if ((await actingRole(req)) !== "admin") return json({ error: "Not allowed" }, 403);
+    // Editing staff details (name, email, phone, role, status) is owner
+    // territory — admin only.
+    const me = await actingUser(req);
+    if (me.role !== "admin") return json({ error: "Not allowed" }, 403);
     const { id } = await params;
-    const { status } = await readJson(req, patchSchema);
-    return json(await updateStaffStatus(id, status));
+    const input = await readJson(req, updateStaffSchema);
+
+    // Guardrails against an admin locking themselves out of admin: you can't
+    // demote your own role away from admin, nor deactivate your own account.
+    if (me.id === id) {
+      if (input.role !== undefined && input.role !== "admin") {
+        throw new ForbiddenError("You can't change your own role — ask another admin.");
+      }
+      if (input.status === "inactive") {
+        throw new ForbiddenError("You can't deactivate your own account.");
+      }
+    }
+
+    return json(await updateStaff(id, input));
   } catch (e) {
     return handleError(e);
   }

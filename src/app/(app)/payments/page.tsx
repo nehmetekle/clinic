@@ -8,6 +8,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/ui/StatCard";
+import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
 import { FormRow, Input, MoneyInput, Select } from "@/components/ui/Field";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
@@ -46,6 +47,7 @@ export default function PaymentsPage() {
   const debts = useApi(() => api.listOutstandingDebts());
   const settings = useApi(() => api.getSettings());
   const [open, setOpen] = useState(false);
+  const [showMethods, setShowMethods] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [clientQuery, setClientQuery] = useState("");
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
@@ -67,6 +69,15 @@ export default function PaymentsPage() {
   const sumUsd = (fn: (p: (typeof payments)[number]) => number) =>
     payments.reduce((s, p) => s + toUsdFrozen(fn(p), p.currency, p.usdToLbp, fallbackRate), 0);
   const collectedUSD = sumUsd((p) => p.amountPaid);
+  // Same USD-folded total, split by payment method, for the click-to-open breakdown
+  // on the "Collected" card. Scoped to the viewed day like the total itself. Keyed
+  // by the RAW method stored on each record — never folded — so a retired method
+  // keeps its own label; a blank value collapses to the "" ("Other") bucket.
+  const collectedByMethod = payments.reduce<Record<string, number>>((acc, p) => {
+    const key = (p.method ?? "").trim();
+    acc[key] = (acc[key] ?? 0) + toUsdFrozen(p.amountPaid, p.currency, p.usdToLbp, fallbackRate);
+    return acc;
+  }, {});
   // Money owed = outstanding tracked debts (not a payment-based charged-minus-paid figure).
   const outstandingUSD = (debts.data ?? []).reduce(
     (s, d) => s + toUsdFrozen(d.amount, d.currency, d.usdToLbp, fallbackRate),
@@ -178,8 +189,9 @@ export default function PaymentsPage() {
             <StatCard
               label={isToday ? "Collected today (USD)" : "Collected (USD)"}
               value={formatMoney(collectedUSD, "USD")}
-              hint={formatDate(selectedDate)}
+              hint={`${formatDate(selectedDate)} · by method →`}
               tone="green"
+              onClick={() => setShowMethods(true)}
             />
             {/* Outstanding debt is a live running total across all clients, not
                 tied to the viewed date. Clicking opens the list of debtors. */}
@@ -191,6 +203,14 @@ export default function PaymentsPage() {
               onClick={() => router.push("/clients?filter=owes")}
             />
           </div>
+
+          <PaymentMethodBreakdown
+            open={showMethods}
+            onClose={() => setShowMethods(false)}
+            title={isToday ? "Collected today by method" : "Collected by method"}
+            periodLabel={`on ${formatDate(selectedDate)}`}
+            byMethod={collectedByMethod}
+          />
 
           <Card>
             <CardHeader
@@ -310,7 +330,7 @@ export default function PaymentsPage() {
             </Select>
           </FormRow>
           <p className="sm:col-span-2 text-xs text-slate-400">
-            Records the amount actually collected. Bundles are not sold here — the dietitian starts
+            Records the amount actually collected. Bundles are not sold here — the doctor starts
             one during a consultation, which charges it and grants its sessions. If the client still
             owes a balance, settle it at the visit basket so the remainder is tracked as a debt.
             Receipt number is generated automatically.

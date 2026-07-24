@@ -7,6 +7,10 @@ export const CLINIC = {
   // Fallback exchange rate; the live value is stored in the DB (Setting "usdToLbp")
   // and editable from the Settings page.
   defaultUsdToLbp: 89500,
+  // Fallback USD→EUR rate (1 USD = ? EUR); live value stored in Setting "usdToEur",
+  // editable from the Pricing page. Display/reference only for now — not yet a
+  // transaction currency, so it is not frozen onto any record.
+  defaultUsdToEur: 0.92,
   // The clinic's physical timezone. "Today", the queue, appointment scheduling,
   // every date-based filter/report, AND all date display are anchored to THIS
   // zone — never the runtime's own — so an admin logging in from the US sees the
@@ -16,6 +20,13 @@ export const CLINIC = {
   // automatically by Intl.
   timeZone: process.env.NEXT_PUBLIC_CLINIC_TIMEZONE || "Asia/Beirut",
 };
+
+// Reserved referrer value meaning "no one referred them — the patient came to the
+// clinic organically (walk-in / self-referred)". A real, explicit choice offered
+// in every referrer dropdown, distinct from a blank/unanswered field. It never
+// carries a commission: resolveReferralFee() short-circuits it to no fee even if a
+// referrer literally named "None" exists, so organic patients are never a cost.
+export const NONE_REFERRER = "None";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 

@@ -12,6 +12,10 @@ const patchSchema = z.object({
     "cancelled",
     "no_show",
   ]),
+  // Optional doctor (re)assignment carried alongside the status change — set at
+  // check-in so the confirmed doctor owns the visit. Omitted = leave unchanged;
+  // null = clear. `cuid` validates it's a real id shape, not free text.
+  dietitianId: z.string().cuid().nullable().optional(),
 });
 
 export async function PATCH(
@@ -21,10 +25,11 @@ export async function PATCH(
   try {
     if (!(await actingRole(req))) return json({ error: "Not allowed" }, 403);
     const { id } = await params;
-    const { status } = await readJson(req, patchSchema);
+    const { status, dietitianId } = await readJson(req, patchSchema);
     return json(
       await updateAppointmentStatus(id, status, {
         includeMedicalHistoryStatus: (await canViewClinical(req)),
+        dietitianId,
       }),
     );
   } catch (e) {

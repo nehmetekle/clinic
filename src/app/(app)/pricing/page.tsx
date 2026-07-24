@@ -638,15 +638,15 @@ function ConsultationFeesCard() {
     <Card>
       <CardHeader
         title="Consultation fees"
-        subtitle="Per-dietitian fee auto-added to the visit basket when that dietitian runs the consultation. Charged in USD; set 0 for no fee. The dietitian can remove it from an individual visit."
+        subtitle="Per-doctor fee auto-added to the visit basket when that doctor runs the consultation. Charged in USD; set 0 for no fee. The doctor can remove it from an individual visit."
       />
       <CardBody className="space-y-2">
         {staff.loading ? (
-          <p className="text-sm text-slate-400">Loading dietitians…</p>
+          <p className="text-sm text-slate-400">Loading doctors…</p>
         ) : staff.error ? (
           <p className="text-sm text-rose-600">{staff.error}</p>
         ) : dietitians.length === 0 ? (
-          <p className="text-sm text-slate-400">No dietitians yet.</p>
+          <p className="text-sm text-slate-400">No doctors yet.</p>
         ) : (
           dietitians.map((d) => (
             <ConsultationFeeRow key={d.id} dietitian={d} onChanged={() => staff.refetch()} />
@@ -764,7 +764,7 @@ function ProductsCard() {
     <Card>
       <CardHeader
         title="Products"
-        subtitle="Sellable add-ons the secretary and dietitian can sell during a visit. Cost stays owner-only."
+        subtitle="Sellable add-ons the secretary and doctor can sell during a visit. Cost stays owner-only."
       />
       <CardBody className="space-y-4">
         <div className="space-y-2">
@@ -866,22 +866,27 @@ function ExchangeRateCard() {
   const { toast } = useToast();
   const settings = useApi(() => api.getSettings());
   const [rate, setRate] = useState("");
+  const [eurRate, setEurRate] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (settings.data) setRate(String(settings.data.usdToLbp));
+    if (settings.data) {
+      setRate(String(settings.data.usdToLbp));
+      setEurRate(String(settings.data.usdToEur));
+    }
   }, [settings.data]);
 
   async function saveRate() {
-    const value = parseNumberInput(rate);
-    if (!(value > 0)) {
-      toast("Enter a valid rate greater than 0");
+    const usdToLbp = parseNumberInput(rate);
+    const usdToEur = parseNumberInput(eurRate);
+    if (!(usdToLbp > 0) || !(usdToEur > 0)) {
+      toast("Enter valid rates greater than 0");
       return;
     }
     setSaving(true);
     try {
-      await api.updateSettings({ usdToLbp: value });
-      toast("Exchange rate updated");
+      await api.updateSettings({ usdToLbp, usdToEur });
+      toast("Exchange rates updated");
       settings.refetch();
     } catch (e) {
       toast((e as Error).message);
@@ -892,14 +897,17 @@ function ExchangeRateCard() {
 
   return (
     <Card>
-      <CardHeader title="Exchange rate" subtitle="USD → LBP. Used to convert every total across the app." />
+      <CardHeader title="Exchange rates" subtitle="Used to convert totals (USD → LBP) and as a USD → EUR reference." />
       <CardBody className="grid gap-4">
         <FormRow label="1 USD = ? LBP">
           <MoneyInput value={rate} onValueChange={setRate} placeholder="89500" />
         </FormRow>
+        <FormRow label="1 USD = ? EUR">
+          <MoneyInput value={eurRate} onValueChange={setEurRate} placeholder="0.92" />
+        </FormRow>
         <div className="flex justify-end">
           <Button onClick={saveRate} disabled={saving || settings.loading}>
-            {saving ? "Saving…" : "Save rate"}
+            {saving ? "Saving…" : "Save rates"}
           </Button>
         </div>
       </CardBody>

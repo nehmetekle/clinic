@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
 import { moneyCap } from "@/lib/utils";
-import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE } from "@/lib/config";
+import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
 
 // ---- R5: money-input sanity bounds ----
 // Reject negatives and unreasonably large amounts with a clear error instead of
@@ -275,7 +275,18 @@ export const updateVisitBasketSchema = z
 // as a tracked ClientDebt at the same time.
 export const settleVisitBasketSchema = z
   .object({
-    method: z.enum(PAYMENT_METHOD_VALUES),
+    // How the collected money was tendered, split across one or more methods. One
+    // entry = a single-method settlement. Portions are USD and must sum to the
+    // amount actually collected — that exact-sum check is enforced server-side in
+    // settleVisitBasket (it needs the basket total), mirroring the debt-cap check.
+    splits: z
+      .array(
+        z.object({
+          method: z.enum(PAYMENT_METHOD_VALUES),
+          amount: z.coerce.number().min(0),
+        }),
+      )
+      .default([]),
     notes: z.string().optional(),
     debtAmount: z.coerce.number().min(0).optional(),
     debtReason: z.string().trim().optional(),
@@ -294,6 +305,8 @@ export const settleVisitBasketSchema = z
     // Cap the owed-remainder amount (entered in the basket's currency, USD by
     // default across the app) so an absurd typo is rejected, not accepted. R5.
     refineMoneyCap(v.debtAmount, "USD", ctx, "debtAmount");
+    // Cap each split portion the same way (USD across the app).
+    v.splits.forEach((s, i) => refineMoneyCap(s.amount, "USD", ctx, `splits.${i}.amount`));
   });
 
 // Secretary clears (collects — records a payment) or voids (writes off) a debt.
@@ -338,9 +351,14 @@ export const updateBloodSampleSchema = z
     message: "Nothing to update",
   });
 
-export const updateSettingsSchema = z.object({
-  usdToLbp: z.coerce.number().positive(),
-});
+export const updateSettingsSchema = z
+  .object({
+    usdToLbp: z.coerce.number().positive().optional(),
+    usdToEur: z.coerce.number().positive().optional(),
+  })
+  .refine((v) => v.usdToLbp !== undefined || v.usdToEur !== undefined, {
+    message: "At least one rate must be provided",
+  });
 
 export const createProductSchema = z.object({
   name: z.string().trim().min(1),
@@ -358,15 +376,41 @@ export const updateProductSchema = z.object({
   active: z.boolean().optional(),
 });
 
-export const createReferrerSchema = z.object({
-  name: z.string().trim().min(1),
-  active: z.boolean().optional(),
-});
+// "None" is a reserved, built-in dropdown choice meaning "came organically" — it's
+// always offered automatically, so an admin can't add a list entry with that name
+// (a duplicate that would also imply a fee could be attached to organic patients).
+const reservedReferrerName = (name: string | undefined, ctx: z.RefinementCtx) => {
+  if (name && name.trim().toLowerCase() === NONE_REFERRER.toLowerCase()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["name"],
+      message: `"${NONE_REFERRER}" is a built-in option (came organically) — pick a different name.`,
+    });
+  }
+};
 
-export const updateReferrerSchema = z.object({
-  name: z.string().trim().min(1).optional(),
-  active: z.boolean().optional(),
-});
+export const createReferrerSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    active: z.boolean().optional(),
+    // Per-referral commission in USD. 0 = no fee. Capped like any money input.
+    fee: z.coerce.number().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.fee, "USD", ctx, "fee");
+    reservedReferrerName(v.name, ctx);
+  });
+
+export const updateReferrerSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    active: z.boolean().optional(),
+    fee: z.coerce.number().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.fee, "USD", ctx, "fee");
+    reservedReferrerName(v.name, ctx);
+  });
 
 export const updateServicePriceSchema = z.object({
   price: z.coerce.number().min(0).optional(),
@@ -497,6 +541,23 @@ export const createStaffSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+// Edit an existing staff member's details. Every field is optional so callers
+// can send only what changed (the status-only toggle still goes through here).
+// Password is deliberately absent — it has its own admin-reset flow (which also
+// revokes sessions). At least one field must be present so an empty PATCH is a
+// no-op error rather than a silent success.
+export const updateStaffSchema = z
+  .object({
+    fullName: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    phone: z.string().optional(),
+    role: z.enum(["secretary", "dietitian", "admin"]).optional(),
+    status: z.enum(["active", "inactive"]).optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+    message: "No changes provided",
+  });
+
 // A dietitian's personal recommended-supplement options. Trimmed, de-duplicated
 // and capped so the list stays sane; free-text so custom supplements are allowed.
 export const updateStaffSupplementsSchema = z.object({
@@ -525,6 +586,7 @@ export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
 export type UpdateExpenseInput = z.infer<typeof updateExpenseSchema>;
 export type CreateSessionPlanInput = z.infer<typeof createSessionPlanSchema>;
 export type CreateStaffInput = z.infer<typeof createStaffSchema>;
+export type UpdateStaffInput = z.infer<typeof updateStaffSchema>;
 export type UpdateStaffSupplementsInput = z.infer<typeof updateStaffSupplementsSchema>;
 export type UpdateStaffConsultationFeeInput = z.infer<typeof updateStaffConsultationFeeSchema>;
 export type CreateProductInput = z.infer<typeof createProductSchema>;

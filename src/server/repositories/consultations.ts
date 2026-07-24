@@ -844,7 +844,7 @@ async function logConsultationFeeWaiveTx(
     userName: actor.name,
     action: "Consultation fee waived",
     entityType: "Consultation",
-    entityLabel: `${client} (client) · ${dietitian} (dietitian) waived the consultation fee — Visit #${c.visitNumber}, ${auditMoney(c.consultationFee ?? 0, "USD")} not charged`,
+    entityLabel: `${client} (client) · ${dietitian} (doctor) waived the consultation fee — Visit #${c.visitNumber}, ${auditMoney(c.consultationFee ?? 0, "USD")} not charged`,
   });
 }
 

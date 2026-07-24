@@ -69,3 +69,12 @@ export async function canTrackSamples(req: Request): Promise<boolean> {
   const role = await actingRole(req);
   return role === "secretary" || role === "admin";
 }
+
+/** Attaching a lab-result file to a blood test can be done by anyone who touches
+ * a sample: the secretary receives the result from the lab, the doctor ordered it
+ * and may scan it in, the admin oversees. Reading/deleting the file content is the
+ * narrower clinical right — that's `canViewClinical` (doctor/admin only). */
+export async function canAttachSampleFile(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "secretary" || role === "dietitian" || role === "admin";
+}

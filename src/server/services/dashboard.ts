@@ -17,7 +17,7 @@ import type {
 const STATUS_META: Record<AppointmentStatus, { name: string; color: string }> = {
   completed: { name: "Completed", color: "#16a34a" },
   checked_in: { name: "Checked-in", color: "#2563eb" },
-  with_dietitian: { name: "With dietitian", color: "#7c3aed" },
+  with_dietitian: { name: "With doctor", color: "#7c3aed" },
   scheduled: { name: "Scheduled", color: "#64748b" },
   no_show: { name: "No-show", color: "#9f1239" },
   cancelled: { name: "Cancelled", color: "#e11d48" },
@@ -46,7 +46,7 @@ export async function getDashboardSummaryForRole(
   const today = todayIso();
   const monthStart = `${today.slice(0, 7)}-01`;
 
-  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, soldPackages, usdToLbp] =
+  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralClients, soldPackages, usdToLbp] =
     await Promise.all([
       listClients(),
       listPayments(),
@@ -57,6 +57,14 @@ export async function getDashboardSummaryForRole(
         includeMedicalHistoryStatus: opts.includeMedicalHistoryStatus,
       }),
       db.clientDebt.findMany({ where: { status: "outstanding" } }),
+      // Referrer-cost source: the frozen per-patient commission (USD). Read straight
+      // from the DB (the client mapper strips `referralFee` — it's an admin-only
+      // cost), windowed by registration date since the fee is a one-time cost
+      // incurred when the patient is attributed to a referrer at registration.
+      db.client.findMany({
+        where: { referralFee: { not: null } },
+        select: { id: true, firstName: true, lastName: true, referralFee: true, referralSource: true, registeredAt: true },
+      }),
       // COGS source: frozen ClientPackage.cost snapshots. Read straight from the
       // DB (the client mapper strips `cost`); `startDate` is the sale date used to
       // window this flow figure. ClientPackage carries no usdToLbp snapshot, so
@@ -101,22 +109,48 @@ export async function getDashboardSummaryForRole(
   const paymentsToday = payments
     .filter((p) => p.date === today)
     .reduce((s, p) => s + conv(p.amountPaid, p.currency, p.usdToLbp), 0);
+  // Payment-method splits (USD) behind the collected-money figures. Same frozen-rate
+  // conversion as the totals they mirror, so a method row always sums to its parent.
+  // Keyed by the RAW method value stored on each record (trimmed) — NEVER folded
+  // into another method — so a method later removed from the offered choices still
+  // reports under its own original value. Blank/garbled values collapse to the "" key
+  // (rendered as "Other"); everything non-empty is preserved verbatim.
+  const sumByMethod = (rows: typeof payments) => {
+    const acc: Record<string, number> = {};
+    for (const p of rows) {
+      const key = (p.method ?? "").trim();
+      acc[key] = (acc[key] ?? 0) + conv(p.amountPaid, p.currency, p.usdToLbp);
+    }
+    return acc;
+  };
+  const incomeByMethod = sumByMethod(payments.filter((p) => inRange(p.date)));
+  const paymentsTodayByMethod = sumByMethod(payments.filter((p) => p.date === today));
   // Cost of goods sold: frozen package cost for sales whose startDate falls in the
   // window (same flow-figure treatment as income/expenses). ClientPackage has no
   // rate snapshot, so conv() uses the live rate for LBP costs.
   const cogs = soldPackages
     .filter((cp) => inRange(clinicDay(cp.startDate)))
     .reduce((s, cp) => s + conv(cp.cost, cp.currency, 0), 0);
+  // Referrer cost: frozen per-patient commissions for patients registered in the
+  // window (a real clinic cost, in USD). referralFee is always USD, so no rate
+  // conversion is needed. Dated by registration since the fee is incurred once,
+  // when the referrer is attributed to the patient at registration/check-in.
+  const referrerCost = referralClients
+    .filter((c) => inRange(clinicDay(c.registeredAt)))
+    .reduce((s, c) => s + (c.referralFee ?? 0), 0);
   const finance = {
     totalIncome,
     totalExpenses,
-    // Net profit is deliberately income − operating expenses only (COGS excluded);
-    // gross margin is the separate figure that folds COGS in.
-    netProfit: totalIncome - totalExpenses,
+    // Net profit is income − operating expenses − referrer cost (COGS excluded, by
+    // design); gross margin is the separate figure that also folds COGS in.
+    netProfit: totalIncome - totalExpenses - referrerCost,
     cogs,
-    grossMargin: totalIncome - (totalExpenses + cogs),
+    grossMargin: totalIncome - (totalExpenses + cogs + referrerCost),
+    referrerCost,
     unpaidBalance,
     paymentsToday,
+    incomeByMethod,
+    paymentsTodayByMethod,
   };
 
   // Packages
@@ -246,6 +280,29 @@ export async function getDashboardSummaryForRole(
       return b.count - a.count || a.name.localeCompare(b.name);
     });
 
+  // Referrer-cost breakdown — the same registration-windowed patients as
+  // `referrerCost`, grouped by the FROZEN referrer name they were attributed to,
+  // with the total commission owed and the patients behind it. Only referrers who
+  // are actually owed money (referralFee frozen) appear here; the drill-down opens
+  // from the "Referrer cost" figure on the dashboard/reports.
+  const costGroups = new Map<string, { id: string; name: string; fee: number }[]>();
+  for (const c of referralClients) {
+    if (!inRange(clinicDay(c.registeredAt))) continue;
+    const fee = c.referralFee ?? 0;
+    if (fee <= 0) continue;
+    const name = c.referralSource?.trim() || NOT_SPECIFIED;
+    const roster = costGroups.get(name) ?? [];
+    roster.push({ id: c.id, name: `${c.firstName} ${c.lastName}`, fee });
+    costGroups.set(name, roster);
+  }
+  const referrerCostReport = [...costGroups.entries()]
+    .map(([name, patients]) => ({
+      name,
+      total: patients.reduce((s, p) => s + p.fee, 0),
+      patients: patients.sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+
   const recentPayments = payments.slice(0, 5);
 
   const summary: DashboardSummary = {
@@ -263,6 +320,7 @@ export async function getDashboardSummaryForRole(
     appointmentBreakdown,
     unpaidClients,
     referrerReport,
+    referrerCostReport,
   };
 
   return redactForRole(summary, opts.role);
@@ -287,8 +345,14 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
       netProfit: 0,
       cogs: 0,
       grossMargin: 0,
+      referrerCost: 0,
       unpaidBalance: 0,
       paymentsToday: canHandleMoney ? summary.finance.paymentsToday : 0,
+      // Method splits follow their parent totals: totalIncome is admin-only (zeroed
+      // above), so incomeByMethod is always emptied here; paymentsToday is kept for
+      // whoever handles money, so its split rides along.
+      incomeByMethod: {},
+      paymentsTodayByMethod: canHandleMoney ? summary.finance.paymentsTodayByMethod : {},
     },
     recentPayments: canHandleMoney ? summary.recentPayments : [],
     packagesSold: 0,
@@ -298,6 +362,7 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
     appointmentBreakdown: [],
     staffActivity: [],
     referrerReport: [],
+    referrerCostReport: [],
     unpaidClients: [],
   };
 }

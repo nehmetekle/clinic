@@ -3,6 +3,8 @@ import type {
   AppointmentStatus,
   AuditEntry,
   BloodSample,
+  BloodSampleFile,
+  ClientBloodFile,
   Client,
   ClientDebt,
   ClientDetail,
@@ -37,6 +39,7 @@ import type {
   CreateServicePriceInput,
   CreateSessionPlanInput,
   CreateStaffInput,
+  UpdateStaffInput,
   MedicalHistoryInput,
   SettleVisitBasketInput,
   UpdateBloodSampleInput,
@@ -120,6 +123,22 @@ const postJson = <T>(url: string, body: unknown) => sendJson<T>("POST", url, bod
 const patchJson = <T>(url: string, body: unknown) => sendJson<T>("PATCH", url, body);
 const putJson = <T>(url: string, body: unknown) => sendJson<T>("PUT", url, body);
 
+/**
+ * Multipart POST for a single file upload. The browser sets the multipart
+ * Content-Type (with boundary) itself, so we only attach the CSRF marker header —
+ * setting Content-Type by hand would break the boundary.
+ */
+async function postForm<T>(url: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(url, { method: "POST", headers: CSRF_HEADER, body });
+  if (!res.ok) {
+    const err: ApiErrorBody | null = await res.json().catch(() => null);
+    throw new Error(apiErrorMessage(err, res.status));
+  }
+  return res.json();
+}
+
 async function deleteJson(url: string): Promise<void> {
   const res = await fetch(url, { method: "DELETE", headers: CSRF_HEADER });
   if (!res.ok) {
@@ -178,6 +197,10 @@ export const api = {
     postJson<Appointment>("/api/appointments", body),
   setAppointmentStatus: (id: string, status: AppointmentStatus) =>
     patchJson<Appointment>(`/api/appointments/${id}`, { status }),
+  // Check-in with the confirmed doctor: flips status to checked_in and binds the
+  // visit to that doctor in one write, so the patient lands in only their queue.
+  checkInAppointment: (id: string, dietitianId: string | null) =>
+    patchJson<Appointment>(`/api/appointments/${id}`, { status: "checked_in", dietitianId }),
 
   listConsultations: (filter?: {
     clientId?: string;
@@ -224,6 +247,19 @@ export const api = {
   updateBloodSample: (id: string, body: UpdateBloodSampleInput) =>
     patchJson<BloodSample>(`/api/blood-samples/${id}`, body),
 
+  // Files attached to a specific blood test (lab-result PDFs / scans).
+  listBloodSampleFiles: (sampleId: string) =>
+    getJson<BloodSampleFile[]>(`/api/blood-samples/${sampleId}/files`),
+  uploadBloodSampleFile: (sampleId: string, file: File) =>
+    postForm<BloodSampleFile>(`/api/blood-samples/${sampleId}/files`, file),
+  deleteBloodSampleFile: (fileId: string) => deleteJson(`/api/blood-sample-files/${fileId}`),
+  // Direct URL for an <a href> download (GET rides the session cookie; no CSRF
+  // header needed on GET). Content is served doctor/admin-only server-side.
+  bloodSampleFileUrl: (fileId: string) => `/api/blood-sample-files/${fileId}`,
+  // Every blood-test file for a patient (client profile Files tab).
+  listClientBloodFiles: (clientId: string) =>
+    getJson<ClientBloodFile[]>(`/api/clients/${clientId}/blood-files`),
+
   listExpenses: () => getJson<Expense[]>("/api/expenses"),
   createExpense: (body: CreateExpenseInput) => postJson<Expense>("/api/expenses", body),
   updateExpense: (id: string, body: UpdateExpenseInput) =>
@@ -232,6 +268,8 @@ export const api = {
 
   listStaff: () => getJson<StaffUser[]>("/api/staff"),
   createStaff: (body: CreateStaffInput) => postJson<StaffUser>("/api/staff", body),
+  updateStaff: (id: string, body: UpdateStaffInput) =>
+    patchJson<StaffUser>(`/api/staff/${id}`, body),
   setStaffStatus: (id: string, status: "active" | "inactive") =>
     patchJson<StaffUser>(`/api/staff/${id}`, { status }),
   updateStaffSupplements: (id: string, supplements: string[]) =>
@@ -257,7 +295,8 @@ export const api = {
   },
 
   getSettings: () => getJson<ClinicSettings>("/api/settings"),
-  updateSettings: (body: { usdToLbp: number }) => putJson<ClinicSettings>("/api/settings", body),
+  updateSettings: (body: { usdToLbp?: number; usdToEur?: number }) =>
+    putJson<ClinicSettings>("/api/settings", body),
 
   listProducts: () => getJson<Product[]>("/api/products"),
   createProduct: (body: CreateProductInput) => postJson<Product>("/api/products", body),

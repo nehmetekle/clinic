@@ -22,6 +22,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
+import { BloodSampleFiles } from "@/components/BloodSampleFiles";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
@@ -349,6 +350,8 @@ function SampleCard({
           )}
         </div>
       )}
+
+      <BloodSampleFiles sampleId={sample.id} status={sample.status} className="mt-3" />
     </div>
   );
 }
@@ -628,7 +631,7 @@ export default function BloodSamplesPage() {
                 <TestTubes className="h-8 w-8 text-slate-300" />
                 <p className="text-sm font-medium text-slate-600">No blood samples yet</p>
                 <p className="max-w-md text-xs text-slate-400">
-                  Entries appear here automatically when a dietitian orders a blood collection
+                  Entries appear here automatically when a doctor orders a blood collection
                   during a consultation. Then you can log the courier hand-off and results.
                 </p>
                 <Button
@@ -644,7 +647,7 @@ export default function BloodSamplesPage() {
           )}
 
           <p className="mt-4 text-xs text-slate-400">
-            Records are created automatically when a dietitian orders blood work. The courier
+            Records are created automatically when a doctor orders blood work. The courier
             picks up once a day — “Awaiting send” and “At lab” always show every outstanding
             sample; the date arrows scope the “Results received” column. Click any time to adjust
             it. All changes save instantly.

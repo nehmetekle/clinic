@@ -1,8 +1,3 @@
-// NutriClinic data model.
-// Postgres (Neon in production; any Postgres locally for dev — see .env.example).
-// Enum-like columns are stored as strings and validated in the app layer
-// (src/lib/types.ts unions + zod) so the schema stays portable across engines.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,366 +9,283 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  fullName     String
-  email        String    @unique
-  username     String?   @unique
-  passwordHash String    @default("")
-  role         String // admin | dietitian | secretary
-  phone        String?
-  status       String    @default("active") // active | inactive
-  // Login lockout: incremented on each wrong password, reset on success.
-  // lockedUntil set once the threshold is hit; further attempts short-circuit
-  // (rejected before even checking the password) until it passes.
-  failedLoginAttempts Int       @default(0)
+  id                  String             @id @default(cuid())
+  fullName            String
+  email               String             @unique
+  username            String?            @unique
+  passwordHash        String             @default("")
+  role                String
+  phone               String?
+  status              String             @default("active")
+  failedLoginAttempts Int                @default(0)
   lockedUntil         DateTime?
-  // TOTP two-factor auth (optional, admin-focused per docs/01-product-spec.md
-  // §3.1). totpSecret is set (unconfirmed) on setup and only takes effect once
-  // totpEnabled flips true after the user proves they scanned it correctly.
-  // totpBackupCodes is a JSON array of sha256 hashes (one-time use, consumed
-  // on use) — never the plaintext codes, which are shown to the user once.
-  totpSecret       String?
-  totpEnabled      Boolean  @default(false)
-  totpBackupCodes  String   @default("[]")
-  // A dietitian's personal "Recommended supplements" options, shown/edited while
-  // consulting. JSON string[]; empty means "not customized" → app falls back to
-  // the standard SUPPLEMENTS list. Each dietitian's list is independent.
-  supplements  String    @default("[]")
-  // Admin-configured consultation fee charged when THIS dietitian runs a visit.
-  // A price (USD), not a clinic cost — auto-added to the visit basket and frozen
-  // onto the consultation at creation. null = no fee set (nothing auto-added).
-  consultationFee Float?
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  assignedClients Client[]       @relation("AssignedDietitian")
-  createdClients  Client[]       @relation("CreatedByUser")
-  appointments    Appointment[]
-  consultations   Consultation[]
-  payments        Payment[]
-  expenses        Expense[]
-  auditLogs       AuditLog[]
-  visitBaskets    VisitBasket[]
-  bloodSamples    BloodSample[]
-  sessions        Session[]
-  pendingTwoFactors PendingTwoFactor[]
+  supplements         String             @default("[]")
+  consultationFee     Float?
+  lastLoginAt         DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  totpBackupCodes     String             @default("[]")
+  totpEnabled         Boolean            @default(false)
+  totpSecret          String?
+  appointments        Appointment[]
+  auditLogs           AuditLog[]
+  bloodSamples        BloodSample[]
+  bloodSampleFiles    BloodSampleFile[]
+  assignedClients     Client[]           @relation("AssignedDietitian")
+  createdClients      Client[]           @relation("CreatedByUser")
+  consultations       Consultation[]
+  expenses            Expense[]
+  payments            Payment[]
+  pendingTwoFactors   PendingTwoFactor[]
+  sessions            Session[]
+  visitBaskets        VisitBasket[]
 }
 
-// A password check that passed but is waiting on a TOTP/backup code — created
-// after step 1 of login for a user with totpEnabled, consumed (deleted) by a
-// successful verify-2fa call. Mirrors Session's security pattern: only the
-// SHA-256 hash of the token is stored. Short-lived and attempt-capped
-// (`attempts`) so it can't be hammered indefinitely within its window.
 model PendingTwoFactor {
   id        String   @id @default(cuid())
   tokenHash String   @unique
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   attempts  Int      @default(0)
   expiresAt DateTime
   createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
 }
 
-// A logged-in session, created at login and looked up on every authenticated
-// request. The raw token lives only in the client's httpOnly cookie — the DB
-// stores sha256(token), so a DB leak alone never yields a usable session.
-// revokedAt is set on logout (and can be set on force-revoke, e.g. an admin
-// deactivating a user) so a session can be killed server-side, not just by
-// clearing the client's cookie.
 model Session {
   id         String    @id @default(cuid())
   tokenHash  String    @unique
   userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt  DateTime  @default(now())
-  lastUsedAt DateTime  @default(now()) // sliding-expiration anchor for the inactivity timeout
-  expiresAt  DateTime // absolute cap, independent of activity
+  lastUsedAt DateTime  @default(now())
+  expiresAt  DateTime
   userAgent  String?
   ip         String?
   revokedAt  DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
 }
 
 model Client {
-  id               String    @id @default(cuid())
-  firstName        String
-  lastName         String
-  phone            String
-  email            String?
-  dateOfBirth      DateTime?
-  gender           String? // male | female | other | unspecified
-  address          String?
-  emergencyContact String?
-  medicalNotes     String?
-  allergies        String?
-  passportNumber   String? // captured at check-in
-  country          String? // captured at check-in
-  maritalStatus    String? // single | married | divorced | widowed | other
-  referralSource   String? // the external doctor who referred the patient to us (not the clinic dietitian)
-  firstTimePatient Boolean   @default(false) // first-ever visit to the clinic
-  intakeComplete   Boolean   @default(true) // false for quick phone bookings until check-in fills details
-  registeredAt     DateTime  @default(now())
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-
+  id                  String          @id @default(cuid())
+  firstName           String
+  lastName            String
+  phone               String
+  email               String?
+  dateOfBirth         DateTime?
+  gender              String?
+  address             String?
+  emergencyContact    String?
+  medicalNotes        String?
+  allergies           String?
+  passportNumber      String?
+  country             String?
+  maritalStatus       String?
+  referralSource      String?
+  firstTimePatient    Boolean         @default(false)
+  intakeComplete      Boolean         @default(true)
+  registeredAt        DateTime        @default(now())
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
   assignedDietitianId String?
-  assignedDietitian   User?   @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
   createdById         String?
-  createdBy           User?   @relation("CreatedByUser", fields: [createdById], references: [id])
-
-  packages       ClientPackage[]
-  appointments   Appointment[]
-  consultations  Consultation[]
-  payments       Payment[]
-  medicalHistory MedicalHistory?
-  visitBaskets   VisitBasket[]
-  bloodSamples   BloodSample[]
-  sessionPlans   SessionPlan[]
-  debts          ClientDebt[]
+  referralFee         Float?
+  appointments        Appointment[]
+  bloodSamples        BloodSample[]
+  assignedDietitian   User?           @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
+  createdBy           User?           @relation("CreatedByUser", fields: [createdById], references: [id])
+  debts               ClientDebt[]
+  packages            ClientPackage[]
+  consultations       Consultation[]
+  medicalHistory      MedicalHistory?
+  payments            Payment[]
+  sessionPlans        SessionPlan[]
+  visitBaskets        VisitBasket[]
 }
 
-// Pay-as-you-go session tracking for clients NOT on a fixed-price Package. This
-// is a SEPARATE system from Package/ClientPackage: a package is a prepaid lump
-// for a fixed number of sessions, whereas a session plan tracks running counts so
-// what's owed can vary visit to visit. Never merge the two paths.
-//   sessionsUsed  — cumulative sessions delivered (bumped when a visit is logged)
-//   sessionsPaid  — cumulative sessions paid for (bumped only when a basket settles)
-// Derived: credit = max(0, paid - used) prepaid-unused; left-to-attend = needed - used.
 model SessionPlan {
-  id             String   @id @default(cuid())
+  id             String                  @id @default(cuid())
   clientId       String
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  machine        String? // treatment this plan's sessions apply to (display/label); null = generic
-  unitPrice      Float // per-session price snapshot (frozen at plan creation)
-  currency       String   @default("USD") // USD | LBP
-  usdToLbp       Float    @default(0) // exchange-rate snapshot (see Payment.usdToLbp)
-  sessionsNeeded Int // total sessions in the plan (e.g. 12)
-  sessionsUsed   Int      @default(0)
-  sessionsPaid   Int      @default(0)
-  status         String   @default("active") // active | completed | cancelled
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  treatments  ConsultationTreatment[]
-  basketItems VisitBasketItem[]
+  machine        String?
+  unitPrice      Float
+  currency       String                  @default("USD")
+  usdToLbp       Float                   @default(0)
+  sessionsNeeded Int
+  sessionsUsed   Int                     @default(0)
+  sessionsPaid   Int                     @default(0)
+  status         String                  @default("active")
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  treatments     ConsultationTreatment[]
+  client         Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  basketItems    VisitBasketItem[]
 }
 
-// One permanent intake record per client (1:1). Filled by the dietitian, usually
-// at the first visit, and edited in place — never duplicated.
 model MedicalHistory {
-  id       String @id @default(cuid())
-  clientId String @unique
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
-
-  // 1. Medical history — multi-select stored as a JSON string[] (app owns values).
-  conditions        String  @default("[]")
-  intoleranceDetail String?
-  conditionsOther   String?
-
-  // 2. Allergies (Boolean? — null means "not answered").
-  hasAllergies    Boolean?
-  allergiesDetail String?
-
-  // 3. Medications & supplements
-  takingMedications Boolean?
-  medicationsDetail String?
-  takingSupplements Boolean?
-  supplementsDetail String?
-  hadSurgeries      Boolean?
-  surgeriesDetail   String?
-
-  // 4. Family medical history — multi-select stored as a JSON string[].
-  familyHistory      String  @default("[]")
+  id                 String   @id @default(cuid())
+  clientId           String   @unique
+  conditions         String   @default("[]")
+  intoleranceDetail  String?
+  conditionsOther    String?
+  hasAllergies       Boolean?
+  allergiesDetail    String?
+  takingMedications  Boolean?
+  medicationsDetail  String?
+  takingSupplements  Boolean?
+  supplementsDetail  String?
+  hadSurgeries       Boolean?
+  surgeriesDetail    String?
+  familyHistory      String   @default("[]")
   familyCancerDetail String?
   familyOther        String?
-
-  // 5. Lifestyle
-  drinksWater       Boolean?
-  waterGlasses      String?
-  drinksCaffeine    Boolean?
-  drinksAlcohol     Boolean?
-  alcoholFrequency  String?
-  smokes            Boolean?
-  cigarettesPerDay  String?
-  exercises         Boolean?
-  exerciseType      String?
-  exerciseFrequency String?
-  sleepHours        String?
-  wakesRested       Boolean?
-  feelsStressed     Boolean?
-  followsDiet       Boolean?
-  snacksFrequently  Boolean?
-  feelsFatigued     Boolean?
-  moodSwings        Boolean?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  drinksWater        Boolean?
+  waterGlasses       String?
+  drinksCaffeine     Boolean?
+  drinksAlcohol      Boolean?
+  alcoholFrequency   String?
+  smokes             Boolean?
+  cigarettesPerDay   String?
+  exercises          Boolean?
+  exerciseType       String?
+  exerciseFrequency  String?
+  sleepHours         String?
+  wakesRested        Boolean?
+  feelsStressed      Boolean?
+  followsDiet        Boolean?
+  snacksFrequently   Boolean?
+  feelsFatigued      Boolean?
+  moodSwings         Boolean?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
 }
 
 model Package {
-  id              String   @id @default(cuid())
+  id              String          @id @default(cuid())
   name            String
   description     String?
   price           Float
-  cost            Float    @default(0) // clinic's own cost (admin-only) — price − cost = margin
-  currency        String   @default("USD") // USD | LBP
+  cost            Float           @default(0)
+  currency        String          @default("USD")
   sessions        Int
-  discountPercent Float    @default(0)
-  status          String   @default("active") // active | inactive
-  // Treatment type (ServicePrice key, e.g. "EMS") this bundle belongs to. null =
-  // general/nutrition package, offered for any treatment; a value scopes the
-  // bundle to that machine in the consultation's "Start a new bundle" list.
+  discountPercent Float           @default(0)
+  status          String          @default("active")
   machine         String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  clientPackages ClientPackage[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  clientPackages  ClientPackage[]
 }
 
 model ClientPackage {
-  id             String    @id @default(cuid())
-  clientId       String
-  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  packageId      String?
-  package        Package?  @relation(fields: [packageId], references: [id])
-  packageName    String // snapshot at purchase
-  price          Float // snapshot
-  // Clinic's own cost snapshot at purchase (price − cost = margin). Frozen at the
-  // sale so profit stays correct if the catalog cost later changes. Populated on
-  // new sales only; legacy rows stay 0 (never backfilled), same as usdToLbp.
-  cost           Float     @default(0)
-  currency       String    @default("USD") // USD | LBP
-  totalSessions  Int
-  usedSessions   Int       @default(0)
-  machine        String? // treatment/machine this package's sessions apply to (EMS, PBK, …); null = nutrition/generic
-  startDate      DateTime  @default(now())
-  status         String    @default("active") // active | completed | cancelled
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-
-  treatments ConsultationTreatment[]
+  id            String                  @id @default(cuid())
+  clientId      String
+  packageId     String?
+  packageName   String
+  price         Float
+  cost          Float                   @default(0)
+  currency      String                  @default("USD")
+  totalSessions Int
+  usedSessions  Int                     @default(0)
+  machine       String?
+  startDate     DateTime                @default(now())
+  status        String                  @default("active")
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  client        Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  package       Package?                @relation(fields: [packageId], references: [id])
+  treatments    ConsultationTreatment[]
 }
 
 model Appointment {
   id          String    @id @default(cuid())
   clientId    String
-  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dietitianId String?
-  dietitian   User?     @relation(fields: [dietitianId], references: [id])
   date        DateTime
   time        String
   status      String    @default("scheduled")
   visitType   String    @default("follow_up")
   notes       String?
-  // When this appointment was finished (status → completed, on visit close). The
-  // queue's "Done" list keys off this so a visit closed today always shows today,
-  // even when the appointment was originally scheduled for a different day.
   completedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dietitian   User?     @relation(fields: [dietitianId], references: [id])
 }
 
 model Consultation {
-  id                  String         @id @default(cuid())
-  clientId            String
-  client              Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitianId         String?
-  dietitian           User?          @relation(fields: [dietitianId], references: [id])
-  date                DateTime       @default(now())
-  visitNumber         Int
-  // A consultation is an evolving draft (open) the dietitian can keep editing and
-  // settle in installments, until they explicitly close it (final, no more edits).
-  status              String         @default("open") // open | closed
-  closedAt            DateTime?
-  weightKg            Float?
-  heightCm            Float?
-  bmi                 Float?
-  waistCm             Float?
-  hipsCm              Float?
-  bodyFatPercent      Float?
-  muscleMassKg        Float?
-  goalWeightKg        Float?
-  clientGoals         String?
-  notes               String?
-  recommendations     String?
-  followUpPlan        String?
-
-  // ---- Visit services (dietitian-entered, all optional) ----
-  bloodCollection       Boolean @default(false)
-  bloodTests            String? // JSON array of selected test names (incl. custom "Other")
-  bloodTestCharges      String? // JSON array of selected blood test price snapshots
-  nurseRequired         Boolean @default(false)
-  visitDiscountType     String? // percent | amount
-  visitDiscountValue    Float   @default(0)
-  visitDiscountReason   String? // why the discount was given (required when a discount is applied)
-  visitDiscountCurrency String? // USD | LBP, used when visitDiscountType = amount
-  visitServiceTotals    String? // JSON array of basket total snapshots by currency
-
-  // Per-dietitian consultation fee (USD), frozen at creation from the visit
-  // dietitian's configured fee (User.consultationFee) — a snapshot so a later
-  // admin change never re-prices a saved visit, same freeze-at-sale rule as
-  // treatment/product/blood-test lines. null = no fee applied when the visit was
-  // created. `consultationFeeWaived` = the dietitian removed it from THIS visit's
-  // basket (e.g. waived for the visit); the admin's configured fee is untouched.
+  id                    String                  @id @default(cuid())
+  clientId              String
+  dietitianId           String?
+  date                  DateTime                @default(now())
+  visitNumber           Int
+  status                String                  @default("open")
+  closedAt              DateTime?
+  weightKg              Float?
+  heightCm              Float?
+  bmi                   Float?
+  waistCm               Float?
+  hipsCm                Float?
+  bodyFatPercent        Float?
+  muscleMassKg          Float?
+  goalWeightKg          Float?
+  clientGoals           String?
+  notes                 String?
+  recommendations       String?
+  followUpPlan          String?
+  bloodCollection       Boolean                 @default(false)
+  bloodTests            String?
+  bloodTestCharges      String?
+  nurseRequired         Boolean                 @default(false)
+  visitDiscountType     String?
+  visitDiscountValue    Float                   @default(0)
+  visitDiscountReason   String?
+  visitDiscountCurrency String?
+  visitServiceTotals    String?
   consultationFee       Float?
-  consultationFeeWaived Boolean @default(false)
-
-  treatments   ConsultationTreatment[]
-  products     ConsultationProduct[]
-  // Many billable rounds over the visit's life: several paid baskets (installments)
-  // plus at most one pending delta of what's newly added and not yet paid.
-  visitBaskets VisitBasket[]
-  bloodSample  BloodSample?
-  // Money left owing when the visit was closed without full settlement — carried
-  // as a tracked debt rather than lost (see ClientDebt).
-  debts         ClientDebt[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  consultationFeeWaived Boolean                 @default(false)
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  bloodSample           BloodSample?
+  debts                 ClientDebt[]
+  client                Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dietitian             User?                   @relation(fields: [dietitianId], references: [id])
+  products              ConsultationProduct[]
+  treatments            ConsultationTreatment[]
+  visitBaskets          VisitBasket[]
 }
 
-// One machine/treatment applied during a visit. Multiple per consultation.
 model ConsultationTreatment {
   id              String         @id @default(cuid())
   consultationId  String
-  consultation    Consultation   @relation(fields: [consultationId], references: [id], onDelete: Cascade)
-  machine         String // EMS | PBK | Red Light Therapy | Presso Therapy | Other
-  machineOther    String? // custom machine name when machine = "Other"
-  bodyParts       String         @default("[]") // JSON array of body parts
+  machine         String
+  machineOther    String?
+  bodyParts       String         @default("[]")
   sessionsNeeded  Int            @default(1)
-  sessionsUsed    Int            @default(0) // clinical count logged this visit
-  // How many of sessionsUsed were covered by the linked package/plan balance (vs
-  // charged). Persisted so package usage reconciles idempotently on edit.
+  sessionsUsed    Int            @default(0)
   coveredSessions Int            @default(0)
-  price           Float          @default(0) // snapshot from admin-managed service prices
-  currency        String         @default("USD") // USD | LBP
-  clientPackageId String? // package the sessions are drawn from; null = single paid session
-  clientPackage   ClientPackage? @relation(fields: [clientPackageId], references: [id])
-  // Pay-as-you-go session plan the sessions draw from (separate from packages;
-  // mutually exclusive with clientPackageId). null = not a session-plan treatment.
+  price           Float          @default(0)
+  currency        String         @default("USD")
+  clientPackageId String?
   sessionPlanId   String?
-  sessionPlan     SessionPlan?   @relation(fields: [sessionPlanId], references: [id])
   notes           String?
   createdAt       DateTime       @default(now())
+  clientPackage   ClientPackage? @relation(fields: [clientPackageId], references: [id])
+  consultation    Consultation   @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  sessionPlan     SessionPlan?   @relation(fields: [sessionPlanId], references: [id])
 }
 
-// Admin-managed prices for visit services shown in consultations.
 model ServicePrice {
   id        String   @id @default(cuid())
-  kind      String // blood_test | treatment
+  kind      String
   key       String
   name      String
   price     Float    @default(0)
-  cost      Float    @default(0) // clinic's own cost (admin-only) — price − cost = margin
-  currency  String   @default("USD") // USD | LBP
+  cost      Float    @default(0)
+  currency  String   @default("USD")
   active    Boolean  @default(true)
-  // Treatment-only body-part presets (JSON string[]). null = free-text entry,
-  // "[]" = no body-part field, ["Abdomen",…] = fixed checklist. Unused for blood tests.
   bodyParts String?
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -381,241 +293,205 @@ model ServicePrice {
   @@unique([kind, key])
 }
 
-// Catalog of sellable products/add-ons (e.g. tea). Admin-managed; the price
-// is the source of truth used when a product is sold during a visit.
 model Product {
   id        String   @id @default(cuid())
   name      String
   price     Float    @default(0)
-  cost      Float    @default(0) // clinic's own cost (admin-only) — price − cost = margin
-  currency  String   @default("USD") // USD | LBP
+  cost      Float    @default(0)
+  currency  String   @default("USD")
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 }
 
-// A product/add-on sold during a visit (e.g. tea). Multiple per consultation.
 model ConsultationProduct {
   id             String       @id @default(cuid())
   consultationId String
-  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
-  // Permanent reference to the catalog Product this line was sold from, snapshotted
-  // at sale time. The line is matched back to the catalog by this id (never by
-  // name), so the historical sale survives the catalog product being renamed or
-  // deleted afterward. Null only for legacy rows sold before this column existed.
   productId      String?
   name           String
   quantity       Int          @default(1)
   amount         Float        @default(0)
-  // Frozen per-unit price at time of sale, stored directly (not re-derived from
-  // amount ÷ quantity) so changing a historical line's quantity multiplies the
-  // exact unit price with no rounding drift, at any decimal precision.
   unitPrice      Float        @default(0)
-  currency       String       @default("USD") // USD | LBP
+  currency       String       @default("USD")
   notes          String?
   createdAt      DateTime     @default(now())
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
 }
 
 model Payment {
-  id              String         @id @default(cuid())
-  // Optional: a payment may be tied to a patient, or be a general clinic payment.
-  clientId        String?
-  client          Client?        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  // What the payment is for (its reason) — e.g. "Consultation", "EMS session".
-  motif           String
-  // The amount actually received for this record. Money a client still owes is
-  // never a paid-vs-total split on a payment — it is tracked separately as a
-  // ClientDebt, so every Payment is simply money collected.
-  amountPaid      Float
-  currency        String         @default("USD") // USD | LBP
-  // Exchange rate (1 USD = ? LBP) snapshot at the moment this payment was logged.
-  // Reports convert this record with THIS rate, never the current one, so history
-  // never shifts when the live rate changes. 0 = legacy row → fall back to live.
-  usdToLbp        Float          @default(0)
-  method          String // cash | card | bank_transfer | online | other | whish
-  date            DateTime       @default(now())
-  receiptNumber   String         @unique
-  // Client-supplied idempotency key for MANUAL payments, so a double-click /
-  // retry / back-button resubmit re-uses the same key and can't create a second
-  // income row (the create returns the existing payment). Null for internally-
-  // generated payments (basket settlement, debt clear) — many nulls are allowed.
-  idempotencyKey  String?        @unique
-  notes           String?
-  createdById     String?
-  createdBy       User?          @relation(fields: [createdById], references: [id])
-  createdAt       DateTime       @default(now())
+  id               String       @id @default(cuid())
+  clientId         String?
+  motif            String
+  amountPaid       Float
+  currency         String       @default("USD")
+  usdToLbp         Float        @default(0)
+  method           String
+  date             DateTime     @default(now())
+  receiptNumber    String       @unique
+  idempotencyKey   String?      @unique
+  notes            String?
+  createdById      String?
+  createdAt        DateTime     @default(now())
+  visitBasketId    String?
+  client           Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdBy        User?        @relation(fields: [createdById], references: [id])
+  settlementBasket VisitBasket? @relation("BasketPayments", fields: [visitBasketId], references: [id])
+  visitBasket      VisitBasket? @relation("BasketPrimaryPayment")
 
-  visitBasket VisitBasket?
+  @@index([visitBasketId])
 }
 
-// A visit's billable basket: the items/sessions a dietitian charges for a visit,
-// sent to the secretary to settle with the client. Editable by the secretary
-// until paid. Linked 1:1 to a consultation once the visit is saved.
 model VisitBasket {
-  id             String        @id @default(cuid())
-  clientId       String
-  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitianId    String?
-  dietitian      User?         @relation(fields: [dietitianId], references: [id])
-  consultationId String?
-  consultation   Consultation? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
-  status         String        @default("pending") // pending | paid | closed
-  discountType   String? // percent | amount
-  discountValue  Float         @default(0)
-  discountReason String? // why the discount was given (required when a discount is applied)
-  currency       String        @default("USD") // USD | LBP
-  usdToLbp       Float         @default(0) // exchange-rate snapshot at basket creation (see Payment.usdToLbp)
-  paymentId      String?       @unique
-  payment        Payment?      @relation(fields: [paymentId], references: [id])
-  sentAt         DateTime      @default(now())
-  paidAt         DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  items VisitBasketItem[]
+  id                 String            @id @default(cuid())
+  clientId           String
+  dietitianId        String?
+  consultationId     String?
+  status             String            @default("pending")
+  discountType       String?
+  discountValue      Float             @default(0)
+  discountReason     String?
+  currency           String            @default("USD")
+  usdToLbp           Float             @default(0)
+  paymentId          String?           @unique
+  sentAt             DateTime          @default(now())
+  paidAt             DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  settlementPayments Payment[]         @relation("BasketPayments")
+  client             Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation       Consultation?     @relation(fields: [consultationId], references: [id])
+  dietitian          User?             @relation(fields: [dietitianId], references: [id])
+  payment            Payment?          @relation("BasketPrimaryPayment", fields: [paymentId], references: [id])
+  items              VisitBasketItem[]
 
   @@index([consultationId])
 }
 
-// One billable line in a visit basket. Mirrors the dietitian's basket rows and
-// any items the secretary adds/removes at settlement.
 model VisitBasketItem {
-  id        String      @id @default(cuid())
-  basketId  String
-  basket    VisitBasket @relation(fields: [basketId], references: [id], onDelete: Cascade)
-  kind      String      @default("custom") // blood_test | treatment | product | custom
-  label     String
-  detail    String?
-  quantity  Int         @default(1)
-  unitPrice Float       @default(0) // snapshot
-  currency  String      @default("USD") // USD | LBP
-  covered   Boolean     @default(false) // package/credit-covered: stays for tracking, excluded from total
-  // When set, this line is a pay-as-you-go session for a SessionPlan; the settled
-  // (non-covered) quantity bumps that plan's sessionsPaid at settlement.
+  id            String       @id @default(cuid())
+  basketId      String
+  kind          String       @default("custom")
+  label         String
+  detail        String?
+  quantity      Int          @default(1)
+  unitPrice     Float        @default(0)
+  currency      String       @default("USD")
+  covered       Boolean      @default(false)
   sessionPlanId String?
+  createdAt     DateTime     @default(now())
+  basket        VisitBasket  @relation(fields: [basketId], references: [id], onDelete: Cascade)
   sessionPlan   SessionPlan? @relation(fields: [sessionPlanId], references: [id])
-  createdAt DateTime    @default(now())
 }
 
-// Money a client owes that wasn't collected when it was incurred. Created when the
-// secretary settles a visit but records that the client still owes a balance (the
-// unpaid/partial remainder deferred while the rest of the basket was collected).
-// Kept separate from the payment-based outstanding balance so it can be cleared
-// (collected later, which records a real Payment) or voided (written off) on its own.
-//   source  secretary_override — secretary flagged "still owes $X" at settlement
-//   status  outstanding | cleared | voided
 model ClientDebt {
   id             String        @id @default(cuid())
   clientId       String
-  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  // The visit this debt came from (null once that visit is deleted, or for a
-  // manual debt not tied to a specific consultation).
   consultationId String?
-  consultation   Consultation? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
   amount         Float
-  currency       String        @default("USD") // USD | LBP
-  usdToLbp       Float         @default(0) // exchange-rate snapshot (see Payment.usdToLbp)
-  reason         String // why the money is owed (shown on the profile)
-  source         String        @default("secretary_override") // secretary_override
-  status         String        @default("outstanding") // outstanding | cleared | voided
-  // Who recorded/settled it, captured as a name (no real user ids until V3), same
-  // pattern as AuditLog.userName.
+  currency       String        @default("USD")
+  usdToLbp       Float         @default(0)
+  reason         String
+  source         String        @default("secretary_override")
+  status         String        @default("outstanding")
   createdByName  String?
   clearedByName  String?
-  clearedAt      DateTime? // when it was collected (cleared) or written off (voided)
+  clearedAt      DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
 
   @@index([clientId])
   @@index([consultationId])
 }
 
-// Lab logistics for a blood collection ordered during a consultation. Created
-// automatically when a dietitian orders blood work on a visit; the secretary
-// then logs when the sample left for the lab (the courier picks up once a day)
-// and when results came back. The two timestamps are the source of truth — the
-// workflow status (pending → sent → received) is derived from them in the app
-// layer, so the record can never disagree with itself.
 model BloodSample {
   id             String        @id @default(cuid())
   clientId       String
-  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitianId    String? // who ordered the blood work
-  dietitian      User?         @relation(fields: [dietitianId], references: [id])
-  // Ordering dietitian's name frozen at order time (same pattern as
-  // AuditLog.userName / ClientDebt.createdByName) so renaming a user later never
-  // rewrites who ordered a historical sample. Display reads this, not the live relation.
+  dietitianId    String?
   dietitianName  String?
-  consultationId String?       @unique // the visit the order came from (1:1)
-  consultation   Consultation? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
-  tests          String        @default("[]") // JSON array of ordered test names (snapshot)
+  consultationId String?       @unique
+  tests          String        @default("[]")
   orderedAt      DateTime      @default(now())
-  sentAt         DateTime? // sample handed to the courier / sent to the lab
-  receivedAt     DateTime? // results received back from the lab
-  notes          String? // optional courier / lab reference (tracking no., lab name)
+  sentAt         DateTime?
+  receivedAt     DateTime?
+  notes          String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
+  dietitian      User?         @relation(fields: [dietitianId], references: [id])
+  files          BloodSampleFile[]
 
   @@index([sentAt])
   @@index([receivedAt])
 }
 
+// A file (lab-result PDF or scan) attached to a specific blood test/order. The
+// bytes live inline in Postgres (`data`) — the app is Postgres-everywhere and no
+// external blob store is in scope; lab results are small and size-capped in the
+// upload route. List/metadata queries never select `data`, so browsing files
+// stays cheap; only the download endpoint pulls the bytes. `uploadedByName` is a
+// frozen snapshot of who uploaded (same pattern as BloodSample.dietitianName),
+// so a later rename never rewrites the attribution.
+model BloodSampleFile {
+  id             String      @id @default(cuid())
+  bloodSampleId  String
+  filename       String
+  mimeType       String
+  size           Int
+  data           Bytes
+  uploadedById   String?
+  uploadedByName String
+  createdAt      DateTime    @default(now())
+  bloodSample    BloodSample @relation(fields: [bloodSampleId], references: [id], onDelete: Cascade)
+  uploadedBy     User?       @relation(fields: [uploadedById], references: [id])
+
+  @@index([bloodSampleId])
+}
+
 model Expense {
-  id          String   @id @default(cuid())
-  title       String
-  amount      Float
-  currency    String   @default("USD") // USD | LBP
-  usdToLbp    Float    @default(0) // exchange-rate snapshot when logged (see Payment.usdToLbp)
-  // The recorded date is immutable after creation (never editable) so an expense
-  // can't be silently shifted into another reporting period.
-  date        DateTime @default(now())
-  paidBy      String?
-  method      String?
-  notes       String?
-  // Reliable "the amount was changed after creation" flag driving the admin-only
-  // "Altered" badge — set true whenever an edit changes the amount/currency.
-  // Replaces the old fragile audit-log text scan (contains "Amount:").
-  amountEdited Boolean @default(false)
-  createdById String?
-  createdBy   User?    @relation(fields: [createdById], references: [id])
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  title        String
+  amount       Float
+  currency     String   @default("USD")
+  usdToLbp     Float    @default(0)
+  date         DateTime @default(now())
+  paidBy       String?
+  method       String?
+  notes        String?
+  amountEdited Boolean  @default(false)
+  createdById  String?
+  createdAt    DateTime @default(now())
+  createdBy    User?    @relation(fields: [createdById], references: [id])
 }
 
 model AuditLog {
   id          String   @id @default(cuid())
   userId      String?
-  user        User?    @relation(fields: [userId], references: [id])
   userName    String
   action      String
   entityType  String
   entityLabel String
   createdAt   DateTime @default(now())
+  user        User?    @relation(fields: [userId], references: [id])
 }
 
-// Simple key/value store for clinic-wide settings (e.g. usdToLbp exchange rate).
 model Setting {
   key       String   @id
   value     String
   updatedAt DateTime @default(now()) @updatedAt
 }
 
-// Admin-editable list of who refers patients (e.g. a partner doctor, or "None"
-// for self-referred). Chosen at registration/check-in. Like treatment types, the
-// selected name is snapshotted onto Client.referralSource as free text, so
-// renaming or removing a referrer never rewrites past client records.
 model Referrer {
   id        String   @id @default(cuid())
   name      String   @unique
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
+  fee       Float    @default(0)
 }
 
-// Monotonic counters for human-facing sequential numbers (e.g. receipt numbers).
-// Incremented atomically in a single locked UPDATE, so two concurrent writers can
-// never read the same value; the counter only ever moves forward, so deleting a
-// source row never frees a number to be reused. Seeded from existing data so the
-// sequence continues rather than restarting. Replaces the old count()+1 logic.
 model Counter {
   key   String @id
   value Int    @default(0)
