@@ -349,3 +349,104 @@ blood-test lab results (still `canViewClinical`, enforced server-side).
 **Regeneration replaces.** Only one PDF per visit per `kind` is kept — regenerating
 after ticking another box leaves one current sheet rather than a pile of
 near-identical ones. The audit log records each (re)generation.
+
+---
+
+## 10. Food List — the Arabic edition
+
+The Arabic form ("Patient paper 1.docx") is the same 94 items as the English one,
+mirrored right-to-left. Both editions share one renderer
+(`src/server/pdf/food-list-pdf.ts`); everything language-specific lives in the
+`LAYOUTS` table, so a drawing change applies to both and English can't silently
+drift. Selections are **language-independent** — item ids are shared, so a form
+ticked in English prints unchanged in Arabic and switching language never loses a
+tick.
+
+**The layout is a clean mirror.** Reading order runs right-to-left: Vegetables is
+the RIGHTMOST column, then Fruits/Nuts, then Animal/Plant-based/Carbohydrates,
+then Eggs and Dairy leftmost. Checkboxes sit to the right of their label,
+headings are right-aligned with the leaf bullet on the right, and Name/Notes move
+to the bottom-right with their rules running leftwards. The header band, the
+specialities strip, the QR code, the wordmark and the footer are **byte-identical**
+between the two documents — the footer deliberately stays Latin with Western
+numerals, so it is not translated.
+
+**The source text needed normalising.** The Arabic document stores most of its
+text as pre-shaped **Arabic Presentation Forms** (460 chars in `U+FE70–FEFF` /
+`U+FB50–FDFF` against 319 in the normal `U+0600` block), with Persian/Urdu letters
+mixed in — 46 × Farsi Yeh (`ی` U+06CC) and 6 × Heh Doachashmee (`ھ` U+06BE). Used
+verbatim these render as broken, disconnected letters and break search, copy/paste
+and screen readers. The catalog therefore stores NFKC-normalised standard Arabic
+with `ی→ي` and `ھ→ه` folded. `ى` (alef maksura) is deliberately left alone — it is
+correct in words like `أخرى`. The 94 labels were reviewed and approved before
+shipping; **if labels are ever re-extracted from the .docx, they must be
+re-normalised the same way.**
+
+**Three things that make Arabic render correctly** — all learned the hard way:
+
+1. **Never reorder characters for RTL.** fontkit (which pdf-lib delegates to)
+   already shapes Arabic and reverses RTL runs internally. Applying the bidi
+   reordering to characters double-flips them and produces backwards, disconnected
+   text. `visualRuns()` splits into runs of uniform direction, keeps each run in
+   LOGICAL order, and reorders only the RUNS. This is what makes a Latin patient
+   name inside the Arabic Name field come out right.
+2. **Don't trust Noto Sans Arabic's line metrics.** It declares a 26.4pt line box
+   at 12.5pt (Carlito declares 15.26pt) to leave room for vocalisation marks the
+   form never uses. Taken at face value every column overflowed its box and
+   collided with the category below. `itemLineHeightPt: 19.8` on the Arabic layout
+   is the document's own implied pitch, consistent across six of its eight boxes.
+3. **An unspaced "/" is a break opportunity.** `معكرونة/بيتزا/طحين` is a single
+   whitespace-delimited word too wide for its column; without a break after the
+   solidus it broke mid-word. `tokenize()` handles this and returns tokens tagged
+   with whether the source had a space, so re-joining never invents one. No English
+   label contains an unspaced slash, so that edition is unaffected.
+
+**Padding is a deliberate deviation.** The Arabic document sets ALL text-box
+insets to **zero**, so its text sits flush against (and clipped by) the box
+borders. The English insets (0.1in left/right, 0.05in top/bottom) are applied to
+both editions instead — a decision taken with the clinic, favouring legibility
+over exact reproduction. One visible consequence: `معكرونة/بيتزا/طحين`
+(Pasta / Pizza / Flour) wraps onto two lines here where the source keeps it on one
+by overflowing its border.
+
+**Fonts.** The Arabic document pins no Arabic typeface at all — its theme's
+complex-script entry is literally empty — so there was no original to match.
+Noto Sans Arabic (OFL) was chosen for legibility and is subset **with its layout
+features intact** (`--layout-features='*'`); dropping GSUB/GPOS would break Arabic
+shaping entirely. The Latin faces keep their smaller feature-stripped subsets.
+
+**Verifying a change to either edition.** Render both, then assert:
+- the English page is **pixel-identical** to before (it is a regression otherwise —
+  `LAYOUTS.en` and the English constants must not move);
+- every box in both editions clears its borders (current minimums: English 6.9pt
+  left / 10.8pt right; Arabic 11.8pt left / 7.4pt right).
+Render Arabic crops at 2600px+ when eyeballing them — at ~1250px the dots under a
+final `ي` are near sub-pixel. But do **not** write off misplaced dots as a raster
+artifact: that call was made once here and it was wrong. See below.
+
+**Arabic dots are drawn by us, not by `page.drawText`.** Noto Sans Arabic's `ccmp`
+feature splits every dotted letter into a dotless base plus a SEPARATE
+ZERO-ADVANCE mark glyph for the dots, whose only placement is a GPOS
+`xOffset`/`yOffset`. pdf-lib throws those away — `CustomFontEmbedder.encodeText`
+keeps the fontkit run's `.glyphs` and drops `.positions`, and `xOffset`/`yOffset`
+appear nowhere in its runtime code. Every dot therefore collapsed onto its base's
+origin: a final Yeh's two dots landed 0.232em low and 0.185em to the side, so
+`فول سوداني` printed with a stray mark below the tail instead of dots under the
+letter. This affected roughly every dotted letter on the page (`ش`, `ت`, `ب`, `ن`,
+`ي`, `ز` …), was in the vector content of the real PDF, and was NOT a screenshot
+artifact.
+
+`drawShaped()` fixes it by emitting positioned glyphs itself. Two constraints on
+that code:
+- The Arabic face must be embedded with **`subset: false`**. We emit raw glyph
+  ids, and `CustomFontSubsetEmbedder` renumbers them through `subset.includeGlyph`.
+  Costs ~45KB in the Arabic PDF only (60KB → 105KB); the English PDF is untouched.
+- **Disabling `ccmp` is not the fix**, though it looks like one — the font does
+  contain precomposed dotted glyphs. Its `init`/`medi`/`fina` lookups match on the
+  decomposed bases, so without `ccmp` every letter falls back to its isolated form
+  and cursive joining breaks (`فو` measures 1029 units joined vs 1548 unjoined).
+
+Positioning each glyph absolutely also applies GPOS `xAdvance`, i.e. the kerning
+`widthOfTextAtSize` ignores. 24 of 104 Arabic strings measure narrower as a
+result; none measure wider, so box clearances only improved. Current Arabic item
+clearances: 4.61pt below the last baseline and 4.40pt above the first.

@@ -47,6 +47,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const data = await renderFoodListPdf({
+      // The edition to print is whatever the doctor filled the form in as; item
+      // ids are shared between languages, so the ticks carry across unchanged.
+      language: stored.language === "ar" ? "ar" : "en",
       patientName: stored.patientName,
       notes: stored.notes ?? undefined,
       selections,

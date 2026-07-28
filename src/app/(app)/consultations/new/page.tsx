@@ -1400,6 +1400,7 @@ function ConsultationEditor() {
             {foodListLanguage ? (
               <FoodListForm
                 draft={foodList}
+                language={foodListLanguage}
                 onChange={setFoodList}
                 onChangeLanguage={() => setFoodListLanguage(null)}
                 onGeneratePdf={generateFoodListPdf}

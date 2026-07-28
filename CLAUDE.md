@@ -147,11 +147,26 @@ patient actually eats.
   regenerating replaces. Downloadable by **every** role (unlike lab results); the
   client profile's Files tab is therefore visible to the secretary too, scoped to
   consultation documents only.
-- **Arabic** is deliberately out of scope — the picker shows it disabled. The
-  `language` column already exists so it needs no migration.
-- Fidelity trade-offs vs the Word document (fonts, drawn checkboxes, 4-column
-  print vs responsive screen) are written up in
-  [docs/known-issues.md](docs/known-issues.md) §9.
+- **Both languages are built.** English reproduces "Patient paper english.docx";
+  Arabic reproduces "Patient paper 1.docx" — the same 94 items, mirrored
+  right-to-left (Vegetables is the rightmost column, checkbox to the right of its
+  label, Name/Notes bottom-right). Item ids are **shared**, so selections are
+  language-independent: a form ticked in English prints unchanged in Arabic and
+  switching language never loses a tick. Both editions share one renderer;
+  everything language-specific is in the `LAYOUTS` table in `food-list-pdf.ts`.
+- **Arabic text is normalised, not verbatim** — the source .docx stores pre-shaped
+  presentation forms with Persian/Urdu letters mixed in. Re-extracting labels from
+  that file means re-normalising them. RTL rendering has four non-obvious
+  requirements (never reorder characters; don't trust Noto's line metrics; treat
+  an unspaced `/` as a break opportunity; and draw Arabic glyphs via
+  `drawShaped()` rather than `page.drawText`, because pdf-lib discards the GPOS
+  offsets that place every letter's dots — which is also why the Arabic face is
+  embedded with `subset: false`) — all explained in
+  [docs/known-issues.md](docs/known-issues.md) §10 before you touch that code.
+- **After any layout change, the English page must stay pixel-identical** — that's
+  the regression test. Fidelity trade-offs vs both Word documents (fonts, drawn
+  checkboxes, padding, 4-column print vs responsive screen) are in
+  [docs/known-issues.md](docs/known-issues.md) §9 (English) and §10 (Arabic).
 
 ## Working conventions (keep these)
 - Match existing code style; pages are client components using `useApi`; create forms POST then `refetch()`.

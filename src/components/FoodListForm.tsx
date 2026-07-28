@@ -4,12 +4,16 @@ import { Download, FileText, Languages, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Field";
 import {
+  categoryTitle,
   FOOD_LIST_CATEGORIES,
+  FOOD_LIST_FIELD_LABELS,
   FOOD_LIST_FOOTER,
   FOOD_LIST_ITEM_COUNT,
   FOOD_LIST_SPECIALITIES,
-  FOOD_LIST_SUBTITLE,
-  FOOD_LIST_TITLE,
+  foodListSubtitle,
+  foodListTitle,
+  isRtl,
+  itemLabel,
   type FoodListLanguage,
 } from "@/lib/food-list";
 import type { ConsultationFile } from "@/lib/types";
@@ -30,10 +34,10 @@ const TEAL_TEXT = "#2E6666";
 const ITEM_TEXT = "#273D3C";
 
 /**
- * The language gate shown when the card is first opened. English is live; Arabic
- * is deliberately present-but-disabled — the form exists on paper in both, and
- * the Arabic edition is a later piece of work, so the entry point is visible
- * rather than silently missing.
+ * The language gate shown when the card is first opened. Both editions reproduce
+ * the clinic's paper form; the choice is stored on the visit and decides which
+ * labels are shown here and which layout the PDF prints (the Arabic sheet is a
+ * mirrored, right-to-left version of the same 94 items).
  */
 export function FoodListLanguagePicker({
   onSelect,
@@ -55,27 +59,20 @@ export function FoodListLanguagePicker({
           <span className="block text-sm font-semibold text-slate-800 group-hover:text-brand-700">
             English
           </span>
-          <span className="mt-0.5 block text-xs text-slate-400">
-            Nutrient-Rich Foods List — {FOOD_LIST_ITEM_COUNT} items
-          </span>
         </button>
         <button
           type="button"
-          disabled
-          aria-disabled="true"
-          className="cursor-not-allowed rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4 text-left opacity-70"
+          onClick={() => onSelect("ar")}
+          className="group rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-brand-300 hover:bg-brand-50/40"
         >
-          <span className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-500">Arabic</span>
-            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
-              Coming soon
-            </span>
-          </span>
-          <span className="mt-0.5 block text-xs text-slate-400">
-            The Arabic edition isn&apos;t available yet.
+          <span className="block text-sm font-semibold text-slate-800 group-hover:text-brand-700">
+            Arabic — العربية
           </span>
         </button>
       </div>
+      <p className="mt-3 text-xs text-slate-400">
+        The two versions share the same items, so ticks carry over if you switch.
+      </p>
     </div>
   );
 }
@@ -88,6 +85,7 @@ export function FoodListLanguagePicker({
  */
 export function FoodListForm({
   draft,
+  language,
   onChange,
   onChangeLanguage,
   onGeneratePdf,
@@ -96,6 +94,7 @@ export function FoodListForm({
   canGenerate,
 }: {
   draft: FoodListDraft;
+  language: FoodListLanguage;
   onChange: (next: FoodListDraft) => void;
   onChangeLanguage: () => void;
   onGeneratePdf: () => void;
@@ -103,6 +102,8 @@ export function FoodListForm({
   generatedFile?: ConsultationFile;
   canGenerate: boolean;
 }) {
+  const rtl = isRtl(language);
+  const fieldLabels = FOOD_LIST_FIELD_LABELS[language];
   const selected = new Set(draft.selections);
   const toggle = (id: string) =>
     onChange({
@@ -127,8 +128,13 @@ export function FoodListForm({
         </button>
       </div>
 
-      {/* The form itself, framed like the printed sheet. */}
-      <div className="overflow-hidden rounded-xl border border-slate-200">
+      {/* The form itself, framed like the printed sheet. `dir` flips the whole
+          block for Arabic — checkbox to the right of its label, headings and
+          fields right-aligned — mirroring how the printed sheet reads. */}
+      <div
+        dir={rtl ? "rtl" : "ltr"}
+        className="overflow-hidden rounded-xl border border-slate-200"
+      >
         <div className="px-4 py-4 text-center" style={{ backgroundColor: BAND }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -151,10 +157,10 @@ export function FoodListForm({
             className="text-center text-lg font-bold tracking-tight"
             style={{ color: TEAL_TEXT }}
           >
-            {FOOD_LIST_TITLE}
+            {foodListTitle(language)}
           </h4>
           <p className="text-center text-xs font-semibold" style={{ color: TEAL_TEXT }}>
-            {FOOD_LIST_SUBTITLE}
+            {foodListSubtitle(language)}
           </p>
 
           <div className="mt-4 space-y-3 border-y border-slate-100 py-4">
@@ -163,7 +169,7 @@ export function FoodListForm({
                 className="mb-1 flex items-center gap-1.5 text-sm font-semibold"
                 style={{ color: TEAL_TEXT }}
               >
-                <LeafBullet /> Name
+                <LeafBullet /> {fieldLabels.name}
               </span>
               <Input
                 value={draft.patientName}
@@ -176,7 +182,7 @@ export function FoodListForm({
                 className="mb-1 flex items-center gap-1.5 text-sm font-semibold"
                 style={{ color: TEAL_TEXT }}
               >
-                <LeafBullet /> Notes
+                <LeafBullet /> {fieldLabels.notes}
               </span>
               <Textarea
                 rows={2}
@@ -198,7 +204,7 @@ export function FoodListForm({
                   className="mb-2 flex items-center gap-1.5 text-sm font-bold"
                   style={{ color: TEAL_TEXT }}
                 >
-                  <LeafBullet /> {category.title}
+                  <LeafBullet /> {categoryTitle(category, language)}
                 </p>
                 <div className="space-y-1">
                   {category.items.map((item) => (
@@ -213,7 +219,7 @@ export function FoodListForm({
                         onChange={() => toggle(item.id)}
                         className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-500/30"
                       />
-                      <span className="min-w-0 flex-1">{item.label}</span>
+                      <span className="min-w-0 flex-1">{itemLabel(item, language)}</span>
                     </label>
                   ))}
                 </div>
