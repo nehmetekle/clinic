@@ -416,6 +416,9 @@ function ConsultationEditor() {
   // ---- Visit services ----
   // Blood collection is implied by selecting one or more tests — the section
   // shows the tests directly, so there's no separate "required" toggle.
+  // Collapsed by default like the Food List card — a visit that already has
+  // services re-opens with it expanded (see the prefill effect).
+  const [servicesOpen, setServicesOpen] = useState(false);
   const [bloodTests, setBloodTests] = useState<string[]>([]);
   const [bloodOther, setBloodOther] = useState("");
   const [nurseRequired, setNurseRequired] = useState(false);
@@ -662,6 +665,16 @@ function ConsultationEditor() {
         .filter((p): p is { productId: string; quantity: string } => p !== null),
     );
     if ((c.treatments ?? []).length > 0) setTreatmentsOpen(true);
+    if (
+      (c.bloodTests ?? []).length > 0 ||
+      c.nurseRequired ||
+      (c.treatments ?? []).length > 0 ||
+      (c.products ?? []).length > 0 ||
+      c.consultationFeeWaived ||
+      (c.visitDiscountType && (c.visitDiscountValue ?? 0) > 0)
+    ) {
+      setServicesOpen(true);
+    }
     // A visit that already has a Food List re-opens on it, with the card expanded
     // so the doctor can see at a glance that one was filled in.
     if (c.foodList) {
@@ -1418,6 +1431,9 @@ function ConsultationEditor() {
             icon={Stethoscope}
             title="Visit services"
             subtitle="Optional — open only the parts you need for this visit."
+            collapsible
+            open={servicesOpen}
+            onOpenChange={setServicesOpen}
             bodyClassName="space-y-3"
           >
               {/* Nurse needed — single tick, no dropdown */}
