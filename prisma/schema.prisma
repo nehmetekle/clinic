@@ -34,6 +34,7 @@ model User {
   assignedClients     Client[]           @relation("AssignedDietitian")
   createdClients      Client[]           @relation("CreatedByUser")
   consultations       Consultation[]
+  consultationFiles   ConsultationFile[]
   expenses            Expense[]
   payments            Payment[]
   pendingTwoFactors   PendingTwoFactor[]
@@ -252,9 +253,61 @@ model Consultation {
   debts                 ClientDebt[]
   client                Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dietitian             User?                   @relation(fields: [dietitianId], references: [id])
+  files                 ConsultationFile[]
+  foodList              ConsultationFoodList?
   products              ConsultationProduct[]
   treatments            ConsultationTreatment[]
   visitBaskets          VisitBasket[]
+}
+
+// The "Nutrient-Rich Foods List" the dietitian fills in during a visit — the web
+// version of Layaka's paper form, used to assess what the patient actually eats.
+// One per consultation (optional: most visits never open it), so a 1–1 relation
+// rather than more JSON columns on Consultation.
+//
+// `selections` is a JSON array of stable catalog ids ("vegetables.artichoke"),
+// matching how Consultation.bloodTests stores its list. Ids — not labels — so
+// re-wording an item in the catalog never orphans a saved tick. Unknown ids are
+// ignored on read, which keeps an old record readable if an item is ever retired.
+//
+// `language` exists so the Arabic edition of the same form (out of scope for now,
+// the button is present but disabled) drops in without a migration.
+model ConsultationFoodList {
+  id             String       @id @default(cuid())
+  consultationId String       @unique
+  language       String       @default("en")
+  patientName    String
+  notes          String?
+  selections     String       @default("[]")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+}
+
+// A file attached to a consultation — today the generated Food List PDF. Mirrors
+// BloodSampleFile exactly (bytes inline in Postgres, `data` never selected for
+// listings, frozen `uploadedByName` attribution) so both attachment kinds behave
+// the same way; see that model's comment for the reasoning behind inline bytes.
+//
+// Unlike a blood-test result, the finished PDF is NOT clinical-restricted: every
+// role may download it (the doctor fills the form in, the front desk hands the
+// printout to the patient). `kind` tags what produced the file so the profile's
+// Files tab can filter by it.
+model ConsultationFile {
+  id             String       @id @default(cuid())
+  consultationId String
+  kind           String       @default("food-list")
+  filename       String
+  mimeType       String
+  size           Int
+  data           Bytes
+  uploadedById   String?
+  uploadedByName String
+  createdAt      DateTime     @default(now())
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  uploadedBy     User?        @relation(fields: [uploadedById], references: [id])
+
+  @@index([consultationId])
 }
 
 model ConsultationTreatment {

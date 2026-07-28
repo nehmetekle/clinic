@@ -1,3 +1,5 @@
+import type { FoodListLanguage } from "./food-list";
+
 export type Role = "secretary" | "dietitian" | "admin";
 
 export type Currency = "USD" | "LBP";
@@ -305,6 +307,19 @@ export interface Consultation {
   consultationFeeWaived?: boolean;
   treatments?: ConsultationTreatment[];
   products?: ConsultationProduct[];
+  // The Nutrient-Rich Foods List filled in on this visit, if the doctor opened it.
+  foodList?: ConsultationFoodList;
+}
+
+/** The Food List form as saved against a visit. `selections` holds catalog item
+ * ids (see `src/lib/food-list.ts`); `patientName` defaults to the patient's name
+ * but stays editable, so it's stored rather than derived. */
+export interface ConsultationFoodList {
+  language: FoodListLanguage;
+  patientName: string;
+  notes?: string;
+  selections: string[];
+  updatedAt: string;
 }
 
 export interface Appointment {
@@ -454,6 +469,28 @@ export interface ClientBloodFile extends BloodSampleFile {
   clientId: string;
   tests: string[];
   orderedAt: string; // ISO timestamp of the order the file belongs to
+}
+
+/** A file generated against a consultation — today the Food List PDF. Same shape
+ * as BloodSampleFile, but unrestricted: every role may download it. */
+export interface ConsultationFile {
+  id: string;
+  consultationId: string;
+  kind: "food-list";
+  filename: string;
+  mimeType: string;
+  size: number; // bytes
+  uploadedById: string | null;
+  uploadedByName: string;
+  createdAt: string; // ISO timestamp
+}
+
+/** A consultation file plus the visit it belongs to — powers the client profile's
+ * Files tab, which lists every generated document for a patient. */
+export interface ClientConsultationFile extends ConsultationFile {
+  clientId: string;
+  visitNumber: number;
+  visitDate: string; // ISO timestamp of the consultation
 }
 
 export interface Expense {

@@ -144,7 +144,11 @@ export default function ClientProfilePage() {
     "Blood Tests",
     ...(isDietitian ? ["Consultations", "Measurements", "Progress"] : []),
     ...(canHandleMoney ? ["Payments"] : []),
-    ...(isDietitian ? ["Notes", "Files"] : []),
+    ...(isDietitian ? ["Notes"] : []),
+    // Files is open to the secretary too — she hands the generated Food List PDF
+    // to the patient. The tab itself scopes what she sees: consultation documents
+    // only, never blood-test lab results (those stay clinical, enforced server-side).
+    "Files",
   ];
 
   const weightSeries = consults
@@ -818,7 +822,7 @@ export default function ClientProfilePage() {
               </Card>
             )}
 
-            {active === "Files" && isDietitian && <FilesTab clientId={client.id} />}
+            {active === "Files" && <FilesTab clientId={client.id} />}
           </>
         )}
       </Tabs>

@@ -109,12 +109,49 @@ net profit and gross margin, surfaced as the "Referrer cost" card + drill-down o
 the dashboard/reports. Freeze-at-use, admin-only, redacted for other roles — see
 [docs/known-issues.md](docs/known-issues.md) §8._
 
+_Also done since (removed): the **Food List (Nutrient-Rich Foods List)** — a
+collapsible card in the consultation editor between "Consultation notes" and
+"Visit services" that reproduces Layaka's paper form, saves with the rest of the
+visit, and generates a PDF replica attached to the consultation. See "Food List"
+below and [docs/known-issues.md](docs/known-issues.md) §9._
+
 Still open:
 - **Full data export** — per-report CSV export works ([reports/page.tsx](src/app/(app)/reports/page.tsx)), but "Export all data (CSV)" in Settings is still a stub.
-- **Printable / PDF receipts** — receipt numbers are generated; a printable/PDF receipt is not.
-- **File upload/download** — the client-profile "Upload" is a stub.
+- **Printable / PDF receipts** — receipt numbers are generated; a printable/PDF receipt is not. (The Food List PDF below is the first use of the PDF pipeline — reuse `src/server/pdf/`.)
+- **File upload/download** — the client-profile "Upload" is a stub. (Download works: blood-test results and the generated Food List PDF both appear on the Files tab.)
 - **Reminders** — no scheduler/cron; appointment status catch-up runs lazily on read.
 - **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (double-booking, phone/email dedup, name-based stats, per-year receipt numbering, …).
+
+## Food List (Nutrient-Rich Foods List)
+A web + PDF reproduction of Layaka's paper intake form, used to record what a
+patient actually eats.
+- **Catalog** — [`src/lib/food-list.ts`](src/lib/food-list.ts) is the single source
+  of truth: 8 categories, 94 items, stable ids (`"vegetables.artichoke"`), plus
+  the printed column each category sits in. The editor card and the PDF renderer
+  both read it, so they can't drift. Labels are verbatim from the paper form —
+  don't "tidy" the inconsistent capitalisation.
+- **Storage** — `ConsultationFoodList` (1–1 with `Consultation`, optional) holds
+  `patientName`, `notes`, `selections` (JSON array of catalog ids) and `language`.
+  Saved as part of the normal consultation payload (`foodList` on
+  `createConsultationSchema`); **omitting it leaves a saved form untouched**, which
+  is what keeps an untouched card from wiping one. Unknown ids are dropped rather
+  than failing the save.
+- **PDF** — [`src/server/pdf/food-list-pdf.ts`](src/server/pdf/food-list-pdf.ts)
+  draws the page with `pdf-lib` (pure JS; Vercel has no headless browser). Fonts
+  and Layaka artwork live in `src/server/pdf/{fonts,assets}` and are read from
+  disk, so they're listed in `outputFileTracingIncludes` in `next.config.mjs` —
+  **if you move them, update that or the route 500s in production only.**
+  `POST /api/consultations/[id]/food-list-pdf` renders and attaches it.
+- **Attachments** — `ConsultationFile` mirrors `BloodSampleFile` (bytes inline in
+  Postgres, `data` never selected for listings). One file per visit per `kind`:
+  regenerating replaces. Downloadable by **every** role (unlike lab results); the
+  client profile's Files tab is therefore visible to the secretary too, scoped to
+  consultation documents only.
+- **Arabic** is deliberately out of scope — the picker shows it disabled. The
+  `language` column already exists so it needs no migration.
+- Fidelity trade-offs vs the Word document (fonts, drawn checkboxes, 4-column
+  print vs responsive screen) are written up in
+  [docs/known-issues.md](docs/known-issues.md) §9.
 
 ## Working conventions (keep these)
 - Match existing code style; pages are client components using `useApi`; create forms POST then `refetch()`.

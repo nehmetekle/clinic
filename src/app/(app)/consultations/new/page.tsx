@@ -13,6 +13,7 @@ import {
   Layers,
   Pencil,
   Plus,
+  Salad,
   Stethoscope,
   Trash2,
   X,
@@ -23,6 +24,12 @@ import { Modal } from "@/components/ui/Modal";
 import { FormRow, Input, Select, Textarea } from "@/components/ui/Field";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { VisitBasketCard } from "@/components/VisitBasketCard";
+import {
+  FoodListForm,
+  FoodListLanguagePicker,
+  type FoodListDraft,
+} from "@/components/FoodListForm";
+import { type FoodListLanguage } from "@/lib/food-list";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -30,6 +37,7 @@ import { useToast } from "@/lib/toast";
 import { SUPPLEMENTS } from "@/lib/types";
 import type {
   ClientPackage,
+  ConsultationFile,
   ServicePriceKind,
   SessionPlan,
   VisitBasketItemKind,
@@ -178,6 +186,9 @@ function SectionCard({
   action,
   children,
   bodyClassName,
+  collapsible,
+  open: openProp,
+  onOpenChange,
 }: {
   tone: keyof typeof SECTION_TONES;
   icon: LucideIcon;
@@ -186,14 +197,29 @@ function SectionCard({
   action?: React.ReactNode;
   children: React.ReactNode;
   bodyClassName?: string;
+  // Opt-in collapsing: the header band becomes a toggle and the body is hidden
+  // while closed. Cards that don't pass this render exactly as before.
+  collapsible?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const t = SECTION_TONES[tone];
+  const open = !collapsible || (openProp ?? true);
+  const HeaderTag = collapsible ? "button" : "div";
   return (
     <div className={cn("overflow-hidden rounded-2xl bg-white shadow-card ring-1", t.ring)}>
-      <div
+      <HeaderTag
+        {...(collapsible
+          ? {
+              type: "button" as const,
+              onClick: () => onOpenChange?.(!open),
+              "aria-expanded": open,
+            }
+          : {})}
         className={cn(
-          "flex items-center justify-between gap-3 bg-gradient-to-br px-5 py-4",
+          "flex w-full items-center justify-between gap-3 bg-gradient-to-br px-5 py-4 text-left",
           t.band,
+          collapsible && "hover:brightness-[0.98]",
         )}
       >
         <div className="flex items-center gap-3">
@@ -210,9 +236,19 @@ function SectionCard({
             {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
           </div>
         </div>
-        {action}
-      </div>
-      <div className={cn("p-5", bodyClassName)}>{children}</div>
+        <div className="flex shrink-0 items-center gap-2">
+          {action}
+          {collapsible && (
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 shrink-0 text-slate-400 transition-transform",
+                open && "rotate-180",
+              )}
+            />
+          )}
+        </div>
+      </HeaderTag>
+      {open && <div className={cn("p-5", bodyClassName)}>{children}</div>}
     </div>
   );
 }
@@ -393,6 +429,20 @@ function ConsultationEditor() {
   // The dietitian removed the auto-added consultation-fee line from this visit's
   // basket. Only affects this visit; the admin's configured fee is untouched.
   const [feeWaived, setFeeWaived] = useState(false);
+
+  // ---- Food List (Nutrient-Rich Foods List) ----
+  // The card is collapsed by default and only sends anything once a language is
+  // picked — an untouched card must leave a previously saved form alone, so
+  // `foodListLanguage === null` means "omit from the payload" (see save()).
+  const [foodListOpen, setFoodListOpen] = useState(false);
+  const [foodListLanguage, setFoodListLanguage] = useState<FoodListLanguage | null>(null);
+  const [foodList, setFoodList] = useState<FoodListDraft>({
+    patientName: "",
+    notes: "",
+    selections: [],
+  });
+  const [foodListFile, setFoodListFile] = useState<ConsultationFile | undefined>();
+  const [generatingPdf, setGeneratingPdf] = useState(false);
 
   // ---- Recommended supplements: this dietitian's own editable options ----
   // The list is personal to the acting dietitian, so one dietitian's choices
@@ -612,8 +662,50 @@ function ConsultationEditor() {
         .filter((p): p is { productId: string; quantity: string } => p !== null),
     );
     if ((c.treatments ?? []).length > 0) setTreatmentsOpen(true);
+    // A visit that already has a Food List re-opens on it, with the card expanded
+    // so the doctor can see at a glance that one was filled in.
+    if (c.foodList) {
+      setFoodListLanguage(c.foodList.language);
+      setFoodList({
+        patientName: c.foodList.patientName,
+        notes: c.foodList.notes ?? "",
+        selections: c.foodList.selections,
+      });
+      setFoodListOpen(true);
+    }
     setPrefilled(true);
   }, [editId, data, prefilled, productCatalog.data, servicePrices.data]);
+
+  // Auto-fill the form's Name from the patient whose visit this is. Only fills a
+  // blank field, so a doctor's correction (or a saved name) is never overwritten.
+  useEffect(() => {
+    const client = data?.client;
+    if (!client) return;
+    setFoodList((prev) =>
+      prev.patientName
+        ? prev
+        : { ...prev, patientName: `${client.firstName} ${client.lastName}`.trim() },
+    );
+  }, [data?.client]);
+
+  // Surface a PDF generated on an earlier visit to this editor, so re-opening a
+  // saved visit offers "Download / Regenerate" rather than looking un-generated.
+  useEffect(() => {
+    if (!editId) return;
+    let cancelled = false;
+    api
+      .listClientConsultationFiles(clientId)
+      .then((files) => {
+        if (cancelled) return;
+        setFoodListFile(files.find((f) => f.consultationId === editId && f.kind === "food-list"));
+      })
+      .catch(() => {
+        /* non-critical: the button just reads "Generate PDF" */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editId, clientId]);
 
   if (loading || redirectingToDraft) return <Loading />;
   if (error) return <ErrorState message={error} />;
@@ -1002,10 +1094,13 @@ function ConsultationEditor() {
   // Save the visit. `close` finalizes it (no more edits); otherwise it stays an
   // open, in-progress draft that can be re-opened and settled in installments.
   // When editing an existing open consultation, this updates it (delta only).
-  async function save(close: boolean) {
+  // Returns the saved visit's id (null if the save was rejected) so callers that
+  // need to act on the persisted visit — generating the Food List PDF — can,
+  // including on a first save where the id didn't exist yet.
+  async function save(close: boolean): Promise<string | null> {
     if (discountReasonMissing) {
       toast("Please add a reason for the discount.");
-      return;
+      return null;
     }
     setSaving(true);
     try {
@@ -1037,15 +1132,53 @@ function ConsultationEditor() {
         waiveConsultationFee: feeWaived,
         treatments: buildTreatments(planIds),
         products: finalProducts,
+        // Only sent once the doctor has opened the card and picked a language;
+        // otherwise omitted so an untouched card leaves a saved form intact.
+        foodList: foodListLanguage
+          ? {
+              language: foodListLanguage,
+              patientName: foodList.patientName.trim(),
+              notes: foodList.notes.trim() || undefined,
+              selections: foodList.selections,
+            }
+          : undefined,
       };
-      if (editId) await api.updateConsultation(editId, payload);
-      else await api.createConsultation(payload);
+      const saved = editId
+        ? await api.updateConsultation(editId, payload)
+        : await api.createConsultation(payload);
       toast(close ? "Visit closed" : "Saved — visit in progress");
       setSaved(true);
+      return saved.id;
+    } catch (e) {
+      toast((e as Error).message);
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /**
+   * Generate the Food List PDF and attach it to this visit.
+   *
+   * The PDF is rendered server-side from the SAVED form, so a visit that hasn't
+   * been written yet (or has unsaved ticks) is saved first — otherwise the doctor
+   * would hit a dead end on a brand-new visit, or silently print a stale sheet.
+   */
+  async function generateFoodListPdf() {
+    setGeneratingPdf(true);
+    try {
+      // Persist first: the PDF is rendered server-side from the SAVED form, so
+      // this both creates a brand-new visit and flushes any unticked/unsaved
+      // changes — otherwise the doctor would print a stale sheet.
+      const id = await save(false);
+      if (!id) return; // save() already explained why it was rejected
+      const file = await api.generateFoodListPdf(id);
+      setFoodListFile(file);
+      toast("Food List PDF generated");
     } catch (e) {
       toast((e as Error).message);
     } finally {
-      setSaving(false);
+      setGeneratingPdf(false);
     }
   }
 
@@ -1246,6 +1379,37 @@ function ConsultationEditor() {
                 </FormRow>
               )}
               <FormRow label="Follow-up plan"><Input value={form.followUpPlan} onChange={(e) => setForm({ ...form, followUpPlan: e.target.value })} placeholder="e.g. Review in 2 weeks" /></FormRow>
+          </SectionCard>
+
+          <SectionCard
+            tone="emerald"
+            icon={Salad}
+            title="Food List"
+            subtitle="Nutrient-Rich Foods List — record what the patient actually eats."
+            collapsible
+            open={foodListOpen}
+            onOpenChange={setFoodListOpen}
+            action={
+              foodListLanguage && foodList.selections.length > 0 ? (
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                  {foodList.selections.length} ticked
+                </span>
+              ) : undefined
+            }
+          >
+            {foodListLanguage ? (
+              <FoodListForm
+                draft={foodList}
+                onChange={setFoodList}
+                onChangeLanguage={() => setFoodListLanguage(null)}
+                onGeneratePdf={generateFoodListPdf}
+                generating={generatingPdf}
+                generatedFile={foodListFile}
+                canGenerate={!saving}
+              />
+            ) : (
+              <FoodListLanguagePicker onSelect={setFoodListLanguage} />
+            )}
           </SectionCard>
 
           <SectionCard

@@ -5,6 +5,8 @@ import type {
   BloodSample,
   BloodSampleFile,
   ClientBloodFile,
+  ClientConsultationFile,
+  ConsultationFile,
   Client,
   ClientDebt,
   ClientDetail,
@@ -259,6 +261,17 @@ export const api = {
   // Every blood-test file for a patient (client profile Files tab).
   listClientBloodFiles: (clientId: string) =>
     getJson<ClientBloodFile[]>(`/api/clients/${clientId}/blood-files`),
+
+  // Render the visit's Food List to PDF and attach it to the consultation,
+  // replacing any copy generated earlier. Doctor/admin only.
+  generateFoodListPdf: (consultationId: string) =>
+    postJson<ConsultationFile>(`/api/consultations/${consultationId}/food-list-pdf`, {}),
+  // Direct URL for an <a href> download. Unlike a blood-test result, the finished
+  // Food List PDF is downloadable by every role.
+  consultationFileUrl: (fileId: string) => `/api/consultation-files/${fileId}`,
+  // Every consultation-generated document for a patient (client profile Files tab).
+  listClientConsultationFiles: (clientId: string) =>
+    getJson<ClientConsultationFile[]>(`/api/clients/${clientId}/consultation-files`),
 
   listExpenses: () => getJson<Expense[]>("/api/expenses"),
   createExpense: (body: CreateExpenseInput) => postJson<Expense>("/api/expenses", body),

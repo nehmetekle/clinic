@@ -37,6 +37,16 @@ const nextConfig = {
   // Keep Prisma and the native argon2 binding out of the bundler so they
   // resolve at runtime instead of being (mis)packed by webpack/turbopack.
   serverExternalPackages: ["@prisma/client", "prisma", "@node-rs/argon2"],
+  // The Food List PDF renderer reads its fonts and Layaka branding from disk at
+  // runtime. Next's tracer can't see `fs` reads, so those files must be named
+  // explicitly or they'd be missing from the serverless bundle in production —
+  // the PDF route would work locally and 500 on Vercel.
+  outputFileTracingIncludes: {
+    "/api/consultations/[id]/food-list-pdf": [
+      "./src/server/pdf/fonts/**",
+      "./src/server/pdf/assets/**",
+    ],
+  },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },

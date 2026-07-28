@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
+import { FOOD_LIST_LANGUAGES } from "@/lib/food-list";
 import { moneyCap } from "@/lib/utils";
 import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
 
@@ -195,6 +196,19 @@ export const createConsultationSchema = z.object({
         notes: z.string().optional(),
       }),
     )
+    .optional(),
+  // ---- Food List (Nutrient-Rich Foods List) ----
+  // Absent = the doctor never opened the card; the stored form (if any) is left
+  // untouched. Present = save it. `selections` is filtered against the catalog in
+  // the repository, so an unknown id is dropped rather than rejecting the whole
+  // visit — a partially-stale payload must never cost the doctor their notes.
+  foodList: z
+    .object({
+      language: z.enum(FOOD_LIST_LANGUAGES).optional(),
+      patientName: z.string().trim().max(200),
+      notes: z.string().trim().max(4000).optional(),
+      selections: z.array(z.string()).max(500).optional(),
+    })
     .optional(),
 }).superRefine((v, ctx) => {
   // A reason is mandatory whenever a discount is actually applied.

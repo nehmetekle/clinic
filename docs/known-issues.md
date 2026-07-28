@@ -244,3 +244,108 @@ admin later **changes a patient's referrer** to a different one, the frozen fee
 does **not** move to the new referrer's rate. The money stays correct, but that
 patient then appears in the cost breakdown under their *current* `referralSource`
 name carrying the *old* referrer's frozen amount. Rare manual-edit path.
+
+---
+
+## 9. Food List (Nutrient-Rich Foods List) — fidelity notes
+
+The Food List card in the consultation editor and its generated PDF reproduce
+Layaka's paper form ("Patient paper english.docx"). The layout in
+`src/server/pdf/food-list-pdf.ts` is a transcription of the document's real
+geometry — shape offsets/extents read out of `word/document.xml` and cross-checked
+against a render of the original — not an eyeball approximation. Where an exact
+match wasn't possible, this is what differs and why:
+
+**Fonts (cannot be exact).** The document uses **Calibri** (item labels,
+headings), **Calibri Light** (title) and **Segoe UI Symbol** (the ☐ glyph) — all
+proprietary Microsoft fonts that can't be redistributed or embedded in a PDF. The
+PDF uses **Carlito**, an OFL font that is *metric-compatible* with Calibri
+(identical advance widths, so text occupies exactly the same space and breaks in
+the same places), plus **Lato** (OFL) for the subtitle/footer, which the document
+itself specifies. Letterforms are very close but not identical. The document also
+mixes Lato and Trebuchet MS inconsistently in the subtitle/footer — that
+inconsistency was not reproduced; those lines are uniformly Lato.
+
+**Checkboxes are drawn, not typeset.** With Segoe UI Symbol unavailable, the box
+and its tick are vector-drawn. This is also why a ticked item renders as a clean
+checkmark rather than a substituted glyph.
+
+**Column count.** The printed form is **four** columns (measured x-offsets 0.34" /
+2.41" / 4.38" / 6.25", deliberately bleeding outside the 1" margins). The PDF
+matches that exactly. The **on-screen** form reflows responsively (1–3 columns by
+breakpoint) because four columns of checkboxes are unusable inside the editor card
+on a narrow screen — a deliberate divergence, screen only.
+
+**Name / Notes placement.** On paper these sit at the **bottom** of the sheet,
+below the food columns; the PDF matches. In the **web form** they're at the top,
+where they're more useful when filling it in.
+
+**Text metrics — the three things that make the columns match.** These were all
+read out of `word/document.xml`; guessing any of them produces text that crowds or
+is clipped by the box borders:
+
+1. **Insets are 0.1in left/right, 0.05in top/bottom** (`<wps:bodyPr lIns/rIns/tIns/bIns>`,
+   identical on every box). This is the padding that keeps labels off the border.
+2. **Line spacing is not uniform.** The form was hand-built and the boxes were
+   formatted differently: `w:line="276"` (1.15×) on Vegetables / Eggs and Dairy /
+   Other Foods, `280` (~1.167×) on Nuts and seeds, and single spacing on Fruits /
+   Animal proteins / Plant-based proteins / Carbohydrates. `LINE_SPACING` carries
+   these per category. One shared pitch makes some columns overflow their box and
+   leaves others visibly loose.
+3. **A wrapped continuation line gets the FULL inner width.** Only the first line
+   of an item shares its row with the checkbox; wrapped lines start at the box's
+   left inset. Measuring every line against the narrower first-line width splits
+   "Walnuts / Pistachios" onto a third line, where the paper form keeps it on one.
+
+Every label that wraps on the paper form wraps identically here: "Melon /" +
+"Watermelon", "Regular / Greek" + "Yogurt", "Labneh / White" + "Cheese",
+"Carbonated" + "Beverages", "Pasta / Pizza /" + "Flour", "Chickpeas / Fava" +
+"Beans", "Almonds /" + "Walnuts / Pistachios", and the "Herbs: …" line over three.
+
+`tokenize()` keeps a lone "/" or "-" attached to the word before it, as a
+break-opportunity rule applied while measuring. Don't "fix up" a stranded
+separator after wrapping instead — moving it back onto the previous line can push
+that line past the margin, which is exactly how a label once ended up half a point
+from its border.
+
+**Box heights auto-grow when needed.** Each box is drawn at
+`max(document height, content height + insets)`, so a label can never be clipped.
+At the current catalog only "Nuts and seeds" grows (by ~9pt); every other box has
+slack at the document's own height. If items are ever added to a category, check
+the grown box doesn't collide with the next heading in the same column.
+
+**Notes is a single ruled line.** The paper form gives Notes one rule. A long note
+steps down in type size and may run to a second line before it is truncated with
+an ellipsis; the editor says so under the field. Free text is also filtered to
+characters the embedded font subset can encode, so a pasted emoji (or Arabic, in
+the English form) is dropped rather than throwing during generation.
+
+**Dropped from the original:** a stray Arabic word (`نشوي`) left in the document
+body, and a white masking rectangle whose only job was trimming the header band.
+
+**Verifying a layout change.** Don't eyeball it. macOS Quick Look
+(`qlmanage -t -s 1600 -o out file.docx`) will render the .docx, but it substitutes
+its own font and lets text overflow — its box geometry is trustworthy, its line
+breaks are not, and taking them at face value is what produced the clipping bug in
+the first place. Prefer measuring against `word/document.xml`, and assert the
+result: for each category compute the wrapped lines and check the gap from the
+longest line to the box's right border and from the last baseline to the bottom.
+Current minimums are ~9.9pt right and 3.6pt bottom (the document's own inset).
+
+**Arabic edition — not built.** The language picker shows Arabic as a disabled
+"coming soon" option. `ConsultationFoodList.language` already stores `"en"`/`"ar"`,
+so the Arabic form needs no migration — it needs a translated catalog and an
+RTL-aware renderer (and an Arabic-capable embedded font; the current subsets are
+Latin-only).
+
+**Permissions.** Filling in and generating follow the consultation editor
+(doctor/admin, `canViewClinical`). The finished PDF is downloadable by **every**
+role — the front desk hands it to the patient — so `/api/consultation-files/[id]`
+and `/api/clients/[id]/consultation-files` gate on "signed in" rather than
+clinical access. To make that reachable, the client profile's **Files tab is now
+visible to the secretary**, scoped: she sees consultation documents only, never
+blood-test lab results (still `canViewClinical`, enforced server-side).
+
+**Regeneration replaces.** Only one PDF per visit per `kind` is kept — regenerating
+after ticking another box leaves one current sheet rather than a pile of
+near-identical ones. The audit log records each (re)generation.

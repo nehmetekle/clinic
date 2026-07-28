@@ -4,6 +4,7 @@ import { ConflictError, ForbiddenError, NotFoundError } from "../http";
 import { calcBmi, discountAmount } from "@/lib/utils";
 import { allocateCoverage } from "@/lib/coverage";
 import { clinicDayRange } from "@/lib/config";
+import { normalizeFoodListSelections, type FoodListLanguage } from "@/lib/food-list";
 import { asCurrency, dateOnly } from "../serialize";
 import { auditMoney, writeAudit } from "./audit";
 import {
@@ -27,6 +28,7 @@ export const consultationInclude = {
   dietitian: true,
   treatments: { include: { clientPackage: true }, orderBy: { createdAt: "asc" } },
   products: { orderBy: { createdAt: "asc" } },
+  foodList: true,
 } satisfies Prisma.ConsultationInclude;
 
 const include = consultationInclude;
@@ -186,6 +188,17 @@ export function toConsultation(c: ConsultationRow): Consultation {
       currency: asCurrency(p.currency),
       notes: p.notes ?? undefined,
     })),
+    foodList: c.foodList
+      ? {
+          language: c.foodList.language as FoodListLanguage,
+          patientName: c.foodList.patientName,
+          notes: c.foodList.notes ?? undefined,
+          // Filter on read too: an item retired from the catalog after this was
+          // saved would otherwise surface as a tick the UI can't render.
+          selections: normalizeFoodListSelections(parseList(c.foodList.selections)),
+          updatedAt: c.foodList.updatedAt.toISOString(),
+        }
+      : undefined,
   };
 }
 
@@ -255,6 +268,14 @@ export type ConsultationInput = {
     quantity?: number;
     notes?: string;
   }[];
+  // Nutrient-Rich Foods List. Omitted = the card was never opened on this save;
+  // any stored form is left untouched (see buildConsultationContentTx).
+  foodList?: {
+    language?: FoodListLanguage;
+    patientName: string;
+    notes?: string;
+    selections?: string[];
+  };
 };
 
 /** Keeps active↔completed in step with usage; preserves other statuses. */
@@ -761,6 +782,25 @@ async function buildConsultationContentTx(
     },
     opts.actor,
   );
+
+  // Food List (Nutrient-Rich Foods List). Only touched when the payload carries
+  // it — the card is optional and most visits never open it, so an absent
+  // `foodList` must leave a previously saved form alone rather than wipe it.
+  // Unknown item ids are dropped here (catalog is the authority) instead of
+  // failing the save, so a stale tab can't cost the doctor the rest of the visit.
+  if (input.foodList) {
+    const selections = JSON.stringify(
+      normalizeFoodListSelections(input.foodList.selections ?? []),
+    );
+    const patientName = input.foodList.patientName;
+    const notes = input.foodList.notes || null;
+    const language = input.foodList.language ?? "en";
+    await tx.consultationFoodList.upsert({
+      where: { consultationId },
+      create: { consultationId, language, patientName, notes, selections },
+      update: { language, patientName, notes, selections },
+    });
+  }
 
   // Apply this consultation's usage from the rows just written.
   await applyConsultationUsage(tx, consultationId, 1);
