@@ -24,6 +24,7 @@ export default function SettingsPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <ReferrersCard />
         <TwoFactorCard />
+        <WhatsAppRemindersCard />
 
         <Card>
           <CardHeader title="Data" />
@@ -37,6 +38,53 @@ export default function SettingsPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+// Admin utility to confirm WhatsApp reminders are working: sends the reminder
+// template to any number on demand. During testing the number must be a
+// verified Meta test recipient; in production it works for real patients.
+// Patients get automatic reminders ~24h and ~1–2h before their appointment.
+function WhatsAppRemindersCard() {
+  const { toast } = useToast();
+  const [phone, setPhone] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function sendTest() {
+    if (!phone.trim()) {
+      toast("Enter a phone number (with country code, e.g. +961…)");
+      return;
+    }
+    setSending(true);
+    try {
+      await api.sendTestReminder(phone.trim());
+      toast("Test reminder sent — check that phone's WhatsApp.");
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="WhatsApp reminders"
+        subtitle="Patients automatically get a WhatsApp reminder ~24h and ~1–2h before their appointment. Send yourself a test below."
+      />
+      <CardBody className="space-y-3">
+        <FormRow label="Send a test to (include country code)">
+          <Input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="+961 76 119 365"
+          />
+        </FormRow>
+        <Button onClick={sendTest} disabled={sending}>
+          {sending ? "Sending…" : "Send test reminder"}
+        </Button>
+      </CardBody>
+    </Card>
   );
 }
 

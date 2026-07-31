@@ -94,6 +94,9 @@ model Client {
   assignedDietitianId String?
   createdById         String?
   referralFee         Float?
+  // Whether this patient gets WhatsApp appointment reminders. Default on; staff
+  // can opt a patient out (see consent checkbox at registration/check-in).
+  whatsappOptIn       Boolean         @default(true)
   appointments        Appointment[]
   bloodSamples        BloodSample[]
   assignedDietitian   User?           @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
@@ -210,6 +213,11 @@ model Appointment {
   visitType   String    @default("follow_up")
   notes       String?
   completedAt DateTime?
+  // WhatsApp reminder tracking — each set once its reminder is sent, so a patient
+  // never gets the same reminder twice. Two independent reminders per visit:
+  // ~24h before, and ~1–2h before.
+  reminder24hSentAt DateTime?
+  reminder2hSentAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
