@@ -174,8 +174,6 @@ export const api = {
     postJson<{ ok: true }>("/api/auth/2fa/disable", { password }),
   resetStaffPassword: (id: string, password: string) =>
     patchJson<StaffUser>(`/api/staff/${id}/password`, { password }),
-  sendTestReminder: (phone: string) =>
-    postJson<{ ok: true; id?: string }>("/api/reminders/test", { phone }),
 
   listClients: () => getJson<Client[]>("/api/clients"),
   searchClients: (q: string) => getJson<Client[]>(`/api/clients?q=${encodeURIComponent(q)}`),
