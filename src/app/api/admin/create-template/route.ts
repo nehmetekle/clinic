@@ -60,6 +60,26 @@ export async function GET(req: Request) {
     return json({ step: "sendtext", ok: r.ok, to, result }, r.ok ? 200 : 502);
   }
 
+  // ?resubmit=1&waba=<id> — delete the (stuck) pending template by name and
+  // recreate a fresh one, to try to get a faster queue slot.
+  if (url.searchParams.get("resubmit") && wabaId) {
+    const del = await fetch(
+      `${GRAPH}/${wabaId}/message_templates?name=${TEMPLATE.name}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+    );
+    const delResult = await del.json().catch(() => ({}));
+    const create = await fetch(`${GRAPH}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(TEMPLATE),
+    });
+    const createResult = await create.json().catch(() => ({}));
+    return json(
+      { step: "resubmit", delOk: del.ok, delResult, createOk: create.ok, createResult },
+      create.ok ? 200 : 502,
+    );
+  }
+
   // ?check=1 — list existing templates + their approval status (no creation).
   if (url.searchParams.get("check") && wabaId) {
     const r = await fetch(
