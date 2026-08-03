@@ -37,6 +37,29 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   let wabaId = url.searchParams.get("waba") ?? undefined;
 
+  // ?sendtext=1&to=<number>[&msg=...] — send a FREE-FORM text (no template, no
+  // approval needed). Only works inside the 24h window after the user messages
+  // the business. Lets us demo the real reminder text while the template is
+  // still pending Meta approval.
+  if (url.searchParams.get("sendtext")) {
+    const to = (url.searchParams.get("to") || "96176119365").replace(/\D/g, "");
+    const msg =
+      url.searchParams.get("msg") ||
+      "Hi Nehme, reminder: your appointment at Layaka is on Aug 3, 2026 at 2:00 PM. See you soon!";
+    const r = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: msg },
+      }),
+    });
+    const result = await r.json().catch(() => ({}));
+    return json({ step: "sendtext", ok: r.ok, to, result }, r.ok ? 200 : 502);
+  }
+
   // ?check=1 — list existing templates + their approval status (no creation).
   if (url.searchParams.get("check") && wabaId) {
     const r = await fetch(
