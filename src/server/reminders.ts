@@ -1,12 +1,15 @@
 import { db } from "./db";
 import { sendWhatsAppTemplate, isWhatsAppConfigured } from "./whatsapp";
 import { withClinicTime } from "@/lib/config";
+import { formatDate, formatTime } from "@/lib/utils";
 
-// Which approved template each reminder uses. Defaults to "hello_world" (the
-// template every test number has) so the pipeline is testable before go-live;
-// swap for your approved production templates via env at Step 9.
-const TEMPLATE_24H = process.env.WHATSAPP_TEMPLATE_24H || "hello_world";
-const TEMPLATE_1H = process.env.WHATSAPP_TEMPLATE_1H || "hello_world";
+// The approved WhatsApp template used for reminders. Its body must have 3
+// variables, in order: {{1}} patient name, {{2}} appointment date, {{3}}
+// appointment time. Both the 24h and 1h reminders use the same template — the
+// body states the real date/time, so it reads correctly whenever it's sent.
+// Override the name/language via env if your approved template differs.
+const TEMPLATE_24H = process.env.WHATSAPP_TEMPLATE_24H || "appointment_reminder";
+const TEMPLATE_1H = process.env.WHATSAPP_TEMPLATE_1H || "appointment_reminder";
 const TEMPLATE_LANG = process.env.WHATSAPP_TEMPLATE_LANG || "en_US";
 
 const HOUR = 60 * 60 * 1000;
@@ -59,9 +62,17 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
     if (hoursUntil <= 0) continue; // already started / past
     result.checked++;
 
+    // Template body params: {{1}} name, {{2}} date, {{3}} time — same for both
+    // reminders (the message states the actual appointment date/time).
+    const params = [
+      a.client.firstName,
+      formatDate(a.date.toISOString()),
+      formatTime(a.time),
+    ];
+
     // 1h reminder takes priority in the final stretch.
     if (!a.reminder2hSentAt && hoursUntil <= 1) {
-      const r = await sendWhatsAppTemplate(phone, TEMPLATE_1H, TEMPLATE_LANG);
+      const r = await sendWhatsAppTemplate(phone, TEMPLATE_1H, TEMPLATE_LANG, params);
       if (r.ok) {
         await db.appointment.update({ where: { id: a.id }, data: { reminder2hSentAt: now } });
         result.sent1h++;
@@ -73,7 +84,7 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
 
     // 24h reminder: once, any time within a day of the visit but before the 1h window.
     if (!a.reminder24hSentAt && hoursUntil > 1 && hoursUntil <= 24) {
-      const r = await sendWhatsAppTemplate(phone, TEMPLATE_24H, TEMPLATE_LANG);
+      const r = await sendWhatsAppTemplate(phone, TEMPLATE_24H, TEMPLATE_LANG, params);
       if (r.ok) {
         await db.appointment.update({ where: { id: a.id }, data: { reminder24hSentAt: now } });
         result.sent24h++;
