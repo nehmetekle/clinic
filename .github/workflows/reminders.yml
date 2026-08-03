@@ -1,0 +1,25 @@
+name: Send appointment reminders
+
+# Free scheduler for WhatsApp appointment reminders. Vercel's Hobby plan can't
+# run frequent crons, so GitHub Actions pings the live reminder endpoint every
+# 30 minutes; the app decides which appointments are due (24h / 1h before) and
+# sends them. Requires a repo secret CRON_SECRET matching the app's env var.
+#
+# Note: GitHub's scheduled runs can be delayed a few minutes under load — fine
+# for reminders. For minute-precise timing, use cron-job.org or Vercel Pro.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 minutes (UTC)
+  workflow_dispatch: {} # allows manual "Run workflow" from the Actions tab
+
+jobs:
+  ping-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger reminder scheduler
+        run: |
+          curl -sS -X GET \
+            "https://clinic-nine-xi.vercel.app/api/cron/reminders" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code}\n"
