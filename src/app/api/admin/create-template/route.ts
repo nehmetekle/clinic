@@ -36,6 +36,15 @@ export async function GET(req: Request) {
   //    not the phone number). Allow ?waba=<id> to override discovery.
   const url = new URL(req.url);
   let wabaId = url.searchParams.get("waba") ?? undefined;
+
+  // ?check=1 — list existing templates + their approval status (no creation).
+  if (url.searchParams.get("check") && wabaId) {
+    const r = await fetch(
+      `${GRAPH}/${wabaId}/message_templates?fields=name,status,language,category&access_token=${token}`,
+    );
+    const list = await r.json().catch(() => ({}));
+    return json({ step: "check", ok: r.ok, list }, r.ok ? 200 : 502);
+  }
   let discovery: unknown = null;
   if (!wabaId) {
     const r = await fetch(
