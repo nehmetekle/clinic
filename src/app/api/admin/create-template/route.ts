@@ -19,6 +19,21 @@ const TEMPLATE = {
   ],
 };
 
+// v2 adds the clinic's Google Maps location. Same 3 body variables as v1, so no
+// change to how the reminder engine fills them — only the template name differs.
+const TEMPLATE_V2 = {
+  name: "appointment_reminder_v2",
+  language: "en_US",
+  category: "UTILITY",
+  components: [
+    {
+      type: "BODY",
+      text: "Hi {{1}}, reminder: your appointment at Layaka is on {{2}} at {{3}}.\n\n📍 Find us here: https://maps.app.goo.gl/kqWvFAa8w4fQMq6QA\n\nSee you soon!",
+      example: { body_text: [["Nehme", "Aug 10, 2026", "2:00 PM"]] },
+    },
+  ],
+};
+
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
   if (secret) {
@@ -78,6 +93,18 @@ export async function GET(req: Request) {
       { step: "resubmit", delOk: del.ok, delResult, createOk: create.ok, createResult },
       create.ok ? 200 : 502,
     );
+  }
+
+  // ?createv2=1&waba=<id> — create the v2 template (with the Maps link). v1 stays
+  // live/usable meanwhile, so reminders keep working until v2 is approved.
+  if (url.searchParams.get("createv2") && wabaId) {
+    const create = await fetch(`${GRAPH}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(TEMPLATE_V2),
+    });
+    const result = await create.json().catch(() => ({}));
+    return json({ step: "createv2", ok: create.ok, result }, create.ok ? 200 : 502);
   }
 
   // ?check=1 — list existing templates + their approval status (no creation).
