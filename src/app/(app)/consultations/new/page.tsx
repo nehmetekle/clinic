@@ -1420,6 +1420,8 @@ function ConsultationEditor() {
                 generating={generatingPdf}
                 generatedFile={foodListFile}
                 canGenerate={!saving}
+                patientPhone={client.phone}
+                patientFirstName={client.firstName}
               />
             ) : (
               <FoodListLanguagePicker onSelect={setFoodListLanguage} />

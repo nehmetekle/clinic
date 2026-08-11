@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, FileText, FlaskConical, Salad } from "lucide-react";
+import { Download, FileText, FlaskConical, MessageCircle, Salad } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useApi } from "@/lib/use-api";
@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { formatDate } from "@/lib/utils";
 import { formatFileSize } from "@/lib/files";
+import { SendViaWhatsAppButton, WHATSAPP_ATTACH_HINT } from "@/components/SendViaWhatsAppButton";
 
 /**
  * The client profile's Files tab.
@@ -22,8 +23,20 @@ import { formatFileSize } from "@/lib/files";
  * Uploads still happen in context (the Blood Samples board / Blood tests tab, and
  * the consultation editor for the Food List) — this tab is read-only. General,
  * ad-hoc file upload remains a Version 4 item, noted below.
+ *
+ * Food List rows also carry "Send via WhatsApp" (all three roles), which needs
+ * the patient's phone and first name — hence those props rather than fetching
+ * the client again here, since the profile page above already has them.
  */
-export function FilesTab({ clientId }: { clientId: string }) {
+export function FilesTab({
+  clientId,
+  clientPhone,
+  clientFirstName,
+}: {
+  clientId: string;
+  clientPhone: string;
+  clientFirstName: string;
+}) {
   const { user } = useSession();
   const isClinical = user?.role === "dietitian" || user?.role === "admin";
 
@@ -81,13 +94,25 @@ export function FilesTab({ clientId }: { clientId: string }) {
                     </span>
                   </span>
                 </span>
-                <a
-                  href={api.consultationFileUrl(f.id)}
-                  download={f.filename}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
-                >
-                  <Download className="h-4 w-4" /> Download
-                </a>
+                <span className="flex shrink-0 items-center gap-1">
+                  <a
+                    href={api.consultationFileUrl(f.id)}
+                    download={f.filename}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+                  >
+                    <Download className="h-4 w-4" /> Download
+                  </a>
+                  {/* Food List forms are what gets sent on to the patient; a lab
+                      result is clinical and is never WhatsApp'd from here. */}
+                  {f.kind === "food-list" && (
+                    <SendViaWhatsAppButton
+                      fileId={f.id}
+                      filename={f.filename}
+                      phone={clientPhone}
+                      firstName={clientFirstName}
+                    />
+                  )}
+                </span>
               </li>
             ))}
             {labs.map((f) => (
@@ -118,6 +143,12 @@ export function FilesTab({ clientId }: { clientId: string }) {
               </li>
             ))}
           </ul>
+        )}
+        {docs.some((f) => f.kind === "food-list") && (
+          <p className="mt-4 flex items-start gap-1.5 rounded-lg bg-emerald-50/70 px-3 py-2 text-xs text-emerald-800">
+            <MessageCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {WHATSAPP_ATTACH_HINT}
+          </p>
         )}
         <p className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-400">
           Uploading general (non blood-test) documents arrives in Version 4. Blood-test

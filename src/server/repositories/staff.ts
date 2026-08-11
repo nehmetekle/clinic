@@ -35,6 +35,9 @@ export async function listStaff(): Promise<StaffUser[]> {
  * the last active admin (by demotion or deactivation) is refused. The route
  * separately stops an admin editing their own role/status; this covers one admin
  * demoting another.
+ *
+ * Deactivating someone (status → non-active) also revokes all their sessions,
+ * mirroring `resetStaffPassword`.
  */
 export async function updateStaff(
   id: string,
@@ -85,6 +88,16 @@ export async function updateStaff(
 
   try {
     const row = await db.user.update({ where: { id }, data });
+    // Deactivation kills every live session for that account, the same way an
+    // admin password reset does. `resolveSessionToken` already refuses a
+    // session whose user isn't active, so this isn't what locks them out — it
+    // makes the tokens themselves dead rather than merely rejected, so nothing
+    // survives a later re-activation. Runs only on a status edit to a
+    // non-active value (never on re-activation or any other field), and only
+    // after the update commits, so a rejected edit doesn't log anyone out.
+    if (input.status !== undefined && input.status !== "active") {
+      await revokeAllSessionsForUser(id);
+    }
     return toStaff(row);
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {

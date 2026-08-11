@@ -18,6 +18,7 @@ import {
 } from "@/lib/food-list";
 import type { ConsultationFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { SendViaWhatsAppButton, WHATSAPP_ATTACH_HINT } from "@/components/SendViaWhatsAppButton";
 
 /** The editable state the consultation editor holds for this form. */
 export type FoodListDraft = {
@@ -92,6 +93,8 @@ export function FoodListForm({
   generating,
   generatedFile,
   canGenerate,
+  patientPhone,
+  patientFirstName,
 }: {
   draft: FoodListDraft;
   language: FoodListLanguage;
@@ -101,6 +104,9 @@ export function FoodListForm({
   generating: boolean;
   generatedFile?: ConsultationFile;
   canGenerate: boolean;
+  /** The patient this visit belongs to — for the WhatsApp hand-off below. */
+  patientPhone: string;
+  patientFirstName: string;
 }) {
   const rtl = isRtl(language);
   const fieldLabels = FOOD_LIST_FIELD_LABELS[language];
@@ -246,19 +252,31 @@ export function FoodListForm({
             </p>
           ) : (
             <p className="text-xs text-slate-400">
-              Generates a PDF of this form and attaches it to the visit.
+              Generates a PDF of this form and attaches it to the visit — done automatically
+              when you close the visit if you don&apos;t generate it here.
             </p>
+          )}
+          {generatedFile && (
+            <p className="mt-1 text-xs text-emerald-700">{WHATSAPP_ATTACH_HINT}</p>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {generatedFile && (
-            <a
-              href={`/api/consultation-files/${generatedFile.id}`}
-              download={generatedFile.filename}
-              className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
-            >
-              <Download className="h-4 w-4" /> Download
-            </a>
+            <>
+              <a
+                href={`/api/consultation-files/${generatedFile.id}`}
+                download={generatedFile.filename}
+                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+              >
+                <Download className="h-4 w-4" /> Download
+              </a>
+              <SendViaWhatsAppButton
+                fileId={generatedFile.id}
+                filename={generatedFile.filename}
+                phone={patientPhone}
+                firstName={patientFirstName}
+              />
+            </>
           )}
           <Button
             type="button"

@@ -822,7 +822,13 @@ export default function ClientProfilePage() {
               </Card>
             )}
 
-            {active === "Files" && <FilesTab clientId={client.id} />}
+            {active === "Files" && (
+              <FilesTab
+                clientId={client.id}
+                clientPhone={client.phone}
+                clientFirstName={client.firstName}
+              />
+            )}
           </>
         )}
       </Tabs>

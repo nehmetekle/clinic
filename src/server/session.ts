@@ -106,8 +106,8 @@ export async function revokeSessionByToken(token: string | null): Promise<void> 
 }
 
 /** Force-logout every active session for a user — used when an admin
- * deactivates a staff account, so access ends immediately rather than at
- * the account's next natural session expiry. */
+ * deactivates a staff account or resets their password, so access ends
+ * immediately rather than at the account's next natural session expiry. */
 export async function revokeAllSessionsForUser(userId: string): Promise<void> {
   await db.session.updateMany({
     where: { userId, revokedAt: null },

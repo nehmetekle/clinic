@@ -3,6 +3,19 @@ import { PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
 import { FOOD_LIST_LANGUAGES } from "@/lib/food-list";
 import { moneyCap } from "@/lib/utils";
 import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
+import { isValidInternationalPhone, PHONE_FORMAT_MESSAGE } from "@/lib/phone";
+
+// ---- Patient phone format ----
+// `PhoneInput` already blocks a malformed number in the UI, but the schema is
+// the only gate a direct API call passes through — so the same rule is applied
+// here, otherwise an unusable number reaches the database and every feature that
+// dials it (WhatsApp, reminders) breaks on that patient. Requires an explicit
+// country code: a bare national number can't be dialled internationally, and
+// guessing its country risks contacting the wrong person.
+const patientPhoneSchema = z
+  .string()
+  .min(1, "Phone is required")
+  .refine(isValidInternationalPhone, PHONE_FORMAT_MESSAGE);
 
 // ---- R5: money-input sanity bounds ----
 // Reject negatives and unreasonably large amounts with a clear error instead of
@@ -46,7 +59,7 @@ const dateOfBirthSchema = z
 export const createClientSchema = z.object({
   firstName: z.string().min(1, "First name is required"),
   lastName: z.string().min(1, "Last name is required"),
-  phone: z.string().min(1, "Phone is required"),
+  phone: patientPhoneSchema,
   email: z.string().email().optional().or(z.literal("")),
   dateOfBirth: dateOfBirthSchema,
   gender: z.string().optional(),
@@ -73,7 +86,8 @@ export const createClientSchema = z.object({
 export const updateClientSchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
-  phone: z.string().min(1).optional(),
+  // Optional (partial updates), but validated whenever it IS sent.
+  phone: patientPhoneSchema.optional(),
   email: z.string().email().optional().or(z.literal("")),
   dateOfBirth: dateOfBirthSchema,
   gender: z.string().optional(),

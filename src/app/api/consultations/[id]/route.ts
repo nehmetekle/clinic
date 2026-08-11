@@ -4,6 +4,7 @@ import {
   updateConsultation,
 } from "@/server/repositories/consultations";
 import { createConsultationSchema } from "@/lib/validation";
+import { ensureFoodListPdf } from "@/server/services/foodListPdf";
 import { actingUser, canViewClinical } from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
@@ -24,6 +25,12 @@ export async function PATCH(
     });
     if (close) {
       result = await closeConsultation(id, { actorName: actor.name, actorEmail: actor.email });
+      // The visit is now read-only, so this is the last chance to produce the
+      // Food List PDF for a doctor who filled the form in but never pressed
+      // "Generate PDF" (or who ticked more boxes after generating). Runs after
+      // the close has committed, outside its transaction, and never throws —
+      // a failed render must not report a successful close as an error.
+      await ensureFoodListPdf(id, { name: actor.name, email: actor.email });
     }
     return json(result);
   } catch (e) {

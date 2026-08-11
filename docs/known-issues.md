@@ -450,3 +450,77 @@ Positioning each glyph absolutely also applies GPOS `xAdvance`, i.e. the kerning
 `widthOfTextAtSize` ignores. 24 of 104 Arabic strings measure narrower as a
 result; none measure wider, so box clearances only improved. Current Arabic item
 clearances: 4.61pt below the last baseline and 4.40pt above the first.
+
+## 11. Food List — sending via WhatsApp, and the auto-generate fallback
+
+### What "Send via WhatsApp" can and cannot do
+**WhatsApp does not let a web page attach a file to a chat.** No `wa.me` /
+`api.whatsapp.com` parameter carries an attachment; it's a platform restriction
+applied to every website, not a gap here, and there is no workaround. So the
+button does the two automatable halves — downloads the PDF, and opens a chat on
+the patient's number with a short message pre-typed — and the person sending
+still attaches the downloaded file by hand. `WHATSAPP_ATTACH_HINT`
+(`src/components/SendViaWhatsAppButton.tsx`) is the one place that wording
+lives; both hosts render it. **Don't reword it into a promise the platform can't
+keep.**
+
+`wa.me` is deliberate: `web.whatsapp.com/send` is desktop-only and breaks on a
+phone, and `whatsapp://` dead-ends when the desktop app isn't installed. `wa.me`
+lets the sender's own machine choose.
+
+The download and the `window.open` both fire synchronously in the click handler,
+with **no `await` between them** — the moment the handler yields, the browser
+stops treating the `window.open` as user-initiated and the pop-up blocker eats
+the chat window. That's also why the button takes an already-generated file
+rather than generating one on demand.
+
+Shown wherever a Food List PDF can be downloaded (the consultation editor's Food
+List card and the client profile's Files tab), to **all three roles** — the
+secretary hands the form over as often as the doctor does. Only *generating* the
+PDF stays clinical-only. Lab-result rows never get the button.
+
+### Phone numbers must be dialable, and we don't guess
+`whatsAppChatUrl` returns `null` unless the stored phone names its country **and**
+has a plausible national number for it (`isValidInternationalPhone`,
+`src/lib/phone.ts`). The button then renders disabled in amber with what to fix.
+Guessing a missing country code would mean opening a chat with a stranger and
+sending them another patient's form, and a code with an impossible number
+("+961 12") is just as wrong to dial.
+
+`src/lib/phone.ts` now holds the dial-code table and length rules that used to
+live inside `components/ui/Field.tsx`; that file re-exports `isValidPhone` so
+existing imports are unchanged. The move exists so the **server** can apply the
+same rules: `createClientSchema`/`updateClientSchema` validate patient phones
+with `isValidInternationalPhone`, closing the gap where a direct API call
+(bypassing `PhoneInput`) could store an undialable number. Note `isValidPhone`
+stays deliberately laxer — it assumes Lebanon for a bare number so the input
+field stays usable mid-typing — so **use `isValidInternationalPhone` for anything
+that actually dials**. Staff phones are not covered (optional, never messaged).
+
+### Auto-generate on close
+Closing a visit finalizes it read-only, so a doctor who filled the form in but
+never pressed "Generate PDF" would leave nothing to hand over and no way back.
+`ensureFoodListPdf` (`src/server/services/foodListPdf.ts`) runs after close
+commits, from both close paths (`POST /api/consultations` with `close`, and
+`PATCH /api/consultations/[id]` with `close`).
+
+- Generates when a form exists with ≥1 tick and either no PDF exists yet, **or**
+  the form was edited after the last PDF was made (ticking more boxes then
+  closing must not leave a stale sheet; `saveConsultationFile` replaces in place,
+  so there's still exactly one current file).
+- No-ops when no form was filled in, or when nothing is ticked.
+- **Never throws.** Close has already committed; a font that won't load must not
+  report a finalized visit as an error, or invite a retry of a close that already
+  happened. Failures are logged and swallowed.
+
+It runs at the **route** layer, outside the close transaction, on purpose:
+rendering reads fonts/artwork from disk and takes real time, and must not extend
+or fail the DB transaction.
+
+That staleness check depends on `ConsultationFoodList.updatedAt` meaning "the
+form actually changed". It didn't: `buildConsultationContentTx` upserted the row
+on every save, and re-saving a draft resends the whole form, so `updatedAt` moved
+even when nothing changed — and every close re-rendered the PDF for nothing (plus
+a bogus "Regenerated Food List PDF" audit entry). The upsert now **skips the
+write when language/patientName/notes/selections all match**. Anything else that
+starts keying off `updatedAt` inherits that guarantee; don't remove it.

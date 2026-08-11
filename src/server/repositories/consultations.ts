@@ -795,11 +795,27 @@ async function buildConsultationContentTx(
     const patientName = input.foodList.patientName;
     const notes = input.foodList.notes || null;
     const language = input.foodList.language ?? "en";
-    await tx.consultationFoodList.upsert({
+    const existing = await tx.consultationFoodList.findUnique({
       where: { consultationId },
-      create: { consultationId, language, patientName, notes, selections },
-      update: { language, patientName, notes, selections },
+      select: { language: true, patientName: true, notes: true, selections: true },
     });
+    // Re-saving a draft resends the whole form, so most saves carry a form that
+    // hasn't actually changed. Skip the write in that case: `updatedAt` is the
+    // signal for "this form moved since the PDF was made" (see ensureFoodListPdf),
+    // and a no-op write would bump it and force a pointless re-render on close.
+    const unchanged =
+      existing !== null &&
+      existing.language === language &&
+      existing.patientName === patientName &&
+      existing.notes === notes &&
+      existing.selections === selections;
+    if (!unchanged) {
+      await tx.consultationFoodList.upsert({
+        where: { consultationId },
+        create: { consultationId, language, patientName, notes, selections },
+        update: { language, patientName, notes, selections },
+      });
+    }
   }
 
   // Apply this consultation's usage from the rows just written.

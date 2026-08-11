@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { cn, formatNumberInput, sanitizeNumberInput } from "@/lib/utils";
 import { COUNTRIES, COUNTRIES_ORDERED } from "@/lib/countries";
 import { isWeekendIso, WEEKEND_BOOKING_MESSAGE } from "@/lib/config";
+import { DEFAULT_DIAL, digitsOnly, isValidPhone, phoneRule, splitPhone } from "@/lib/phone";
 
 export function Label({
   children,
@@ -92,49 +93,10 @@ export function MoneyInput({
   );
 }
 
-const DEFAULT_DIAL = "+961";
-// Unique dial codes, longest first so "+961" matches before "+9…" etc.
-const SORTED_CODES = Array.from(new Set(COUNTRIES.map((c) => c.dial))).sort(
-  (a, b) => b.length - a.length,
-);
-
-// Expected national-number digit length per country (min–max), used to cap input
-// and validate. e.g. Lebanon is 7–8 digits, UAE 9, US/Canada 10.
-const PHONE_RULES: Record<string, { min: number; max: number }> = {
-  "+961": { min: 7, max: 8 },
-  "+971": { min: 9, max: 9 },
-  "+966": { min: 9, max: 9 },
-  "+974": { min: 8, max: 8 },
-  "+965": { min: 8, max: 8 },
-  "+973": { min: 8, max: 8 },
-  "+968": { min: 8, max: 8 },
-  "+962": { min: 9, max: 9 },
-  "+963": { min: 9, max: 9 },
-  "+90": { min: 10, max: 10 },
-  "+20": { min: 10, max: 10 },
-  "+33": { min: 9, max: 9 },
-  "+44": { min: 10, max: 10 },
-  "+49": { min: 10, max: 11 },
-  "+1": { min: 10, max: 10 },
-};
-
-const phoneRule = (dial: string) => PHONE_RULES[dial] ?? { min: 6, max: 15 };
-const digitsOnly = (s: string) => (s ?? "").replace(/\D/g, "");
-
-function splitPhone(value: string): { dial: string; rest: string } {
-  const v = (value ?? "").trim();
-  const match = SORTED_CODES.find((code) => v.startsWith(code));
-  if (match) return { dial: match, rest: v.slice(match.length).trim() };
-  return { dial: DEFAULT_DIAL, rest: v };
-}
-
-/** True when the phone has a national number with a valid digit count for its country. */
-export function isValidPhone(value: string): boolean {
-  const { dial, rest } = splitPhone(value);
-  const n = digitsOnly(rest).length;
-  const { min, max } = phoneRule(dial);
-  return n >= min && n <= max;
-}
+// The dial-code table and length rules live in `@/lib/phone` so the server can
+// apply the same rules when validating a write; re-exported here because every
+// form already imports `isValidPhone` from this module.
+export { isValidPhone };
 
 /**
  * Phone entry with a country-code dropdown (defaults to Lebanon +961) and a

@@ -147,6 +147,27 @@ patient actually eats.
   regenerating replaces. Downloadable by **every** role (unlike lab results); the
   client profile's Files tab is therefore visible to the secretary too, scoped to
   consultation documents only.
+- **Generated automatically on close.** `ensureFoodListPdf`
+  (`src/server/services/foodListPdf.ts`) runs after a visit closes, from both
+  close paths, so a doctor who filled the form in but never pressed "Generate
+  PDF" still leaves a sendable file behind (a closed visit is read-only — there's
+  no going back). Also re-renders if the form was edited after the last PDF.
+  No-ops when no form exists or nothing is ticked; **never throws** — close has
+  already committed. Runs at the route layer, outside the close transaction.
+- **"Send via WhatsApp"** sits next to every Download for a Food List PDF (the
+  editor's card and the Files tab), for **all three roles**. It downloads the PDF
+  and opens a `wa.me` chat on the patient's number with a message pre-typed —
+  **it cannot attach the file**, which is a WhatsApp platform restriction with no
+  workaround, so the sender attaches it by hand. `whatsAppChatUrl`
+  (`src/lib/whatsapp.ts`) refuses to build a link for a phone without a country
+  code or with an impossible number rather than guess; the button then shows what
+  to fix. See [docs/known-issues.md](docs/known-issues.md) §11 before changing the
+  wording or the click handler (both actions must stay in one user gesture).
+- **Phone rules live in `src/lib/phone.ts`** (moved out of `components/ui/Field.tsx`,
+  which re-exports `isValidPhone`) so the server shares them: patient phones are
+  now validated with `isValidInternationalPhone` in `createClientSchema`/
+  `updateClientSchema`. Use that one — not `isValidPhone`, which stays lax for the
+  input field — anywhere a number actually gets dialled.
 - **Both languages are built.** English reproduces "Patient paper english.docx";
   Arabic reproduces "Patient paper 1.docx" — the same 94 items, mirrored
   right-to-left (Vegetables is the rightmost column, checkbox to the right of its
