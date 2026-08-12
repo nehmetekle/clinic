@@ -17,7 +17,7 @@ import { useClientSearch } from "@/lib/use-client-search";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { CLINIC, toUsdFrozen, todayIso } from "@/lib/config";
-import { formatDate, formatMoney, moneyCap, parseNumberInput } from "@/lib/utils";
+import { cardSurchargeAmount, formatDate, formatMoney, moneyCap, parseNumberInput } from "@/lib/utils";
 import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
@@ -87,6 +87,12 @@ export default function PaymentsPage() {
   // R5: an amount over the sane cap for its currency is rejected with a clear
   // inline message rather than being silently accepted as an absurd receipt.
   const amountTooLarge = parseNumberInput(form.amountPaid) > moneyCap(form.currency);
+  // Live preview of the clinic's configured card fee, added on top of the entered
+  // amount — mirrors what createPayment always charges for method "card" server-side,
+  // so the secretary isn't surprised by the final total.
+  const surchargeRate = settings.data?.cardSurchargePercent ?? 0;
+  const enteredAmount = parseNumberInput(form.amountPaid);
+  const cardSurcharge = cardSurchargeAmount(enteredAmount, form.method, surchargeRate);
   // Motif and amount are required; the client is optional (general payments have none).
   const canSave =
     form.motif.trim() !== "" &&
@@ -235,7 +241,14 @@ export default function PaymentsPage() {
                     <TD className="font-mono text-xs">{p.receiptNumber}</TD>
                     <TD className="font-medium">{p.clientName ?? "—"}</TD>
                     <TD className="text-slate-500">{p.motif}</TD>
-                    <TD className="font-medium">{formatMoney(p.amountPaid, p.currency)}</TD>
+                    <TD className="font-medium">
+                      {formatMoney(p.amountPaid, p.currency)}
+                      {p.cardSurchargeAmount > 0 && (
+                        <span className="ml-1 text-xs font-normal text-slate-400">
+                          (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                        </span>
+                      )}
+                    </TD>
                     <TD className="capitalize text-slate-500">{p.method.replace("_", " ")}</TD>
                     <TD className="text-slate-500">{formatDate(p.date)}</TD>
                     <TD className="text-slate-500">{p.createdByName ?? "—"}</TD>
@@ -308,12 +321,22 @@ export default function PaymentsPage() {
               )}
             </div>
           </FormRow>
-          <FormRow label="Amount received">
+          <FormRow label="Amount">
             <MoneyInput value={form.amountPaid} onValueChange={(amountPaid) => setForm({ ...form, amountPaid })} placeholder="0" />
             {amountTooLarge && (
               <p className="mt-1 text-xs text-rose-600">
                 Amount is unreasonably large (max {moneyCap(form.currency).toLocaleString()} {form.currency}).
               </p>
+            )}
+            {cardSurcharge > 0 && (
+              <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                <span className="font-medium">Card fee {surchargeRate}%</span>
+                <span>+{formatMoney(cardSurcharge, form.currency)}</span>
+                <span className="text-amber-400">→</span>
+                <span className="font-semibold">
+                  {formatMoney(enteredAmount + cardSurcharge, form.currency)} charged
+                </span>
+              </div>
             )}
           </FormRow>
           <FormRow label="Currency">
@@ -330,10 +353,11 @@ export default function PaymentsPage() {
             </Select>
           </FormRow>
           <p className="sm:col-span-2 text-xs text-slate-400">
-            Records the amount actually collected. Bundles are not sold here — the doctor starts
-            one during a consultation, which charges it and grants its sessions. If the client still
-            owes a balance, settle it at the visit basket so the remainder is tracked as a debt.
-            Receipt number is generated automatically.
+            Records the amount actually collected (plus the card surcharge on top, if configured and
+            paid by card). Bundles are not sold here — the doctor starts one during a consultation,
+            which charges it and grants its sessions. If the client still owes a balance, settle it at
+            the visit basket so the remainder is tracked as a debt. Receipt number is generated
+            automatically.
           </p>
         </div>
       </Modal>

@@ -63,6 +63,8 @@ export type ServicePriceKind = "blood_test" | "treatment";
 export interface ClinicSettings {
   usdToLbp: number;
   usdToEur: number;
+  // Fee percent added to a card payment (e.g. 10 = 10%). 0 disables it.
+  cardSurchargePercent: number;
 }
 
 // Sellable product/add-on (catalog). Prices are admin-managed. `cost` is the
@@ -362,6 +364,9 @@ export interface Payment {
   // Exchange rate (1 USD = ? LBP) snapshotted when the payment was logged. Reports
   // convert this record with this rate, never today's — so history never shifts.
   usdToLbp: number;
+  // Portion of `amountPaid` that is the card-payment surcharge fee (0 for every
+  // non-card payment). The original, pre-surcharge amount is amountPaid - this.
+  cardSurchargeAmount: number;
   method: PaymentMethod;
   date: string;
   receiptNumber: string;
@@ -434,8 +439,15 @@ export interface VisitBasket {
   receiptNumber?: string;
   // One entry per method the settlement was collected with (empty for an unpaid
   // or $0 basket). Lets a settled basket show the split clearly, e.g. Cash $100 ·
-  // Whish $200, each with its own receipt.
-  paymentSplits?: { method: PaymentMethod; amount: number; receiptNumber: string }[];
+  // Whish $200, each with its own receipt. `amount` is the basket-attributable
+  // portion (excludes any card surcharge, so the entries sum to `total` above);
+  // `cardSurchargeAmount` is the fee on top (0 for every non-card entry).
+  paymentSplits?: {
+    method: PaymentMethod;
+    amount: number;
+    cardSurchargeAmount: number;
+    receiptNumber: string;
+  }[];
 }
 
 // ---- Blood sample tracking (lab logistics) ----

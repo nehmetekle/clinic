@@ -309,7 +309,7 @@ export const api = {
   },
 
   getSettings: () => getJson<ClinicSettings>("/api/settings"),
-  updateSettings: (body: { usdToLbp?: number; usdToEur?: number }) =>
+  updateSettings: (body: { usdToLbp?: number; usdToEur?: number; cardSurchargePercent?: number }) =>
     putJson<ClinicSettings>("/api/settings", body),
 
   listProducts: () => getJson<Product[]>("/api/products"),

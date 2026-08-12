@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -24,6 +24,7 @@ export default function SettingsPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <ReferrersCard />
         <TwoFactorCard />
+        <CardSurchargeCard />
 
         <Card>
           <CardHeader title="Data" />
@@ -200,6 +201,67 @@ function TwoFactorCard() {
           />
         </FormRow>
       </Modal>
+    </Card>
+  );
+}
+
+// Admin-set fee added to a card payment, e.g. 10 = 10%. Applied server-side
+// whenever the method is "card" — a normal payment's full amount, or just the
+// card portion of a split settlement. 0 (the default) disables it. Changing it
+// only affects payments recorded from now on; past receipts keep whatever was
+// applied when they were made.
+function CardSurchargeCard() {
+  const { toast } = useToast();
+  const settings = useApi(() => api.getSettings());
+  const [rate, setRate] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (settings.data) setRate(String(settings.data.cardSurchargePercent));
+  }, [settings.data]);
+
+  async function save() {
+    const cardSurchargePercent = Number(rate);
+    if (!Number.isFinite(cardSurchargePercent) || cardSurchargePercent < 0 || cardSurchargePercent > 100) {
+      toast("Enter a percentage between 0 and 100");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateSettings({ cardSurchargePercent });
+      toast("Card surcharge updated");
+      settings.refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Card surcharge"
+        subtitle="Fee added to a payment made by card. Set to 0 to disable it."
+      />
+      <CardBody className="space-y-4">
+        <FormRow label="Surcharge (%)" className="w-40">
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            step="0.1"
+            value={rate}
+            onChange={(e) => setRate(e.target.value)}
+            placeholder="0"
+          />
+        </FormRow>
+        <div className="flex justify-end">
+          <Button onClick={save} disabled={saving || settings.loading}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </CardBody>
     </Card>
   );
 }

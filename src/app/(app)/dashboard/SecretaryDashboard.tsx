@@ -132,7 +132,14 @@ export function SecretaryDashboard() {
                   <TD className="font-mono text-xs">{p.receiptNumber}</TD>
                   <TD>{p.clientName ?? "—"}</TD>
                   <TD className="text-slate-500">{p.motif}</TD>
-                  <TD className="font-medium">{formatMoney(p.amountPaid, p.currency)}</TD>
+                  <TD className="font-medium">
+                    {formatMoney(p.amountPaid, p.currency)}
+                    {p.cardSurchargeAmount > 0 && (
+                      <span className="ml-1 text-xs font-normal text-slate-400">
+                        (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                      </span>
+                    )}
+                  </TD>
                 </TR>
               ))}
             </TBody>

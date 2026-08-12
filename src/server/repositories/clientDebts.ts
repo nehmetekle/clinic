@@ -169,6 +169,9 @@ export async function clearClientDebtTx(
   // mode the money already lives in the settlement's per-method Payment rows, so we
   // skip the payment and reference the settlement's receipt(s) in the audit.
   let receiptRef = input.settlementReceiptRef ?? "settlement";
+  // 0 unless a standalone card clear adds the clinic's surcharge on top (below) —
+  // debt.amount (the principal) is always what's needed to clear the debt.
+  let cardSurcharge = 0;
   if (recordPayment) {
     const payment = await createPayment(
       {
@@ -187,15 +190,20 @@ export async function clearClientDebtTx(
       tx,
     );
     receiptRef = payment.receiptNumber;
+    cardSurcharge = payment.cardSurchargeAmount;
   }
   // Distinct, filterable debt-lifecycle event (mirrors the "Voided debt" entry),
-  // referencing the settlement receipt so the money is still traceable.
+  // referencing the settlement receipt so the money is still traceable. Notes the
+  // card surcharge separately when one was charged, so the log isn't silent about
+  // money that was actually collected on top of the cleared principal.
+  const surchargeNote =
+    cardSurcharge > 0 ? ` (+ ${auditMoney(cardSurcharge, debt.currency)} card surcharge)` : "";
   await writeAudit(tx, {
     userId: input.createdById ?? null,
     userName: input.clearedByName,
     action: "Debt cleared",
     entityType: "ClientDebt",
-    entityLabel: `${auditMoney(debt.amount, debt.currency)} collected — ${receiptRef} — ${debt.reason}`,
+    entityLabel: `${auditMoney(debt.amount, debt.currency)} collected${surchargeNote} — ${receiptRef} — ${debt.reason}`,
   });
 }
 

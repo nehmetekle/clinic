@@ -403,6 +403,12 @@ model Payment {
   createdById      String?
   createdAt        DateTime     @default(now())
   visitBasketId    String?
+  // Portion of `amountPaid` that is the card-payment surcharge fee (Setting
+  // "cardSurchargePercent"), not the underlying charge — 0 for every non-card
+  // payment and for card payments made before/without this fee configured.
+  // Frozen at creation like `usdToLbp`, so a later rate change never reprices
+  // history. Original amount = amountPaid - cardSurchargeAmount.
+  cardSurchargeAmount Float     @default(0)
   client           Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
   createdBy        User?        @relation(fields: [createdById], references: [id])
   settlementBasket VisitBasket? @relation("BasketPayments", fields: [visitBasketId], references: [id])

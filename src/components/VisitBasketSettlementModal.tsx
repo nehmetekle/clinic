@@ -11,11 +11,13 @@ import { toUsd } from "@/lib/config";
 import { useToast } from "@/lib/toast";
 import {
   basketTotals,
+  cardSurchargeAmount,
   formatDate,
   formatMoney,
   mergeAddedBasketItem,
   parseNumberInput,
 } from "@/lib/utils";
+import { useApi } from "@/lib/use-api";
 import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
@@ -72,6 +74,10 @@ export function VisitBasketSettlementModal({
   const { toast } = useToast();
   const paid = basket.status === "paid";
   const editable = canSettle && !paid;
+  // Live preview of the clinic's configured card fee, added on top of whatever a
+  // card row collects — mirrors what settleVisitBasket actually charges server-side.
+  const settings = useApi(() => api.getSettings());
+  const surchargeRate = settings.data?.cardSurchargePercent ?? 0;
 
   const [items, setItems] = useState<EditItem[]>(() =>
     basket.items.map((i, idx) => ({
@@ -268,6 +274,10 @@ export function VisitBasketSettlementModal({
           amount: i === splits.length - 1 ? Math.max(0, remaining) : Math.max(0, parseNumberInput(r.amount)),
         }))
       : [];
+  // Card fee on top of each split's entered (pre-surcharge) portion — display only;
+  // the split itself always sums to collectedNow, matching what the server expects.
+  const splitSurcharges = effectiveSplits.map((s) => cardSurchargeAmount(s.amount, s.method, surchargeRate));
+  const totalCardSurcharge = round2(splitSurcharges.reduce((s, a) => s + a, 0));
   const usedMethods = new Set(splits.map((r) => r.method));
   const canAddMethod =
     collectedNow > 0 && splits.length < PAYMENT_METHOD_VALUES.length && remaining > 0.005;
@@ -557,55 +567,78 @@ export function VisitBasketSettlementModal({
                 const options = PAYMENT_METHOD_VALUES.filter(
                   (m) => m === row.method || !usedMethods.has(m),
                 );
+                const rowSurcharge = splitSurcharges[idx] ?? 0;
                 return (
-                  <div key={idx} className="flex items-end gap-2">
-                    <FormRow label={idx === 0 ? "Method" : ""} className="flex-1">
-                      <Select
-                        value={row.method}
-                        onChange={(e) => updateSplit(idx, { method: e.target.value as PaymentMethod })}
-                      >
-                        {options.map((m) => (
-                          <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
-                        ))}
-                      </Select>
-                    </FormRow>
-                    <FormRow label={idx === 0 ? "Amount (USD)" : ""} className="w-32">
-                      {isBalancer ? (
-                        // Auto-balancer: shows the remaining so the split always
-                        // adds up. Read-only — the secretary types the other rows.
-                        <div
-                          className={`flex h-10 items-center justify-end rounded-lg border px-3 text-sm font-semibold ${
-                            splitOverAllocated
-                              ? "border-rose-300 bg-rose-50 text-rose-700"
-                              : "border-slate-200 bg-slate-50 text-slate-700"
-                          }`}
+                  <div key={idx}>
+                    <div className="flex items-end gap-2">
+                      <FormRow label={idx === 0 ? "Method" : ""} className="flex-1">
+                        <Select
+                          value={row.method}
+                          onChange={(e) => updateSplit(idx, { method: e.target.value as PaymentMethod })}
                         >
-                          {formatMoney(remaining, "USD")}
-                        </div>
+                          {options.map((m) => (
+                            <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
+                          ))}
+                        </Select>
+                      </FormRow>
+                      <FormRow label={idx === 0 ? "Amount (USD)" : ""} className="w-32">
+                        {isBalancer ? (
+                          // Auto-balancer: shows the remaining so the split always
+                          // adds up. Read-only — the secretary types the other rows.
+                          <div
+                            className={`flex h-10 items-center justify-end rounded-lg border px-3 text-sm font-semibold ${
+                              splitOverAllocated
+                                ? "border-rose-300 bg-rose-50 text-rose-700"
+                                : "border-slate-200 bg-slate-50 text-slate-700"
+                            }`}
+                          >
+                            {formatMoney(remaining, "USD")}
+                          </div>
+                        ) : (
+                          <MoneyInput
+                            value={row.amount}
+                            onValueChange={(amount) => updateSplit(idx, { amount })}
+                            placeholder="0"
+                          />
+                        )}
+                      </FormRow>
+                      {splits.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() => removeSplit(idx)}
+                          className="mb-1 px-1 text-xs text-slate-400 hover:text-rose-600"
+                          aria-label="Remove method"
+                        >
+                          Remove
+                        </button>
                       ) : (
-                        <MoneyInput
-                          value={row.amount}
-                          onValueChange={(amount) => updateSplit(idx, { amount })}
-                          placeholder="0"
-                        />
+                        <span className="w-[52px]" />
                       )}
-                    </FormRow>
-                    {splits.length > 1 ? (
-                      <button
-                        type="button"
-                        onClick={() => removeSplit(idx)}
-                        className="mb-1 px-1 text-xs text-slate-400 hover:text-rose-600"
-                        aria-label="Remove method"
-                      >
-                        Remove
-                      </button>
-                    ) : (
-                      <span className="w-[52px]" />
+                    </div>
+                    {rowSurcharge > 0 && (
+                      <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                        <span className="font-medium">Card fee {surchargeRate}%</span>
+                        <span>+{formatMoney(rowSurcharge, "USD")}</span>
+                        <span className="text-amber-400">→</span>
+                        <span className="font-semibold">
+                          {formatMoney((effectiveSplits[idx]?.amount ?? 0) + rowSurcharge, "USD")} charged
+                        </span>
+                      </div>
                     )}
                   </div>
                 );
               })}
             </div>
+            {totalCardSurcharge > 0 && (
+              <div className="mt-3 flex items-center justify-between rounded-md bg-amber-50 px-3 py-2 text-sm">
+                <span className="text-amber-800">
+                  Card fee{splitSurcharges.filter((s) => s > 0).length > 1 ? "s" : ""} added
+                </span>
+                <span className="font-semibold text-amber-900">
+                  +{formatMoney(totalCardSurcharge, "USD")} → {formatMoney(collectedNow + totalCardSurcharge, "USD")} total
+                </span>
+              </div>
+            )}
             {splitOverAllocated ? (
               <p className="mt-2 text-xs text-rose-600">
                 The split adds up to more than the {formatMoney(collectedNow, "USD")} being collected — reduce a method amount.

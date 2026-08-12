@@ -44,6 +44,7 @@ import {
 import {
   age,
   bmiCategory,
+  cardSurchargeAmount,
   cn,
   defaultSlot,
   formatDate,
@@ -86,6 +87,7 @@ export default function ClientProfilePage() {
   const [editNotesOpen, setEditNotesOpen] = useState(false);
   const { data, loading, error, refetch } = useApi(() => api.getClient(params.id), [params.id]);
   const staff = useApi(() => api.listStaff());
+  const settings = useApi(() => api.getSettings());
 
   if (loading) return <Loading />;
   if (error || !data) {
@@ -719,7 +721,14 @@ export default function ClientProfilePage() {
                         <TR key={p.id}>
                           <TD className="font-mono text-xs">{p.receiptNumber}</TD>
                           <TD>{p.motif}</TD>
-                          <TD className="font-medium">{formatMoney(p.amountPaid, p.currency)}</TD>
+                          <TD className="font-medium">
+                            {formatMoney(p.amountPaid, p.currency)}
+                            {p.cardSurchargeAmount > 0 && (
+                              <span className="ml-1 text-xs font-normal text-slate-400">
+                                (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                              </span>
+                            )}
+                          </TD>
                           <TD className="capitalize text-slate-500">{p.method.replace("_", " ")}</TD>
                           <TD className="text-slate-500">{formatDate(p.date)}</TD>
                         </TR>
@@ -878,6 +887,20 @@ export default function ClientProfilePage() {
                     <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
                   ))}
                 </Select>
+                {(() => {
+                  const rate = settings.data?.cardSurchargePercent ?? 0;
+                  const fee = cardSurchargeAmount(debtAction.debt.amount, debtMethod, rate);
+                  return fee > 0 ? (
+                    <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                      <span className="font-medium">Card fee {rate}%</span>
+                      <span>+{formatMoney(fee, debtAction.debt.currency)}</span>
+                      <span className="text-amber-400">→</span>
+                      <span className="font-semibold">
+                        {formatMoney(debtAction.debt.amount + fee, debtAction.debt.currency)} charged
+                      </span>
+                    </div>
+                  ) : null;
+                })()}
               </FormRow>
             )}
             {debtAction.mode === "void" && (

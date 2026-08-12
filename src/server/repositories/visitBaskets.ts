@@ -108,7 +108,11 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     paymentSplits: b.settlementPayments.length
       ? b.settlementPayments.map((p) => ({
           method: p.method as PaymentMethod,
-          amount: p.amountPaid,
+          // The basket-attributable portion — excludes the card surcharge, so
+          // every split's amount still sums to `total` above, same as what the
+          // secretary entered. The fee itself (0 for non-card) is separate.
+          amount: p.amountPaid - p.cardSurchargeAmount,
+          cardSurchargeAmount: p.cardSurchargeAmount,
           receiptNumber: p.receiptNumber,
         }))
       : undefined,
@@ -614,6 +618,9 @@ export async function settleVisitBasket(
         {
           clientId: row.clientId,
           motif,
+          // The pre-surcharge portion the secretary entered (splits sum to the
+          // basket total); createPayment adds the clinic's card fee on top when
+          // method is "card", so the recorded income matches what's collected.
           amountPaid: amount,
           // Split amounts are USD (basketTotals + debt values normalize to USD).
           currency: "USD",

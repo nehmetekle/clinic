@@ -182,6 +182,22 @@ export function discountAmount(
 }
 
 /**
+ * The card-payment surcharge fee: `ratePercent`% of `amount`, applied only when
+ * `method` is "card" (0 for every other method) and only while a positive rate
+ * is configured (Settings "cardSurchargePercent" — 0 disables it entirely).
+ * Mirrors `discountAmount`'s shape (a single formula, never negative) so it's
+ * computed the same way everywhere it's charged.
+ */
+export function cardSurchargeAmount(
+  amount: number,
+  method: string,
+  ratePercent: number,
+): number {
+  if (method !== "card" || !(ratePercent > 0) || !(amount > 0)) return 0;
+  return Math.round(amount * (ratePercent / 100) * 100) / 100;
+}
+
+/**
  * Shared visit-basket math used by the dietitian's editor, the secretary's
  * settlement card, and the server. Built entirely from `basketLineUsd` +
  * `discountAmount` so there is a single source of truth for currency folding and

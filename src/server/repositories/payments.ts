@@ -3,9 +3,10 @@ import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
 import { asCurrency, asPaymentMethod, dateOnly } from "../serialize";
 import { clinicDayRange, todayIso } from "@/lib/config";
+import { cardSurchargeAmount, moneyCap } from "@/lib/utils";
 import { auditMoney, writeAudit } from "./audit";
 import { nextCounterValue } from "./counters";
-import { getUsdToLbp } from "./settings";
+import { getSettings, getUsdToLbp } from "./settings";
 import type { Payment } from "@/lib/types";
 
 export const paymentInclude = {
@@ -25,6 +26,7 @@ export function toPayment(p: PaymentRow): Payment {
     amountPaid: p.amountPaid,
     currency: asCurrency(p.currency),
     usdToLbp: p.usdToLbp,
+    cardSurchargeAmount: p.cardSurchargeAmount,
     method: asPaymentMethod(p.method),
     date: dateOnly(p.date)!,
     receiptNumber: p.receiptNumber,
@@ -121,7 +123,26 @@ export async function createPayment(
   }
 
   // Negative amounts are rejected at the schema (R5); this is a non-negative value.
-  const amountPaid = input.amountPaid;
+  // Universal rule, enforced here (the single place every Payment row is written,
+  // whatever the caller — manual entry, basket settlement, debt clear, …): card
+  // method → the clinic's configured surcharge is added on top of `amountPaid`,
+  // so it ends up as what the client actually pays. Frozen here, like `usdToLbp`,
+  // so a later rate change never reprices history. Every other method is $0.
+  const surcharge =
+    input.method === "card"
+      ? cardSurchargeAmount(input.amountPaid, input.method, (await getSettings()).cardSurchargePercent)
+      : 0;
+  const amountPaid = Math.round((input.amountPaid + surcharge) * 100) / 100;
+  // R5 applies to what's actually recorded, not just what was entered — a card
+  // amount just under the cap can cross it once the surcharge is added, and the
+  // schema-level check (on the pre-surcharge input) can't see that.
+  if (amountPaid > moneyCap(input.currency)) {
+    throw new ConflictError(
+      `Amount is unreasonably large (max ${moneyCap(input.currency).toLocaleString()} ${input.currency ?? "USD"})${
+        surcharge > 0 ? " once the card surcharge is included" : ""
+      }.`,
+    );
+  }
 
   let row: PaymentRow;
   try {
@@ -133,6 +154,7 @@ export async function createPayment(
         currency: input.currency ?? "USD",
         // Freeze the live exchange rate onto the record so reports never re-price it.
         usdToLbp: await getUsdToLbp(),
+        cardSurchargeAmount: surcharge,
         method: input.method,
         date: new Date(),
         receiptNumber: await nextReceiptNumber(client),

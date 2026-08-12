@@ -24,6 +24,7 @@ export async function POST(req: Request) {
     const actor = (await actingUser(req));
     const createdById = await userIdByEmail(actor.email);
     // `input.idempotencyKey` flows through so a double-submit can't duplicate income (R2).
+    // createPayment applies the clinic's card surcharge automatically when method is "card".
     return json(await createPayment({ ...input, createdById, actorName: actor.name }), 201);
   } catch (e) {
     return handleError(e);

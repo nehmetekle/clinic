@@ -386,10 +386,14 @@ export const updateSettingsSchema = z
   .object({
     usdToLbp: z.coerce.number().positive().optional(),
     usdToEur: z.coerce.number().positive().optional(),
+    // 0 is valid and intentional — it disables the card surcharge entirely.
+    cardSurchargePercent: z.coerce.number().min(0).max(100).optional(),
   })
-  .refine((v) => v.usdToLbp !== undefined || v.usdToEur !== undefined, {
-    message: "At least one rate must be provided",
-  });
+  .refine(
+    (v) =>
+      v.usdToLbp !== undefined || v.usdToEur !== undefined || v.cardSurchargePercent !== undefined,
+    { message: "At least one setting must be provided" },
+  );
 
 export const createProductSchema = z.object({
   name: z.string().trim().min(1),
