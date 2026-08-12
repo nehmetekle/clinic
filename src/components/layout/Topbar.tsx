@@ -4,11 +4,10 @@ import { useRouter, usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CalendarPlus, LogOut, Menu } from "lucide-react";
 import { useSession } from "@/lib/session";
-import { useApi } from "@/lib/use-api";
-import { api } from "@/lib/api";
 import { ROLE_LABELS, currentNav } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
+import { CurrencyConverter } from "./CurrencyConverter";
 import { GlobalSearch } from "./GlobalSearch";
 import { Notifications } from "./Notifications";
 
@@ -18,28 +17,6 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
-  const settings = useApi(() => api.getSettings());
-
-  // Keep the displayed exchange rates live for every signed-in user: an admin's
-  // change in Pricing shows up in others' top bars without a manual reload. We
-  // background-refetch on a 60s poll and whenever the tab regains focus/visibility
-  // (so a returning user sees the current rate immediately, not on the next tick).
-  const refetchSettings = settings.refetch;
-  useEffect(() => {
-    const id = setInterval(refetchSettings, 60_000);
-    const onFocus = () => {
-      if (document.visibilityState === "visible") refetchSettings();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
-    // refetchSettings is stable for the lifetime of the mounted hook.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -52,9 +29,6 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   }, []);
 
   if (!user) return null;
-
-  const usdToLbp = settings.data?.usdToLbp;
-  const usdToEur = settings.data?.usdToEur;
 
   const sectionTitle = currentNav(user.role, pathname)?.label ?? "NutriClinic";
 
@@ -85,28 +59,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           <span className="hidden sm:inline">Appointment</span>
         </Button>
 
-        {(usdToLbp || usdToEur) && (
-          <div
-            className="hidden items-center px-2 lg:flex xl:px-3"
-            title="Live exchange rates (edit in Pricing)"
-          >
-            <div className="flex items-center gap-2 whitespace-nowrap text-[11px] font-medium text-slate-600 xl:gap-3">
-              {usdToLbp && (
-                <span>
-                  <span className="text-slate-400">USD/LBP</span>{" "}
-                  {usdToLbp.toLocaleString("en-US")}
-                </span>
-              )}
-              {usdToLbp && usdToEur && <span className="h-3 w-px bg-slate-200" />}
-              {usdToEur && (
-                <span>
-                  <span className="text-slate-400">USD/EUR</span>{" "}
-                  {usdToEur.toLocaleString("en-US", { maximumFractionDigits: 4 })}
-                </span>
-              )}
-            </div>
-          </div>
-        )}
+        <CurrencyConverter />
 
         <Notifications />
 

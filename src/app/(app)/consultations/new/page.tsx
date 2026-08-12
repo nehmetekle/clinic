@@ -350,7 +350,7 @@ function ConsultationEditor() {
   const editId = params.get("consultation") ?? "";
   const [prefilled, setPrefilled] = useState(false);
 
-  const { data, loading, error } = useApi(() => api.getClient(clientId), [clientId]);
+  const { data, loading, error, refetch } = useApi(() => api.getClient(clientId), [clientId]);
   const staff = useApi(() => api.listStaff());
   const productCatalog = useApi(() => api.listProducts());
   const servicePrices = useApi(() => api.listServicePrices());
@@ -1110,7 +1110,11 @@ function ConsultationEditor() {
   // Returns the saved visit's id (null if the save was rejected) so callers that
   // need to act on the persisted visit — generating the Food List PDF — can,
   // including on a first save where the id didn't exist yet.
-  async function save(close: boolean): Promise<string | null> {
+  //
+  // `silent` is for saves the doctor didn't ask for: they persist the visit as a
+  // side effect of another action (Generate PDF) and must NOT swap the editor for
+  // the "Consultation saved" screen or claim a save the doctor didn't press.
+  async function save(close: boolean, { silent = false }: { silent?: boolean } = {}): Promise<string | null> {
     if (discountReasonMissing) {
       toast("Please add a reason for the discount.");
       return null;
@@ -1159,8 +1163,10 @@ function ConsultationEditor() {
       const saved = editId
         ? await api.updateConsultation(editId, payload)
         : await api.createConsultation(payload);
-      toast(close ? "Visit closed" : "Saved — visit in progress");
-      setSaved(true);
+      if (!silent) {
+        toast(close ? "Visit closed" : "Saved — visit in progress");
+        setSaved(true);
+      }
       return saved.id;
     } catch (e) {
       toast((e as Error).message);
@@ -1182,12 +1188,26 @@ function ConsultationEditor() {
     try {
       // Persist first: the PDF is rendered server-side from the SAVED form, so
       // this both creates a brand-new visit and flushes any unticked/unsaved
-      // changes — otherwise the doctor would print a stale sheet.
-      const id = await save(false);
+      // changes — otherwise the doctor would print a stale sheet. Silent: this
+      // save is a means to an end, and must leave the doctor in the editor.
+      const id = await save(false, { silent: true });
       if (!id) return; // save() already explained why it was rejected
       const file = await api.generateFoodListPdf(id);
       setFoodListFile(file);
-      toast("Food List PDF generated");
+      toast("Food List PDF generated — it's on the client's Files tab");
+      // A brand-new visit only got its id just now. Adopt it into the URL (in
+      // place — same route, no navigation) so the next Save updates this visit
+      // instead of starting a second one. Done AFTER the PDF exists so the
+      // file-listing effect that runs on the id change sees it. `prefilled`
+      // is latched first: the prefill effect must not refill the live form.
+      if (!editId) {
+        setPrefilled(true);
+        // ...and the "you already have an open visit" redirect must not fire for
+        // the draft we just created ourselves.
+        redirectedToDraftRef.current = true;
+        router.replace(`/consultations/new?client=${clientId}&consultation=${id}`, { scroll: false });
+      }
+      refetch();
     } catch (e) {
       toast((e as Error).message);
     } finally {
