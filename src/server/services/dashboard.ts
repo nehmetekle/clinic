@@ -4,6 +4,7 @@ import { listAppointments } from "../repositories/appointments";
 import { listClients } from "../repositories/clients";
 import { listConsultations } from "../repositories/consultations";
 import { listExpenses } from "../repositories/expenses";
+import { getJessyOutstanding } from "../repositories/jessy";
 import { listPayments } from "../repositories/payments";
 import { getUsdToLbp } from "../repositories/settings";
 import { listStaff } from "../repositories/staff";
@@ -46,7 +47,7 @@ export async function getDashboardSummaryForRole(
   const today = todayIso();
   const monthStart = `${today.slice(0, 7)}-01`;
 
-  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralClients, soldPackages, usdToLbp] =
+  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralClients, soldPackages, usdToLbp, jessyOutstanding] =
     await Promise.all([
       listClients(),
       listPayments(),
@@ -71,6 +72,11 @@ export async function getDashboardSummaryForRole(
       // LBP costs fall back to the live rate like any legacy row (sales are USD today).
       db.clientPackage.findMany({ select: { cost: true, currency: true, startDate: true } }),
       getUsdToLbp(),
+      // What the third-party payer Jessy still owes the clinic (USD). A BALANCE,
+      // not a flow — never windowed by the period, and deliberately not part of
+      // any income figure: the money it represents was already counted as income
+      // when the patient paid through Jessy. See repositories/jessy.ts.
+      getJessyOutstanding(),
     ]);
 
   // All financial figures below are aggregated in USD. Each record is converted
@@ -148,6 +154,7 @@ export async function getDashboardSummaryForRole(
     grossMargin: totalIncome - (totalExpenses + cogs + referrerCost),
     referrerCost,
     unpaidBalance,
+    jessyOutstanding,
     paymentsToday,
     incomeByMethod,
     paymentsTodayByMethod,
@@ -347,6 +354,9 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
       grossMargin: 0,
       referrerCost: 0,
       unpaidBalance: 0,
+      // A receivable ledger figure — reports territory, so admin-only like the
+      // totals above.
+      jessyOutstanding: 0,
       paymentsToday: canHandleMoney ? summary.finance.paymentsToday : 0,
       // Method splits follow their parent totals: totalIncome is admin-only (zeroed
       // above), so incomeByMethod is always emptied here; paymentsToday is kept for

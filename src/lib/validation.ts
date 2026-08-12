@@ -376,6 +376,22 @@ export const updateClientDebtSchema = z
     }
   });
 
+// ---- Jessy settlements (money received FROM the third-party payer) ----
+// This records a COLLECTION of an existing receivable, never new income — the
+// income was already recognized when the patient paid through Jessy. The amount
+// is USD (the receivable ledger's currency) and is checked against the live
+// outstanding balance server-side, where over-settlement is refused.
+export const recordJessySettlementSchema = z
+  .object({
+    amount: z.coerce.number().positive("Amount must be greater than 0"),
+    reference: z.string().trim().max(120).optional(),
+    notes: z.string().trim().max(500).optional(),
+    // Optional client-generated key so a double-submit can't record the same
+    // transfer twice (mirrors createPaymentSchema).
+    idempotencyKey: z.string().trim().min(1).max(100).optional(),
+  })
+  .superRefine((v, ctx) => refineMoneyCap(v.amount, "USD", ctx, "amount")); // R5 cap
+
 // ---- Blood sample tracking ----
 // The secretary advances a sample through send → receive (or undoes either).
 // `at` lets them correct the recorded time; omitted, the server stamps "now".
@@ -663,4 +679,5 @@ export type UpdateReferrerInput = z.infer<typeof updateReferrerSchema>;
 export type UpdateServicePriceInput = z.infer<typeof updateServicePriceSchema>;
 export type CreateServicePriceInput = z.infer<typeof createServicePriceSchema>;
 export type UpdateClientDebtInput = z.infer<typeof updateClientDebtSchema>;
+export type RecordJessySettlementInput = z.infer<typeof recordJessySettlementSchema>;
 export type MedicalHistoryInput = z.infer<typeof medicalHistorySchema>;

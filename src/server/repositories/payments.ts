@@ -2,12 +2,19 @@ import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
 import { asCurrency, asPaymentMethod, dateOnly } from "../serialize";
-import { clinicDayRange, todayIso } from "@/lib/config";
+import { CLINIC, clinicDayRange, todayIso, toUsd } from "@/lib/config";
 import { cardSurchargeAmount, moneyCap } from "@/lib/utils";
+import { JESSY_METHOD } from "@/lib/types";
 import { auditMoney, writeAudit } from "./audit";
 import { nextCounterValue } from "./counters";
 import { getSettings, getUsdToLbp } from "./settings";
 import type { Payment } from "@/lib/types";
+
+/** Money is stored to the cent; re-round every derived figure to keep float
+ * drift out of the receivable ledger. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
 export const paymentInclude = {
   client: true,
@@ -144,6 +151,48 @@ export async function createPayment(
     );
   }
 
+  // Freeze the live exchange rate onto the record so reports never re-price it.
+  const usdToLbp = await getUsdToLbp();
+
+  // Jessy (third-party payer): the money counts as income right now, exactly like
+  // any other method — but Jessy itself still owes the clinic that amount, which
+  // is tracked as a JessyReceivable. Built as a NESTED create below so the
+  // payment and its receivable are written in one statement: a jessy payment can
+  // never be recorded without its receivable, or a receivable without its
+  // payment, whether this runs standalone or inside a caller's transaction.
+  // Nothing here touches ClientDebt — the patient owes nothing for this portion.
+  //
+  // The receivable ledger is kept in USD, converted at the rate frozen on this
+  // very payment, so settlement can allocate across receivables without per-row
+  // currency maths (the native amount stays on the Payment, one join away). The
+  // rate is guarded against a missing/zero setting so a misconfiguration can
+  // never write Infinity/NaN — the DB's `amount > 0` CHECK would reject that and
+  // take the payment down with it. Jessy never carries a card surcharge, so this
+  // is the full recorded amount.
+  const receivableUsd = round2(
+    toUsd(amountPaid, input.currency ?? "USD", usdToLbp > 0 ? usdToLbp : CLINIC.defaultUsdToLbp),
+  );
+  const jessyReceivable = input.method === JESSY_METHOD
+    ? {
+        create: {
+          clientId: input.clientId ?? null,
+          // Trace the receivable back to the visit it came from, when this
+          // payment is settling a basket. Manual payments have no visit.
+          consultationId: input.visitBasketId
+            ? (
+                await client.visitBasket.findUnique({
+                  where: { id: input.visitBasketId },
+                  select: { consultationId: true },
+                })
+              )?.consultationId ?? null
+            : null,
+          amount: receivableUsd,
+          remaining: receivableUsd,
+          createdByName: input.actorName ?? null,
+        },
+      }
+    : undefined;
+
   let row: PaymentRow;
   try {
     row = await client.payment.create({
@@ -152,8 +201,7 @@ export async function createPayment(
         motif,
         amountPaid,
         currency: input.currency ?? "USD",
-        // Freeze the live exchange rate onto the record so reports never re-price it.
-        usdToLbp: await getUsdToLbp(),
+        usdToLbp,
         cardSurchargeAmount: surcharge,
         method: input.method,
         date: new Date(),
@@ -162,6 +210,7 @@ export async function createPayment(
         notes: input.notes?.trim() || null,
         createdById: input.createdById ?? null,
         visitBasketId: input.visitBasketId ?? null,
+        jessyReceivable,
       },
       include: paymentInclude,
     });
@@ -181,6 +230,19 @@ export async function createPayment(
       if (existing) return toPayment(existing);
     }
     throw e;
+  }
+  // A Jessy payment creates an obligation on Jessy, so it gets its own filterable
+  // audit line on top of the payment entry below — logged even when `skipAudit`
+  // suppresses the generic one (a debt cleared through Jessy is still a new
+  // receivable). Identifies the patient by receipt, not by name/contact details.
+  if (jessyReceivable) {
+    await writeAudit(client, {
+      userId: input.createdById ?? null,
+      userName: input.actorName,
+      action: "Jessy payment recorded",
+      entityType: "JessyReceivable",
+      entityLabel: `${row.receiptNumber} — ${auditMoney(receivableUsd, "USD")} owed by Jessy`,
+    });
   }
   // Every collection is logged for accountability. Written on the same client as
   // the payment, so it commits (or rolls back) atomically with it — including when

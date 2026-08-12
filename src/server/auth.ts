@@ -71,6 +71,21 @@ export async function canVoidDebt(req: Request): Promise<boolean> {
   return (await actingRole(req)) === "admin";
 }
 
+/** The Jessy ledger (what the third-party payer owes the clinic, what it has
+ * transferred) is a financial report, not a front-desk task: every figure on it
+ * is an aggregate of income and outstanding balance. The permission matrix
+ * (docs/01-product-spec.md §2.1) puts financial reports at admin-only — "the
+ * secretary sees all clients but never financial reports" — so BOTH reading the
+ * ledger and recording a transfer against it are admin-only.
+ *
+ * This is deliberately stricter than `canHandleMoney`: recording a Jessy
+ * transfer is a back-office reconciliation against a reported balance, not
+ * collecting money at the desk. It cannot be done meaningfully without seeing
+ * the outstanding figure, which the secretary may not see. */
+export async function canManageJessy(req: Request): Promise<boolean> {
+  return (await actingRole(req)) === "admin";
+}
+
 /** Lab-sample logistics (sending samples to the lab, logging results back) is a
  * front-desk task — the secretary owns it, the admin can step in. */
 export async function canTrackSamples(req: Request): Promise<boolean> {

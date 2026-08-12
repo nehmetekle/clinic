@@ -716,3 +716,163 @@ safe direction to be wrong in.
   properly means a partial unique index (`"clientId" WHERE status = 'open'`),
   which Prisma can't express in `schema.prisma` and would report as drift, or
   locking the client row inside the create transaction.
+
+---
+
+## 14. Jessy — the third-party payer and its receivable ledger
+
+Jessy is a **prepaid / third-party payer**: the patient settles their visit
+through Jessy, and Jessy later transfers that money to the clinic. It is a normal
+payment method (`jessy` in `PAYMENT_METHOD_VALUES`, so it works everywhere the
+others do, including split settlements), plus a receivable ledger on top.
+
+### The accounting rule (the whole point)
+
+Income is recognized **immediately**, not when Jessy pays. A `$600` visit paid
+`$400` through Jessy and `$200` deferred produces:
+
+| | |
+|---|---|
+| Payment row, method `jessy` | **$400** — counted in income and in the method breakdown *today* |
+| `ClientDebt` | **$200** — normal patient debt, exactly as before |
+| `JessyReceivable` | **$400** — what Jessy now owes the clinic |
+
+The patient does **not** owe the Jessy portion, and there is never a `$600` or
+`$400` patient debt. Patient debt stays completely independent of payment method
+— nothing about `ClientDebt` changed.
+
+Three figures that must never be added together or conflated:
+
+- **Jessy income volume** — what patients paid through Jessy. Already income.
+- **Jessy outstanding** — what Jessy has not transferred yet. A *balance*, never
+  windowed by a reporting period, and never part of any income figure.
+- **Jessy settlements received** — collection of an existing receivable. **Not
+  income.** Recording it as income would double-count money already reported.
+
+`recorded − settled === outstanding` is asserted as an invariant in the tests.
+
+### Where the receivable is created
+
+Inside `createPayment` (`src/server/repositories/payments.ts`) — the single place
+every `Payment` row is written, and already the home of the equivalent card-
+surcharge rule. It is built as a **nested Prisma create**, so the payment and its
+receivable are written in one statement: a `jessy` payment can never exist
+without its receivable or vice versa, whether `createPayment` runs standalone
+(manual payment) or inside a caller's transaction (basket settlement, debt
+clear). This is also why clearing an old patient debt *through* Jessy correctly
+raises a new receivable — it goes through the same chokepoint.
+
+The receivable ledger is kept in **USD**, converted at the rate frozen on its own
+payment. The native amount/currency is one join away on that `Payment`, so
+nothing is lost; single-currency is what lets the allocator work without per-row
+currency maths.
+
+### Settlement (`recordJessySettlement`)
+
+Applies money received from Jessy to the outstanding receivables **oldest first
+(FIFO)**, creating no `Payment` and no income. Partial settlements are supported;
+each transfer records a `JessySettlement` plus one `JessySettlementAllocation`
+per receivable it touched, which is what makes the history auditable down to the
+originating visit.
+
+Safety, all inside one transaction:
+
+- Each draw-down is a conditional `updateMany` guarded on `remaining >= portion`,
+  so the WHERE and the decrement are one atomic UPDATE. Two settlements racing
+  the same balance serialize on the row lock; the loser re-evaluates the guard,
+  matches zero rows, and gets a readable `ConflictError` — **never a raw Prisma
+  error and never a negative balance**.
+- Over-settlement is refused up front against the live outstanding total (refused,
+  not clamped — a typo must not invent a credit).
+- An optional `idempotencyKey` makes a double-submitted transfer apply once.
+- **Postgres CHECK constraints** (`remaining BETWEEN 0 AND amount`, positive
+  amounts) are the last line of defence: even a direct write bypassing the
+  repository aborts rather than corrupting the balance. They're hand-written in
+  the migration — Prisma has no schema syntax for CHECK, so **`prisma migrate
+  dev` will not recreate them if you ever squash migrations.**
+
+### Deliberately not built
+
+- **No void / refund / reversal.** The clinic does not refund patients, and the
+  app has no payment-void concept anywhere (a paid visit already refuses deletion
+  — *"payments are never refunded"*). So there is no "reverse a Jessy receivable"
+  action. A receivable disappears only with its payment, via the existing
+  `onDelete: Cascade` from `Payment` (and from `Client`). If a correction path is
+  ever wanted, it must decide what happens to the already-recognized income — see
+  the note in §6 above about that trade-off.
+- **Jessy is hidden on the Expenses form** (`EXPENSE_PAYMENT_METHOD_VALUES`).
+  It's a channel the clinic collects *through*, never one it spends from. The
+  expense `method` field is still a loose `z.string()` server-side, matching the
+  existing behavior — the exclusion is the dropdown, not a new server rule.
+- **No per-patient "Jessy owes for you" view.** The receivable is the clinic's
+  claim on Jessy, not on the patient, so it deliberately does not appear as
+  anything the patient owes on their profile.
+
+### Ledger protection (database triggers)
+
+The ledger must always satisfy `recorded − settled = outstanding`. The repository
+upholds it, but money invariants have to survive what the repository never sees:
+a raw SQL fix, a Prisma Studio edit, a future `payment.delete()`, or a cascade
+from a client-delete added later. The `protect_jessy_ledger` migration installs
+triggers that refuse:
+
+- deleting a receivable Jessy has **already settled against** — which also blocks
+  deleting its parent `Payment`, and any `Client` cascade reaching it (a cascade
+  performs a real DELETE on the child, so the trigger fires). An **unsettled**
+  receivable still deletes freely with its payment; the guard protects balances,
+  it doesn't freeze untouched rows.
+- raising a receivable's `remaining` (there is no reversal, so a balance moving
+  up is always corruption), editing its frozen `amount`, moving it to another
+  payment, or reopening a settled one.
+- deleting or re-pricing a recorded `JessySettlement`.
+- changing or deleting a `JessySettlementAllocation` — append-only audit trail.
+
+`handleError` (`src/server/http.ts`) extracts the trigger's message from the
+Prisma error and returns it as a **409 with the guard's own sentence**, so a
+blocked write never surfaces as an opaque 500. `deleteConsultation` additionally
+refuses a visit carrying a receivable with a readable message before the DB is
+ever reached (the paid-basket guard normally fires first — the Jessy check is the
+second line, tested on its own).
+
+**These triggers are hand-written SQL.** Prisma cannot express them, does not
+introspect them, and `migrate dev` will not recreate them if migrations are ever
+squashed — same caveat as the CHECK constraints.
+
+**TRUNCATE does not fire row triggers**, which is the one sanctioned way to reset
+a protected ledger; `resetJessyLedger()` in `tests/race/harness.ts` uses it, and
+it must run *before* any client/payment delete whose cascade would be blocked.
+
+### Permissions — admin-only, both sides
+
+Everything Jessy is **admin-only**, via `canManageJessy` (`src/server/auth.ts`):
+`GET /api/jessy`, `POST /api/jessy/settlements`, and the nav item.
+
+This is deliberately stricter than `canHandleMoney`. Every figure on the ledger
+is an aggregate of income and outstanding balance, and the permission matrix
+(docs/01-product-spec.md §2.1) puts financial reports at admin-only — *"the
+secretary sees all clients but never financial reports."* Recording a transfer is
+a back-office reconciliation **against a balance the secretary may not see**, so
+granting the write without the read would have been incoherent. An earlier draft
+had the write on `canHandleMoney` while the page was admin-only; that mismatch is
+resolved in favour of the matrix, not against it.
+
+Audited actions: `Jessy payment recorded` (written even when the generic payment
+audit is suppressed, e.g. a debt cleared through Jessy) and `Jessy settlement
+recorded`. Neither logs patient names — receipts and amounts only.
+
+### Tests
+
+`tests/race/t14-jessy.ts` (run with `npm run test:race`). Covers the basic
+$600/$400/$200 flow, a fully-Jessy visit, a cash+Jessy+debt split, partial then
+full settlement with "no new income" assertions, refused over-settlement, two
+concurrent settlements racing one balance, double-submitted Jessy payments
+(sequential and concurrent) yielding one receivable, transaction rollback leaving
+no orphan payment or receivable, the DB CHECK constraints firing, FIFO ordering
+across a mixed ledger, and regressions for cash / card (surcharge intact) /
+whish / omt / patient debt clearing.
+
+It also covers ledger protection (nine delete/edit attacks blocked, the ledger
+byte-for-byte unchanged afterwards, the 409 translation) and permissions, driven
+through the **real route handlers with real session cookies** — admin allowed,
+secretary/dietitian/unauthenticated/forged-session all refused on both read and
+write, with the refusal leaking no ledger data.

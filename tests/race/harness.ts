@@ -6,10 +6,25 @@ import { db } from "../../src/server/db";
 
 export const ACTOR = { name: "Dr Test", email: "doctor@test.local" };
 
+/**
+ * Wipes the Jessy ledger. The ledger is protected by database triggers that
+ * refuse to delete a settled receivable, a transfer, or an allocation (see the
+ * protect_jessy_ledger migration) — deliberately, because those deletes would
+ * corrupt the outstanding balance. TRUNCATE does not fire row-level triggers,
+ * which makes it the one sanctioned way to reset a protected ledger, and it must
+ * run BEFORE any client/payment delete, whose cascade would otherwise be blocked.
+ */
+export async function resetJessyLedger() {
+  await db.$executeRawUnsafe(
+    `TRUNCATE TABLE "JessySettlement", "JessyReceivable", "JessySettlementAllocation" CASCADE`,
+  );
+}
+
 export async function resetDb() {
   // Order matters only for tables without cascade from Client/User.
   await db.auditLog.deleteMany({});
   await db.consultationFile.deleteMany({});
+  await resetJessyLedger();
   await db.consultation.deleteMany({});
   await db.client.deleteMany({});
   await db.user.deleteMany({});

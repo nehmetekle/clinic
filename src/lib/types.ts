@@ -12,6 +12,7 @@ export const PAYMENT_METHOD_VALUES = [
   "card",
   "whish",
   "omt",
+  "jessy",
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHOD_VALUES)[number];
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
@@ -19,7 +20,23 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   card: "Card",
   whish: "Whish",
   omt: "OMT",
+  jessy: "Jessy",
 };
+
+// Third-party/prepaid payer: the patient settles through Jessy, so the money is
+// recognized as income immediately (a normal Payment, counted in every
+// method breakdown) while Jessy itself still owes the clinic that amount — a
+// JessyReceivable, tracked separately from patient debt. See src/server/
+// repositories/jessy.ts.
+export const JESSY_METHOD: PaymentMethod = "jessy";
+
+// Methods offered when recording an EXPENSE (money the clinic pays out). Jessy is
+// a patient-payment channel the clinic collects THROUGH, never one it spends
+// from, so it's excluded here — the receivable pipeline has no meaning for an
+// outgoing cost.
+export const EXPENSE_PAYMENT_METHOD_VALUES = PAYMENT_METHOD_VALUES.filter(
+  (m) => m !== JESSY_METHOD,
+);
 
 // Sentinel bucket for payments whose stored method is genuinely blank/missing.
 // A real, non-empty method value NEVER lands here — not even one that was once
@@ -742,6 +759,65 @@ export interface ClientDebt {
   createdAt: string;
 }
 
+// ---- Jessy receivables (money the third-party payer owes the clinic) ----
+// A Jessy receivable is NOT patient debt: the patient's side of the visit is
+// already settled by the Jessy payment (income recognized at once, see
+// JESSY_METHOD). What remains is Jessy's own obligation to transfer that money,
+// which is cleared by a JessySettlement — a collection of an existing
+// receivable, never new income.
+export type JessyReceivableStatus = "outstanding" | "settled";
+
+export interface JessyReceivable {
+  id: string;
+  paymentId: string;
+  receiptNumber: string;
+  clientId?: string;
+  clientName?: string;
+  consultationId?: string;
+  visitNumber?: number;
+  // USD, converted at the rate frozen on the source payment. The payment's own
+  // native amount/currency is one join away and never lost.
+  amount: number;
+  remaining: number;
+  status: JessyReceivableStatus;
+  createdByName?: string;
+  createdAt: string;
+}
+
+export interface JessySettlementAllocation {
+  receivableId: string;
+  receiptNumber: string;
+  clientName?: string;
+  amount: number;
+}
+
+export interface JessySettlement {
+  id: string;
+  amount: number; // USD received from Jessy in this transfer
+  reference?: string;
+  notes?: string;
+  recordedByName?: string;
+  createdAt: string;
+  // Which receivables this transfer paid off, oldest first (FIFO).
+  allocations: JessySettlementAllocation[];
+}
+
+/** The three figures that must stay conceptually separate (see docs). */
+export interface JessySummary {
+  // Total patients have paid through Jessy, all time (already counted as income).
+  recorded: number;
+  // Total Jessy has actually transferred to the clinic.
+  settled: number;
+  // What Jessy still owes = recorded − settled. Never negative.
+  outstanding: number;
+}
+
+export interface JessyReport {
+  summary: JessySummary;
+  receivables: JessyReceivable[];
+  settlements: JessySettlement[];
+}
+
 // ---- Composed API response shapes ----
 
 export interface ConsultationListItem extends Consultation {
@@ -790,6 +866,11 @@ export interface DashboardSummary {
     // clinic cost, deducted from net profit (and gross margin) like operating expenses.
     referrerCost: number;
     unpaidBalance: number; // total outstanding tracked debt in USD (money owed) — current snapshot
+    // What the third-party payer Jessy still owes the clinic (USD) — current
+    // snapshot, NOT windowed and NOT part of any income figure: the money was
+    // already recognized as income when the patient paid through Jessy. Separate
+    // from `unpaidBalance`, which is patient debt. Admin-only (redacted below).
+    jessyOutstanding: number;
     paymentsToday: number;
     // Payment-method split (USD) behind the collected-money figures, for the
     // click-to-open breakdown on the "amount collected" stat cards. `incomeByMethod`

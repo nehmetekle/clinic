@@ -100,13 +100,16 @@ export default function ReportsPage() {
         <span className="font-medium text-slate-700">{rangeLabel(range.from, range.to)}</span>. Outstanding debts are current.
       </p>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Total income" value={formatMoney(data.finance.totalIncome)} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
         <StatCard label="Total expenses" value={formatMoney(data.finance.totalExpenses)} tone="rose" />
         <StatCard label="Referrer cost" value={formatMoney(data.finance.referrerCost)} tone="rose" hint="View breakdown →" onClick={() => setShowReferrerCost(true)} />
         <StatCard label="Net profit" value={formatMoney(data.finance.netProfit)} tone={data.finance.netProfit >= 0 ? "brand" : "rose"} />
         <StatCard label="Gross margin" value={formatMoney(data.finance.grossMargin)} tone={data.finance.grossMargin >= 0 ? "brand" : "rose"} />
         <StatCard label="Outstanding debts" value={formatMoney(data.finance.unpaidBalance)} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
+        {/* Money Jessy has not transferred yet. NOT income (already counted when
+            the patient paid) and NOT patient debt — its own receivable ledger. */}
+        <StatCard label="Outstanding from Jessy" value={formatMoney(data.finance.jessyOutstanding)} tone="amber" hint="Open Jessy ledger →" onClick={() => router.push("/jessy")} />
       </div>
 
       <ReferrerCostBreakdown

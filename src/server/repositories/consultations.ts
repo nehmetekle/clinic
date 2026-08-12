@@ -1271,6 +1271,18 @@ export async function deleteConsultation(
     if (debts > 0) {
       throw new ConflictError("This visit has recorded debt and can't be deleted.");
     }
+    // Jessy ledger: a visit paid through Jessy left a receivable the clinic is
+    // still owed (or has since collected). The paid-basket guard above already
+    // catches this today, but state it explicitly so the reason is legible and a
+    // future change to basket handling can't quietly drop the protection. The
+    // database blocks the corrupting case outright (see protect_jessy_ledger);
+    // this is the readable message that gets there first.
+    const jessyReceivables = await tx.jessyReceivable.count({ where: { consultationId: id } });
+    if (jessyReceivables > 0) {
+      throw new ConflictError(
+        "This visit was paid through Jessy and can't be deleted — Jessy's balance is tracked against it.",
+      );
+    }
     // Package-covered visits carry balances that can't be unwound cleanly on
     // delete — remove those treatments from the visit first (or use an admin edit).
     if (existing.treatments.some((t) => t.clientPackageId)) {

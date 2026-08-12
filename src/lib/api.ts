@@ -16,6 +16,8 @@ import type {
   ConsultationStatus,
   DashboardSummary,
   Expense,
+  JessyReport,
+  JessySummary,
   MedicalHistory,
   Package,
   Payment,
@@ -44,6 +46,7 @@ import type {
   CreateStaffInput,
   UpdateStaffInput,
   MedicalHistoryInput,
+  RecordJessySettlementInput,
   RescheduleAppointmentInput,
   SettleVisitBasketInput,
   UpdateBloodSampleInput,
@@ -243,6 +246,13 @@ export const api = {
   voidClientDebt: (id: string, body: { reason: string }) =>
     patchJson<ClientDebt>(`/api/client-debts/${id}`, { action: "void", ...body }),
 
+  // Jessy (third-party payer) ledger. `recordJessySettlement` books money
+  // RECEIVED from Jessy against the outstanding receivables — it creates no
+  // payment and no income (that was recognized when the patient paid).
+  getJessyReport: () => getJson<JessyReport>("/api/jessy"),
+  recordJessySettlement: (body: RecordJessySettlementInput) =>
+    postJson<JessySummary>("/api/jessy/settlements", body),
+
   listVisitBaskets: (status?: VisitBasketStatus) =>
     getJson<VisitBasket[]>(`/api/visit-baskets${status ? `?status=${status}` : ""}`),
   updateVisitBasket: (id: string, body: UpdateVisitBasketInput) =>
@@ -275,6 +285,11 @@ export const api = {
   // Direct URL for an <a href> download. Unlike a blood-test result, the finished
   // Food List PDF is downloadable by every role.
   consultationFileUrl: (fileId: string) => `/api/consultation-files/${fileId}`,
+  // Same file served `Content-Disposition: inline`, so opening it in a new tab
+  // shows the PDF in the browser's viewer — where Print lives — instead of
+  // dropping it in the downloads folder. Open to every role, like the download.
+  consultationFilePrintUrl: (fileId: string) =>
+    `/api/consultation-files/${fileId}?disposition=inline`,
   // Same file, fetched for onward sending to the patient. The server re-checks
   // that the PDF still matches the form on this intent and refuses if it doesn't
   // — a Files tab opened before the form changed can otherwise still offer a

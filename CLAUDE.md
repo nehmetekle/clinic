@@ -109,6 +109,14 @@ net profit and gross margin, surfaced as the "Referrer cost" card + drill-down o
 the dashboard/reports. Freeze-at-use, admin-only, redacted for other roles — see
 [docs/known-issues.md](docs/known-issues.md) §8._
 
+_Also done since (removed): **Jessy, the third-party payer**. `jessy` is a normal
+payment method (works everywhere the others do, splits included), but a patient
+paying through it recognizes the income **immediately** while raising a separate
+`JessyReceivable` for what Jessy owes the clinic. A later transfer from Jessy
+clears that receivable and creates **no income** (it was already counted). Admin
+`/jessy` page + "Outstanding from Jessy" on Reports. See "Jessy" below and
+[docs/known-issues.md](docs/known-issues.md) §14._
+
 _Also done since (removed): the **Food List (Nutrient-Rich Foods List)** — a
 collapsible card in the consultation editor between "Consultation notes" and
 "Visit services" that reproduces Layaka's paper form, saves with the rest of the
@@ -191,6 +199,55 @@ double-booking protection** — not for rescheduling and not for booking; see
 [docs/known-issues.md](docs/known-issues.md) §6 and §12 before assuming a slot is
 exclusive.
 
+## Jessy (third-party payer)
+A prepaid/third-party payer: the patient settles through Jessy, Jessy transfers
+the money to the clinic later.
+- **It is a normal payment method.** `jessy` lives in `PAYMENT_METHOD_VALUES`
+  ([src/lib/types.ts](src/lib/types.ts)) alongside cash/card/whish/omt, so every
+  dropdown, Zod schema, split settlement and method breakdown picks it up for
+  free. It gets **no card surcharge** — that stays `card`-only.
+- **Income is recognized at once, not when Jessy pays.** A $600 visit paid $400
+  through Jessy leaves: a $400 `jessy` Payment (counted in income today), a $200
+  normal `ClientDebt`, and a $400 `JessyReceivable`. The patient never owes the
+  Jessy portion. **`ClientDebt` is unchanged** — patient debt stays independent
+  of payment method.
+- **The receivable is created inside `createPayment`** — the one chokepoint every
+  Payment goes through — as a **nested Prisma create**, so payment + receivable
+  are one atomic statement on every path (manual, basket settlement, debt clear).
+  The ledger is USD, converted at the rate frozen on its own payment.
+- **A settlement is a collection, never income.** `recordJessySettlement`
+  ([src/server/repositories/jessy.ts](src/server/repositories/jessy.ts)) applies
+  money received from Jessy oldest-first (FIFO) across receivables, writing no
+  Payment. Partial settlements supported; over-settlement refused; each transfer
+  keeps per-receivable allocations so history is auditable to the visit.
+- **Concurrency is DB-enforced, not UI-enforced**: guarded `remaining >= portion`
+  decrements, a unique `paymentId` (one receivable per payment, so a double
+  submit can't stack), an idempotency key on settlements, and Postgres CHECK
+  constraints (`remaining BETWEEN 0 AND amount`) as the last line of defence.
+- **The ledger is protected by database triggers** (`protect_jessy_ledger`): you
+  cannot delete a receivable Jessy has settled against (this also blocks deleting
+  its `Payment` or cascading a `Client` delete into it), raise a `remaining`,
+  edit a frozen `amount`, or touch a settlement or its allocations. `handleError`
+  turns a blocked write into a **409 carrying the trigger's own message**, never
+  a 500. Unsettled receivables still delete freely with their payment.
+- **Those CHECKs and triggers are hand-written SQL — Prisma can't express or
+  introspect them, so don't lose them if migrations are ever squashed.**
+  `TRUNCATE` bypasses row triggers and is the sanctioned ledger reset for tests
+  (`resetJessyLedger()` in `tests/race/harness.ts`).
+- **Admin-only, both sides** — `canManageJessy` in `src/server/auth.ts` gates the
+  page, `GET /api/jessy` and `POST /api/jessy/settlements`. Stricter than
+  `canHandleMoney` on purpose: the ledger is a financial report, which
+  docs/01-product-spec.md §2.1 reserves for the admin, and recording a transfer
+  means reconciling against a balance the secretary may not see.
+- **Keep the three figures separate**: Jessy income volume (already income) ≠
+  Jessy outstanding (a balance, never windowed, never income) ≠ settlements
+  received (a collection). `recorded − settled === outstanding` is asserted in
+  the tests.
+- **There is deliberately no void/reversal** — the clinic doesn't refund, and the
+  app has no payment-void concept at all. Read
+  [docs/known-issues.md](docs/known-issues.md) §14 before adding one.
+- Tests: `tests/race/t14-jessy.ts` via `npm run test:race`.
+
 ## Food List (Nutrient-Rich Foods List)
 A web + PDF reproduction of Layaka's paper intake form, used to record what a
 patient actually eats.
@@ -227,7 +284,16 @@ patient actually eats.
   No-ops when no form exists or nothing is ticked; **never throws** — close has
   already committed. Failures are still invisible to the user but are reported as
   a structured `food_list_pdf.failed` line via `src/server/observability.ts`. Runs at the route layer, outside the close transaction.
-- **"Send via WhatsApp"** sits next to every Download for a Food List PDF (the
+- **"Print"** (not Download) is the action on a Food List PDF, in the editor's
+  card and the client's Files tab, for **all three roles** — the sheet exists to
+  be handed to the patient on paper. It opens the PDF in a new tab served
+  `Content-Disposition: inline` (`?disposition=inline` on
+  `/api/consultation-files/[fileId]`, `api.consultationFilePrintUrl`), where the
+  browser's own viewer owns the print dialog; it stays a real link, so "Save as"
+  covers anyone who wants the file. Blood-test results still say **Download** —
+  they're clinical data, not a printout. Access is unchanged: that route is
+  deliberately not clinical-gated, so the secretary prints from the front desk.
+- **"Send via WhatsApp"** sits next to Print for a Food List PDF (the
   editor's card and the Files tab), for **all three roles**. It refuses on a PDF
   the form has moved past (`stale` on every file listing, from the shared
   `isFoodListPdfStale`) and asks for a regenerate instead — see

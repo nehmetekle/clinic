@@ -48,10 +48,37 @@ export async function readJson<T>(req: Request, schema: ZodSchema<T>): Promise<T
   return schema.parse(body);
 }
 
+/**
+ * Pulls the human-readable message out of a database guard trigger.
+ *
+ * Some invariants are too important to leave to application code and are
+ * enforced by a Postgres trigger instead (today: the Jessy receivable ledger —
+ * see the protect_jessy_ledger migration). A trigger's `RAISE EXCEPTION` reaches
+ * us as a `PrismaClientUnknownRequestError` whose message buries the real text
+ * inside a Rust debug dump. Rather than let that surface as a 500 with an
+ * unreadable body, we extract the message the trigger actually wrote — those are
+ * authored as user-facing sentences — and report it as an ordinary conflict.
+ *
+ * Returns null for anything that isn't a trigger-raised error (SQLSTATE P0001).
+ */
+function databaseGuardMessage(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const match = /code: "P0001", message: "((?:[^"\\]|\\.)*)"/.exec(err.message);
+  if (!match) return null;
+  // Un-escape the quoted debug string (\" and \\ are the only escapes emitted).
+  return match[1].replace(/\\(.)/g, "$1");
+}
+
 /** Converts thrown errors into consistent JSON responses. */
 export function handleError(err: unknown): NextResponse {
   if (err instanceof ZodError) {
     return json({ error: "Validation failed", details: err.flatten() }, 400);
+  }
+  const guarded = databaseGuardMessage(err);
+  if (guarded) {
+    // A protected-record violation is a client-correctable conflict, not a bug.
+    console.error(err);
+    return json({ error: guarded }, 409);
   }
   if (err instanceof DuplicatePhoneError) {
     return json({ error: err.message, code: "duplicate_phone", matches: err.matches }, 409);

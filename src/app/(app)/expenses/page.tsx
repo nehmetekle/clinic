@@ -17,7 +17,9 @@ import { useToast } from "@/lib/toast";
 import { useSession } from "@/lib/session";
 import { CLINIC, todayIso, toUsdFrozen } from "@/lib/config";
 import { cn, formatDate, formatDateTime, formatMoney, parseNumberInput } from "@/lib/utils";
-import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_VALUES } from "@/lib/types";
+// Jessy is a channel patients pay THROUGH, never one the clinic spends from, so
+// the expense form offers every method except that one.
+import { EXPENSE_PAYMENT_METHOD_VALUES, PAYMENT_METHOD_LABELS } from "@/lib/types";
 import type { AuditEntry, Expense } from "@/lib/types";
 
 // A fresh blank expense; `date` defaults to today, resolved each time so it never
@@ -334,7 +336,7 @@ export default function ExpensesPage() {
           </FormRow>
           <FormRow label="Payment method *">
             <Select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} className={cn(form.method === "" && missingClass)}>
-              {PAYMENT_METHOD_VALUES.map((m) => (
+              {EXPENSE_PAYMENT_METHOD_VALUES.map((m) => (
                 <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
               ))}
             </Select>

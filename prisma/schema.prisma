@@ -36,6 +36,7 @@ model User {
   consultations       Consultation[]
   consultationFiles   ConsultationFile[]
   expenses            Expense[]
+  jessySettlements    JessySettlement[]
   payments            Payment[]
   pendingTwoFactors   PendingTwoFactor[]
   sessions            Session[]
@@ -71,7 +72,7 @@ model Session {
 }
 
 model Client {
-  id                  String          @id @default(cuid())
+  id                  String            @id @default(cuid())
   firstName           String
   lastName            String
   phone               String
@@ -86,24 +87,25 @@ model Client {
   country             String?
   maritalStatus       String?
   referralSource      String?
-  firstTimePatient    Boolean         @default(false)
-  intakeComplete      Boolean         @default(true)
-  registeredAt        DateTime        @default(now())
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
+  firstTimePatient    Boolean           @default(false)
+  intakeComplete      Boolean           @default(true)
+  registeredAt        DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
   assignedDietitianId String?
   createdById         String?
   referralFee         Float?
   // Whether this patient gets WhatsApp appointment reminders. Default on; staff
   // can opt a patient out (see consent checkbox at registration/check-in).
-  whatsappOptIn       Boolean         @default(true)
+  whatsappOptIn       Boolean           @default(true)
   appointments        Appointment[]
   bloodSamples        BloodSample[]
-  assignedDietitian   User?           @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
-  createdBy           User?           @relation("CreatedByUser", fields: [createdById], references: [id])
+  assignedDietitian   User?             @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
+  createdBy           User?             @relation("CreatedByUser", fields: [createdById], references: [id])
   debts               ClientDebt[]
   packages            ClientPackage[]
   consultations       Consultation[]
+  jessyReceivables    JessyReceivable[]
   medicalHistory      MedicalHistory?
   payments            Payment[]
   sessionPlans        SessionPlan[]
@@ -111,27 +113,27 @@ model Client {
 }
 
 model SessionPlan {
-  id             String                  @id @default(cuid())
-  clientId       String
-  machine        String?
-  unitPrice      Float
-  currency       String                  @default("USD")
-  usdToLbp       Float                   @default(0)
-  sessionsNeeded Int
-  sessionsUsed   Int                     @default(0)
-  sessionsPaid   Int                     @default(0)
-  status         String                  @default("active")
+  id               String                  @id @default(cuid())
+  clientId         String
+  machine          String?
+  unitPrice        Float
+  currency         String                  @default("USD")
+  usdToLbp         Float                   @default(0)
+  sessionsNeeded   Int
+  sessionsUsed     Int                     @default(0)
+  sessionsPaid     Int                     @default(0)
+  status           String                  @default("active")
   // Mirror of `machine` that is only set while the plan is ACTIVE (null otherwise).
   // With the unique index below this is what enforces "one active session plan per
   // client per machine" in the DATABASE, not just in the UI: Postgres treats NULLs
   // as distinct, so any number of completed/cancelled plans may coexist. Always set
   // through `activeMachineKey()` in repositories/sessionPlans.ts — never by hand.
   activeMachineKey String?
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  treatments     ConsultationTreatment[]
-  client         Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  basketItems    VisitBasketItem[]
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  treatments       ConsultationTreatment[]
+  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  basketItems      VisitBasketItem[]
 
   @@unique([clientId, activeMachineKey])
 }
@@ -215,24 +217,24 @@ model ClientPackage {
 }
 
 model Appointment {
-  id          String    @id @default(cuid())
-  clientId    String
-  dietitianId String?
-  date        DateTime
-  time        String
-  status      String    @default("scheduled")
-  visitType   String    @default("follow_up")
-  notes       String?
-  completedAt DateTime?
+  id                String    @id @default(cuid())
+  clientId          String
+  dietitianId       String?
+  date              DateTime
+  time              String
+  status            String    @default("scheduled")
+  visitType         String    @default("follow_up")
+  notes             String?
+  completedAt       DateTime?
   // WhatsApp reminder tracking — each set once its reminder is sent, so a patient
   // never gets the same reminder twice. Two independent reminders per visit:
   // ~24h before, and ~1–2h before.
   reminder24hSentAt DateTime?
   reminder2hSentAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitian   User?     @relation(fields: [dietitianId], references: [id])
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dietitian         User?     @relation(fields: [dietitianId], references: [id])
 }
 
 model Consultation {
@@ -274,6 +276,7 @@ model Consultation {
   dietitian             User?                   @relation(fields: [dietitianId], references: [id])
   files                 ConsultationFile[]
   foodList              ConsultationFoodList?
+  jessyReceivables      JessyReceivable[]
   products              ConsultationProduct[]
   treatments            ConsultationTreatment[]
   visitBaskets          VisitBasket[]
@@ -373,23 +376,23 @@ model ServicePrice {
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  name      String
-  price     Float    @default(0)
-  cost      Float    @default(0)
-  currency  String   @default("USD")
-  active    Boolean  @default(true)
+  id                String   @id @default(cuid())
+  name              String
+  price             Float    @default(0)
+  cost              Float    @default(0)
+  currency          String   @default("USD")
+  active            Boolean  @default(true)
   // Current on-hand quantity. Only ever changed through an audited adjustment
   // (sale/restock/correction) — never a raw overwrite — so AuditLog stays the
   // complete history of how it got here. May go negative (oversold); the app
   // shows that as a backorder flag rather than blocking the sale.
-  stock     Int      @default(0)
+  stock             Int      @default(0)
   // Admin-set reorder point for this specific product (differs a lot by item —
   // a bulk supplement vs. a rarely-stocked one). stock <= this triggers the
   // low-stock notification/badge.
-  lowStockThreshold Int @default(5)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  lowStockThreshold Int      @default(5)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
 }
 
 model ConsultationProduct {
@@ -407,32 +410,101 @@ model ConsultationProduct {
 }
 
 model Payment {
-  id               String       @id @default(cuid())
-  clientId         String?
-  motif            String
-  amountPaid       Float
-  currency         String       @default("USD")
-  usdToLbp         Float        @default(0)
-  method           String
-  date             DateTime     @default(now())
-  receiptNumber    String       @unique
-  idempotencyKey   String?      @unique
-  notes            String?
-  createdById      String?
-  createdAt        DateTime     @default(now())
-  visitBasketId    String?
+  id                  String           @id @default(cuid())
+  clientId            String?
+  motif               String
+  amountPaid          Float
+  currency            String           @default("USD")
+  usdToLbp            Float            @default(0)
+  method              String
+  date                DateTime         @default(now())
+  receiptNumber       String           @unique
+  idempotencyKey      String?          @unique
+  notes               String?
+  createdById         String?
+  createdAt           DateTime         @default(now())
+  visitBasketId       String?
   // Portion of `amountPaid` that is the card-payment surcharge fee (Setting
   // "cardSurchargePercent"), not the underlying charge — 0 for every non-card
   // payment and for card payments made before/without this fee configured.
   // Frozen at creation like `usdToLbp`, so a later rate change never reprices
   // history. Original amount = amountPaid - cardSurchargeAmount.
-  cardSurchargeAmount Float     @default(0)
-  client           Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  createdBy        User?        @relation(fields: [createdById], references: [id])
-  settlementBasket VisitBasket? @relation("BasketPayments", fields: [visitBasketId], references: [id])
-  visitBasket      VisitBasket? @relation("BasketPrimaryPayment")
+  cardSurchargeAmount Float            @default(0)
+  client              Client?          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdBy           User?            @relation(fields: [createdById], references: [id])
+  settlementBasket    VisitBasket?     @relation("BasketPayments", fields: [visitBasketId], references: [id])
+  visitBasket         VisitBasket?     @relation("BasketPrimaryPayment")
+  // Present only on a `jessy` payment: the matching amount Jessy still owes the
+  // clinic. Created in the SAME write as the payment (a nested create), so a
+  // jessy payment can never exist without its receivable, or vice versa.
+  jessyReceivable     JessyReceivable?
 
   @@index([visitBasketId])
+}
+
+// ---- Jessy (third-party payer) receivables ----
+// The patient pays through Jessy: that money is real income the moment the visit
+// is settled (a normal Payment row with method "jessy", counted in every
+// payment-method breakdown). What this table tracks is the SEPARATE obligation
+// that Jessy now owes the clinic that amount. It is deliberately NOT a
+// ClientDebt — the patient owes nothing for the Jessy portion.
+model JessyReceivable {
+  id             String                      @id @default(cuid())
+  // One receivable per payment, DB-enforced: a double-submitted jessy payment
+  // resolves to the same Payment row (idempotencyKey) and therefore can never
+  // stack a second receivable.
+  paymentId      String                      @unique
+  clientId       String?
+  consultationId String?
+  // USD, converted at the rate FROZEN on the source payment. The native
+  // amount/currency stays on that Payment, so nothing is lost; keeping the
+  // ledger in one currency is what lets settlement allocate safely.
+  amount         Float
+  // Still owed by Jessy on this receivable (USD). Decremented by settlement
+  // allocations under a `gte` guard, so it can never go below zero.
+  remaining      Float
+  status         String                      @default("outstanding")
+  createdByName  String?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  payment        Payment                     @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  client         Client?                     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation   Consultation?               @relation(fields: [consultationId], references: [id])
+  allocations    JessySettlementAllocation[]
+
+  @@index([status, createdAt])
+  @@index([clientId])
+}
+
+// One transfer of money actually received FROM Jessy. Records no Payment and no
+// income — the income was already recognized when the patients paid through
+// Jessy; this only draws down the receivables below.
+model JessySettlement {
+  id             String                      @id @default(cuid())
+  amount         Float // USD received in this transfer
+  reference      String?
+  notes          String?
+  idempotencyKey String?                     @unique
+  recordedById   String?
+  recordedByName String?
+  createdAt      DateTime                    @default(now())
+  recordedBy     User?                       @relation(fields: [recordedById], references: [id])
+  allocations    JessySettlementAllocation[]
+}
+
+// How one transfer was applied across receivables (oldest first). This is what
+// makes a partial settlement auditable down to the originating visit.
+model JessySettlementAllocation {
+  id           String          @id @default(cuid())
+  settlementId String
+  receivableId String
+  amount       Float
+  createdAt    DateTime        @default(now())
+  settlement   JessySettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  receivable   JessyReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@index([settlementId])
+  @@index([receivableId])
 }
 
 model VisitBasket {
@@ -504,21 +576,21 @@ model ClientDebt {
 }
 
 model BloodSample {
-  id             String        @id @default(cuid())
+  id             String            @id @default(cuid())
   clientId       String
   dietitianId    String?
   dietitianName  String?
-  consultationId String?       @unique
-  tests          String        @default("[]")
-  orderedAt      DateTime      @default(now())
+  consultationId String?           @unique
+  tests          String            @default("[]")
+  orderedAt      DateTime          @default(now())
   sentAt         DateTime?
   receivedAt     DateTime?
   notes          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  client         Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  consultation   Consultation? @relation(fields: [consultationId], references: [id])
-  dietitian      User?         @relation(fields: [dietitianId], references: [id])
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  client         Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation   Consultation?     @relation(fields: [consultationId], references: [id])
+  dietitian      User?             @relation(fields: [dietitianId], references: [id])
   files          BloodSampleFile[]
 
   @@index([sentAt])
