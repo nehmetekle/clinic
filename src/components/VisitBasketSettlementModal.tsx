@@ -139,20 +139,31 @@ export function VisitBasketSettlementModal({
   // an admin may waive). Only the items the secretary adds here at checkout
   // (products/custom) stay editable and removable. Extra quantity is added as a
   // new line, not by re-typing a sent line's count.
-  const isLockedQuantity = (i: EditItem) => i.sent;
+  //
+  // A session-plan line is locked unconditionally, sent or not: a plan is paid
+  // upfront in full, so part-paying one here would silently push the rest onto a
+  // future visit. The server refuses any change to a plan line as well
+  // (updateVisitBasket) — this only keeps the field from inviting the attempt.
+  const isLockedQuantity = (i: EditItem) => i.sent || Boolean(i.sessionPlanId);
 
   // Only lines the secretary added here (sent === false) can be removed. Every
   // dietitian-sent line is guarded at the handler too, not just hidden in the
   // card, so the removal path stays wired but can never drop a sent line.
   function removeItem(key: string) {
-    setItems((prev) => prev.filter((i) => !(i.key === key && !i.sent)));
+    setItems((prev) => prev.filter((i) => !(i.key === key && !i.sent && !i.sessionPlanId)));
   }
 
-  // Change a charged line's quantity in place — e.g. the client can only pay for
-  // 3 of the 12 sessions today. The card, subtotal and recorded payment all follow.
+  // Change an added line's quantity in place (a product the secretary rang up at
+  // checkout). The card, subtotal and recorded payment all follow. Guarded at the
+  // handler too, not just hidden in the card, so a locked line — anything the
+  // dietitian sent, and every session-plan line — can never be retyped.
   function updateItemQuantity(key: string, quantity: number) {
     setItems((prev) =>
-      prev.map((i) => (i.key === key ? { ...i, quantity: Math.max(1, Math.floor(quantity)) } : i)),
+      prev.map((i) =>
+        i.key === key && !isLockedQuantity(i)
+          ? { ...i, quantity: Math.max(1, Math.floor(quantity)) }
+          : i,
+      ),
     );
   }
 
@@ -415,9 +426,10 @@ export function VisitBasketSettlementModal({
             covered: i.covered,
             // Secretary collects every line the dietitian sent exactly as sent:
             // no quantity edits and no removal. Only her own added lines
-            // (products/custom) stay editable and removable.
+            // (products/custom) stay editable and removable. Session-plan lines
+            // are locked on both counts regardless — they're paid upfront in full.
             lockQuantity: isLockedQuantity(i),
-            lockRemove: i.sent,
+            lockRemove: i.sent || Boolean(i.sessionPlanId),
           }))}
           discountOpen={discountOpen}
           discountType={discountType}

@@ -19,8 +19,9 @@ export type VisitBasketCardItem = {
   // editor, which is removable while treatments/products are not.
   removable?: boolean;
   // Suppresses the in-place quantity editor for this line even in `editable` mode
-  // — e.g. the secretary settles session/treatment lines exactly as the dietitian
-  // sent them (no quantity changes).
+  // — the secretary settles session/treatment lines exactly as the dietitian sent
+  // them (no quantity changes), and a session-plan line is never editable at all
+  // because a plan is paid upfront in full.
   lockQuantity?: boolean;
   // Suppresses the remove (X) for this line even in `editable` mode — e.g. the
   // secretary can't drop the consultation fee (only the dietitian/admin may).
@@ -66,8 +67,8 @@ export function VisitBasketCard({
   onDiscountReasonChange?: (value: string) => void;
   editable?: boolean;
   onRemoveItem?: (id: string) => void;
-  // Lets the editor change a charged line's quantity in place (e.g. the client
-  // can only pay for 3 of 12 sessions today). Shown for non-covered items only.
+  // Lets the editor change a charged line's quantity in place (a product rung up
+  // at checkout). Shown for non-covered items that aren't `lockQuantity`.
   onItemQuantityChange?: (id: string, quantity: number) => void;
   addControl?: React.ReactNode;
   subtitle?: string;

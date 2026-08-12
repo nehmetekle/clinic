@@ -98,8 +98,8 @@ known gaps are in [docs/known-issues.md](docs/known-issues.md).
 _Done since this list was written (removed): audit-log-on-write, queue status-transition
 persistence, the dietitian-dashboard placeholders, and the new-client wizard's payment/
 appointment steps (wizard was reworked to a plain registration form). The old "payment →
-package `paymentStatus` recompute" is superseded by the `SessionPlan` per-session billing +
-`ClientDebt` clearance systems (see [docs/known-issues.md](docs/known-issues.md))._
+package `paymentStatus` recompute" is superseded by the `SessionPlan` upfront billing +
+`ClientDebt` clearance systems (see "Session plans, bundles & billing" below)._
 
 _Also done since (removed): **per-referrer commission**. Each `Referrer` now has
 an admin-set `fee` (USD, Settings → Referrers); it's frozen onto the patient
@@ -126,6 +126,58 @@ Still open:
   stamps so a moved patient is reminded about the new slot — see
   [docs/known-issues.md](docs/known-issues.md) §12.
 - **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (double-booking, phone/email dedup, name-based stats, per-year receipt numbering, …).
+
+## Session plans, bundles & billing
+Two separate ways a patient pays for machine treatments. Both are billed on the
+visit that *buys* them, never per session consumed.
+
+**Pay-as-you-go `SessionPlan`** — one plan per patient per machine, tracking
+`sessionsNeeded / sessionsUsed / sessionsPaid` (credit = `paid − used`).
+- **A visit bills the plan's whole unpaid balance** (`sessionsNeeded − sessionsPaid`)
+  at the machine's catalog per-session price. "Sessions used today" is
+  *consumption only* and never sets the amount charged: 13 needed × $10 with 1 used
+  today = **$130 today**, 13 purchased, 12 remaining. Later visits draw on that
+  credit and bill **nothing** until it runs out or `sessionsNeeded` is raised
+  (raising it from 13 to 20 bills the 7 new sessions on that visit).
+- **One ACTIVE plan per client per machine, enforced by the database** —
+  `SessionPlan.activeMachineKey` mirrors `machine` only while the plan is active
+  (null otherwise) under `@@unique([clientId, activeMachineKey])`, so completed and
+  cancelled plans coexist freely while a duplicate active one is impossible. Always
+  set it through `activeMachineKey()` in `repositories/sessionPlans.ts`, on every
+  write that creates a plan or changes its status. `createSessionPlan` **reuses**
+  the active plan (raising `sessionsNeeded`, never below `sessionsPaid`) instead of
+  creating a second one, so a treatment is never ambiguous about which plan it draws.
+- **Plans are paid upfront, in full.** A plan line can't be deferred as a
+  `ClientDebt` (only the non-plan portion of a basket may be), and it can't be
+  retyped, repriced, dropped, or invented at checkout: the settlement modal locks
+  the field *and* `updateVisitBasket` refuses any change to a plan line, so a
+  direct PATCH can't bypass it either.
+- `sessionsUsed` moves when the visit is saved (`applyConsultationUsage`);
+  `sessionsPaid` moves only at settlement, in the same transaction as the payment.
+- **`sessionsNeeded` is reconciled on every edit/delete** —
+  `reconcileSessionPlanNeedsTx` re-derives it from the treatment rows that still
+  reference the plan, floored at `sessionsPaid`. A visit that raised a plan to 20
+  and is then edited-down or deleted leaves no phantom balance to bill next time;
+  money already collected always keeps its credit.
+
+**Bundles (`Package` → `ClientPackage`)** are unchanged and independent: a fixed
+quantity at a **fixed price**, never `sessions × per-session rate`. Applying a
+15-session/$140 bundle bills **$140** on that visit (net of the bundle's own
+`discountPercent`) and credits 15 sessions; today's session comes out of that
+balance, leaving 14. Only sessions used beyond the balance fall back to the
+per-session catalog price. Bundles can be started on the visit's first save only.
+
+**No refunds.** Money, once collected, is never reversed: a visit with a settled
+basket cannot be deleted (and there is no refund/void flow anywhere — don't build
+one). Deleting is only for a mistaken visit that has collected nothing; it reverses
+that visit's usage, restores the credit it consumed, trims any unpaid purchase
+quantity it added, and drops a plan it alone created.
+
+The editor's live basket preview mirrors the server's billing kernel line for line
+(`treatmentBillable` in `consultations/new/page.tsx` ↔ `sessionBillable` +
+`allocateCoverage` in `repositories/consultations.ts`), so the price the dietitian
+previews and the amount charged can't drift. Regression coverage:
+[tests/race/t13-billing-rules.ts](tests/race/t13-billing-rules.ts) (`npm run test:race`).
 
 ## Rescheduling an appointment
 `PATCH /api/appointments/[id]/reschedule` moves a booking in place (date/time/

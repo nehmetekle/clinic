@@ -820,8 +820,10 @@ function ConsultationEditor() {
   ];
 
   // Pay-as-you-go session plans (separate from packages). The plan a session
-  // treatment draws from: its explicitly linked plan, or any active plan for the
-  // same machine (a brand-new one is created on save when none exists).
+  // treatment draws from: its explicitly linked plan, or THE active plan for the
+  // same machine — there can only be one (enforced by the `[clientId,
+  // activeMachineKey]` unique index), so this lookup is never ambiguous. A
+  // brand-new plan is created on save when none exists.
   const sessionPlans = data.sessionPlans;
   const linkedSessionPlan = (t: TreatmentForm): SessionPlan | undefined => {
     if (!t.sessionPlan) return undefined;
@@ -889,6 +891,26 @@ function ConsultationEditor() {
     return { sourceKey, used };
   });
   const treatmentCoverage = allocateCoverage(coverageRows, remainingBySource);
+
+  // What each treatment BILLS this visit (mirrors the server's billing kernel).
+  // Pay-as-you-go session plans: the client buys the whole "number of sessions
+  // needed", so the billable quantity is the plan's still-unpaid balance —
+  // sessions used today are consumption only and never set the amount charged.
+  // Packages/bundles are unchanged: only the overflow past their balance is billed.
+  const sessionChargeLeft = new Map<string, number>();
+  const treatmentBillable = treatments.map((t, i) => {
+    if (!t.sessionPlan) return treatmentCoverage[i]?.charged ?? 0;
+    const want = Math.max(0, toCount(t.sessionsNeeded, 1));
+    const plan = linkedSessionPlan(t);
+    if (!plan) return want; // a brand-new plan is created on save — nothing paid yet
+    if (!sessionChargeLeft.has(plan.id)) {
+      sessionChargeLeft.set(plan.id, Math.max(0, Math.max(want, plan.sessionsPaid) - plan.sessionsPaid));
+    }
+    const left = sessionChargeLeft.get(plan.id)!;
+    const take = Math.min(want, left);
+    sessionChargeLeft.set(plan.id, left - take);
+    return take;
+  });
 
   // Flatten blood-test selection, expanding the custom "Other" entry. Blood
   // collection is "ordered" whenever at least one test is selected.
@@ -1068,12 +1090,14 @@ function ConsultationEditor() {
       };
     }),
     ...treatments.flatMap((t, i) => {
-      if (!t.machine || toCount(t.sessionsUsed, 0) <= 0) return [];
+      const billable = treatmentBillable[i] ?? 0;
+      if (!t.machine || (toCount(t.sessionsUsed, 0) <= 0 && billable <= 0)) return [];
       const price = treatmentPriceFor(t.machine);
       const unit = price?.price ?? 0;
       const cur = price?.currency ?? "USD";
       const parts = partsLabel(treatmentPartsForForm(t));
-      const { covered, charged } = treatmentCoverage[i] ?? { covered: 0, charged: 0 };
+      const covered = treatmentCoverage[i]?.covered ?? 0;
+      const charged = billable;
       // Session-plan treatments cover from prepaid credit; packages/bundles from balance.
       const coveredBy = t.sessionPlan ? "credit" : "bundle";
       const lines: BasketItem[] = [];
@@ -1098,7 +1122,9 @@ function ConsultationEditor() {
           id: `treatment-${i}-charged`,
           kind: "treatment",
           label: treatmentName(t.machine, t.machineOther),
-          detail: `${parts} · ${charged} charged`,
+          detail: t.sessionPlan
+            ? `${parts} · ${charged} session${charged === 1 ? "" : "s"} purchased`
+            : `${parts} · ${charged} charged`,
           quantity: charged,
           unitPrice: unit,
           amount: unit * charged,
@@ -1572,8 +1598,10 @@ function ConsultationEditor() {
                     const sessionsUsed = toCount(t.sessionsUsed, 0);
                     // Sessions covered (free) vs charged for this treatment, with
                     // coverage capped at the package/bundle's remaining balance.
-                    const { covered: coveredSessions, charged: chargedSessions } =
-                      treatmentCoverage[i] ?? { covered: 0, charged: sessionsUsed };
+                    const coveredSessions = treatmentCoverage[i]?.covered ?? 0;
+                    // Billed sessions: the plan's unpaid purchase for a session
+                    // plan, the past-balance overflow for a package/bundle.
+                    const chargedSessions = treatmentBillable[i] ?? 0;
                     const hasSource = Boolean(t.clientPackageId || t.applyPackageId);
                     const treatmentPrice = t.machine ? treatmentPriceFor(t.machine) : undefined;
                     // Pay-as-you-go session plan linked to this treatment (if any).
@@ -1804,9 +1832,11 @@ function ConsultationEditor() {
                               )}
                               {appliedBundle && (
                                 <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
-                                  Starting <span className="font-medium">{appliedBundle.name}</span> — full price{" "}
+                                  Starting <span className="font-medium">{appliedBundle.name}</span> — fixed bundle price{" "}
                                   <span className="font-medium">{formatMoney(bundleCharge, appliedBundle.currency)}</span>{" "}
-                                  charged this visit. All {appliedBundle.sessions} sessions become available now; today&apos;s session is free.
+                                  charged this visit (not the per-session rate). All {appliedBundle.sessions} sessions
+                                  become available now: {sessionsUsed} used today ·{" "}
+                                  {Math.max(0, appliedBundle.sessions - sessionsUsed)} left after this visit.
                                 </div>
                               )}
                               {t.sessionPlan && (
@@ -1822,29 +1852,33 @@ function ConsultationEditor() {
                                       New pay-as-you-go plan for {t.machine || "this treatment"} — no prepaid credit yet.
                                     </p>
                                   )}
-                                  {sessionsUsed > 0 &&
-                                    (chargedSessions === 0 ? (
+                                  {chargedSessions === 0 ? (
+                                    sessionsUsed > 0 && (
                                       <p className="font-medium text-emerald-700">
-                                        Fully covered by credit — nothing to collect today.
+                                        {coveredSessions > 0
+                                          ? "Fully covered by credit — nothing to collect today."
+                                          : "Already paid for — nothing to collect today."}
                                       </p>
-                                    ) : coveredSessions > 0 ? (
-                                      <p>
-                                        {coveredSessions} covered by credit · {chargedSessions} to charge at{" "}
-                                        {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "per session"}.
-                                      </p>
-                                    ) : (
-                                      <p>
-                                        {chargedSessions} to charge at{" "}
-                                        {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "per session"}.
-                                      </p>
-                                    ))}
+                                    )
+                                  ) : (
+                                    <p>
+                                      Charging {chargedSessions} session{chargedSessions === 1 ? "" : "s"} at{" "}
+                                      {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "per session"}
+                                      {treatmentPrice ? (
+                                        <> = <span className="font-medium">{formatMoney(treatmentPrice.price * chargedSessions, treatmentPrice.currency)}</span></>
+                                      ) : null}
+                                      . {sessionsUsed} used today
+                                      {coveredSessions > 0 ? ` (${coveredSessions} covered by credit)` : ""} ·{" "}
+                                      {Math.max(0, chargedSessions + sessionCredit - sessionsUsed)} left after this visit.
+                                    </p>
+                                  )}
                                 </div>
                               )}
                               <div className="grid gap-3 sm:grid-cols-2">
                                 <FormRow label="Number of sessions needed">
                                   <Input type="number" min={0} value={t.sessionsNeeded} onChange={(e) => updateTreatment(i, { sessionsNeeded: e.target.value })} />
                                 </FormRow>
-                                <FormRow label={chargedSessions > 0 ? "Sessions used today (charged)" : "Sessions used today"}>
+                                <FormRow label="Sessions used today">
                                   <Input type="number" min={0} value={t.sessionsUsed} onChange={(e) => updateTreatment(i, { sessionsUsed: e.target.value })} />
                                 </FormRow>
                               </div>

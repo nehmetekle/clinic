@@ -121,11 +121,19 @@ model SessionPlan {
   sessionsUsed   Int                     @default(0)
   sessionsPaid   Int                     @default(0)
   status         String                  @default("active")
+  // Mirror of `machine` that is only set while the plan is ACTIVE (null otherwise).
+  // With the unique index below this is what enforces "one active session plan per
+  // client per machine" in the DATABASE, not just in the UI: Postgres treats NULLs
+  // as distinct, so any number of completed/cancelled plans may coexist. Always set
+  // through `activeMachineKey()` in repositories/sessionPlans.ts — never by hand.
+  activeMachineKey String?
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
   treatments     ConsultationTreatment[]
   client         Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   basketItems    VisitBasketItem[]
+
+  @@unique([clientId, activeMachineKey])
 }
 
 model MedicalHistory {

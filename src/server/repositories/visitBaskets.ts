@@ -406,6 +406,44 @@ export async function updateVisitBasket(
     );
   }
 
+  // Session-plan lines are paid UPFRONT, in full: the visit that buys a plan bills
+  // its whole unpaid balance, and a plan line can be neither part-paid (no debt
+  // deferral — see settleVisitBasket) nor retyped down to a smaller count at
+  // checkout, which would silently push the rest onto a future visit. Every plan
+  // line the dietitian sent must therefore come back byte-for-byte, and no plan
+  // line may be invented here. Enforced on the SERVER, not just locked in the
+  // settlement modal, so a direct PATCH can't bypass it.
+  const planLineFingerprint = (
+    rows: {
+      sessionPlanId?: string | null;
+      label: string;
+      quantity?: number | null;
+      unitPrice?: number | null;
+      currency?: string | null;
+      covered?: boolean | null;
+    }[],
+  ): string[] =>
+    rows
+      .filter((i) => i.sessionPlanId)
+      .map((i) =>
+        [
+          i.sessionPlanId,
+          i.label.trim().toLowerCase(),
+          Math.max(1, Math.floor(i.quantity ?? 1)),
+          i.unitPrice ?? 0,
+          i.currency ?? "USD",
+          i.covered ? 1 : 0,
+        ].join("::"),
+      )
+      .sort();
+  const planBefore = planLineFingerprint(existing.items);
+  const planAfter = planLineFingerprint(input.items);
+  if (planBefore.length !== planAfter.length || planBefore.some((sig, idx) => sig !== planAfter[idx])) {
+    throw new ConflictError(
+      "Session-plan sessions are paid upfront in full — their lines can't be changed at checkout.",
+    );
+  }
+
   const nextType = input.discountType ?? null;
   const nextValue = input.discountValue ?? 0;
   const discountApplied = Boolean(nextType) && nextValue > 0;

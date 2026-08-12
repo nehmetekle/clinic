@@ -1,6 +1,6 @@
 # Known Issues & V3 Readiness
 
-_Last updated: 2026-07-03._
+_Last updated: 2026-08-12._
 
 A running checklist so we don't lose track of known-but-unfixed items as the
 project grows. Item numbers match the codebase health-check audit. Nothing here
@@ -11,36 +11,33 @@ settlement double-charge (#3), missing permission checks (#1), and recurring-cos
 history freezing (#4, which also incidentally fixed the currency-switch stale-rate
 concern — a currency change now re-snapshots the exchange rate for the new period).
 
-**Per-session billing / `SessionPlan` (implemented, engine only):** pay-as-you-go
-clients (NOT on a fixed-price package) now have a `SessionPlan` tracking
-`sessionsNeeded / sessionsUsed / sessionsPaid`, with derived credit
-(`paid − used`). `sessionsUsed` advances when a visit is logged; `sessionsPaid`
-advances only at settlement (by the final settled quantity, inside the same
-atomic transaction as the payment). A visit fully covered by prepaid credit
-auto-settles at $0 with a recorded basket and no secretary checkout. This is the
-per-session realization of the old "Payment → package paymentStatus recompute"
-deferral, built as a **separate system** from Packages (fixed-price package logic
-is untouched). **Deferred to a follow-up:** the UI (dietitian linking a treatment
-to a plan + showing credit, and the client-detail balance view) — the engine is
-proven via scripts but not yet wired into any screen, and no demo `SessionPlan`
-is seeded until that UI lands.
+**Upfront plan billing / `SessionPlan` (implemented, wired into the UI):**
+pay-as-you-go clients (NOT on a fixed-price package) have a `SessionPlan` tracking
+`sessionsNeeded / sessionsUsed / sessionsPaid`, with derived credit (`paid − used`),
+built as a **separate system** from Packages (fixed-price package logic is
+untouched). A visit bills the plan's whole unpaid balance
+(`sessionsNeeded − sessionsPaid`) at the machine's catalog per-session price;
+"sessions used today" is consumption only and never sets the amount charged. A
+visit that only draws on existing credit raises no basket at all. `sessionsUsed`
+advances when the visit is saved; `sessionsPaid` advances only at settlement (by
+the settled quantity, inside the same atomic transaction as the payment). The
+dietitian links a treatment to a plan from the consultation editor's "Bundle &
+sessions" card, which previews the charge through the same kernel the server bills
+with. Full behaviour: `CLAUDE.md` → "Session plans, bundles & billing".
 
-**Client debt / clearance (Phase 2, implemented):** closing a consultation with a
-still-unpaid delta basket now converts the owed amount into a tracked `ClientDebt`
-(`source: close_unpaid`) and takes the basket out of the settlement queue
-(`status: cleared_with_debt`) instead of leaving money uncollected. Session-plan
-charged lines are **not** duplicated as a debt — the plan's own
-`sessionsUsed > sessionsPaid` gap already tracks them (the agreed rule), so only
-one-off (non-plan) charges become a debt. The secretary can also record a
-still-owed remainder at settlement (`source: secretary_override`). Debts show on
-the client profile (Payments tab → "Tracked debts") where they can be **collected**
+**Client debt / clearance (Phase 2, implemented):** money a client couldn't cover
+at checkout is recorded as a tracked `ClientDebt` (`source: secretary_override`)
+alongside a payment for what was actually collected, instead of being left
+uncollected. Session-plan charged lines are **never** deferred this way — a plan is
+paid upfront in full, so only the non-plan portion of a basket may be entered as
+debt (capped in `settleVisitBasket`; `updateVisitBasket` likewise refuses any edit
+to a plan line at checkout). Debts show on the client profile (Payments tab → "Tracked debts") where they can be **collected**
 (records a real `Payment` for the amount) or **voided** (written off). Verified by a
 40-assertion engine matrix + a browser click-through of the full lifecycle.
-- **Deferred nuance:** for a session-plan visit closed while unpaid, the shortfall
-  lives on the plan (`sessionsToPayFor`), not as a `ClientDebt`, and there is no
-  path to advance that plan's `sessionsPaid` from the now-terminal `cleared_with_debt`
-  basket. Collecting it happens naturally on a future visit's session charge. This
-  is intentional (avoids double-tracking) but worth remembering.
+- A visit can no longer be closed with money still outstanding: `closeConsultation`
+  refuses while a `pending` basket exists (`assertBasketSettledTx`), so every visit
+  is settled — in full, or with the non-plan remainder recorded as a `ClientDebt`
+  at settlement — before it is finalized.
 
 **Fixed — #14 tab reset on refetch (app-wide):** a manual `useApi().refetch()` used
 to flip `loading` back to `true`, so any page that gates on `loading` (e.g. the
@@ -171,6 +168,14 @@ steps), and "payment → package `paymentStatus` recompute" was replaced by the
 `SessionPlan` + `ClientDebt` systems above. They now also run against a verified
 session rather than a self-reported role (items 1–4), so the old trust caveat no
 longer applies.
+
+Two further gaps in the billing area have since closed: **one active session plan
+per client per machine** is now enforced by the database (the partial-unique
+`activeMachineKey`, not just by the UI), and a deleted or edited-down visit no
+longer leaves a phantom purchase balance on a plan
+(`reconcileSessionPlanNeedsTx`). **Refunds are not a gap:** money once collected is
+never reversed and a visit with a settled basket can't be deleted — that is the
+clinic's rule, not a missing feature.
 
 ### 9. Also resolved in the post-launch security hardening pass
 HTTP security headers, admin-initiated staff password reset, and TOTP 2FA
