@@ -722,11 +722,13 @@ function ProductsCard() {
   const [newName, setNewName] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newCost, setNewCost] = useState("");
+  const [newStock, setNewStock] = useState("");
   const [adding, setAdding] = useState(false);
 
   async function addProduct() {
     const price = parseNumberInput(newPrice);
     const cost = parseNumberInput(newCost);
+    const stock = parseNumberInput(newStock);
     if (!newName.trim()) {
       toast("Enter a product name");
       return;
@@ -737,11 +739,13 @@ function ProductsCard() {
         name: newName.trim(),
         price: price > 0 ? price : 0,
         cost: cost > 0 ? cost : 0,
+        stock: stock > 0 ? Math.floor(stock) : 0,
       });
       toast("Product added");
       setNewName("");
       setNewPrice("");
       setNewCost("");
+      setNewStock("");
       products.refetch();
     } catch (e) {
       toast((e as Error).message);
@@ -778,10 +782,11 @@ function ProductsCard() {
 
         <div className="border-t border-slate-100 pt-4">
           <p className="mb-2 text-xs font-medium text-slate-500">Add a product</p>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-4">
             <FormRow label="Name"><Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Detox tea" /></FormRow>
             <FormRow label="Price"><MoneyInput value={newPrice} onValueChange={setNewPrice} placeholder="0" /></FormRow>
             <FormRow label="Cost"><MoneyInput value={newCost} onValueChange={setNewCost} placeholder="0" /></FormRow>
+            <FormRow label="Initial stock"><Input type="number" min={0} step={1} value={newStock} onChange={(e) => setNewStock(e.target.value)} placeholder="0" /></FormRow>
           </div>
           <div className="mt-3 flex justify-end">
             <Button size="sm" onClick={addProduct} disabled={adding}>{adding ? "Adding…" : "Add product"}</Button>
@@ -790,6 +795,13 @@ function ProductsCard() {
       </CardBody>
     </Card>
   );
+}
+
+/** Stock badge tone: out of stock (red) beats low stock (amber) beats fine (neutral). */
+function stockTone(stock: number, threshold: number): "red" | "amber" | "gray" {
+  if (stock <= 0) return "red";
+  if (stock <= threshold) return "amber";
+  return "gray";
 }
 
 function ProductRow({
@@ -804,11 +816,14 @@ function ProductRow({
   const { toast } = useToast();
   const [price, setPrice] = useState(String(product.price));
   const [cost, setCost] = useState(String(product.cost ?? 0));
+  const [threshold, setThreshold] = useState(String(product.lowStockThreshold));
   const [saving, setSaving] = useState(false);
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const margin = parseNumberInput(price) - parseNumberInput(cost);
   const dirty =
     parseNumberInput(price) !== product.price ||
-    parseNumberInput(cost) !== (product.cost ?? 0);
+    parseNumberInput(cost) !== (product.cost ?? 0) ||
+    parseNumberInput(threshold) !== product.lowStockThreshold;
 
   async function save() {
     setSaving(true);
@@ -816,6 +831,7 @@ function ProductRow({
       await api.updateProduct(product.id, {
         price: parseNumberInput(price),
         cost: parseNumberInput(cost),
+        lowStockThreshold: Math.max(0, Math.floor(parseNumberInput(threshold))),
       });
       toast("Product updated");
       onChanged();
@@ -826,11 +842,18 @@ function ProductRow({
     }
   }
 
+  const tone = stockTone(product.stock, product.lowStockThreshold);
+
   return (
     <div className="rounded-lg border border-slate-200 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-slate-700">{product.name}</p>
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium text-slate-700">{product.name}</p>
+            <Badge tone={tone}>
+              {product.stock <= 0 ? `Out of stock (${product.stock})` : `${product.stock} in stock`}
+            </Badge>
+          </div>
           <p className="text-xs text-slate-400">
             Margin{" "}
             <span className={margin >= 0 ? "text-emerald-600" : "text-rose-600"}>
@@ -838,23 +861,129 @@ function ProductRow({
             </span>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="text-slate-400 hover:text-rose-600"
-          aria-label="Remove product"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)}>Adjust stock</Button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-slate-400 hover:text-rose-600"
+            aria-label="Remove product"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <div className="mt-3 flex items-end gap-3">
         <FormRow label="Price" className="flex-1"><MoneyInput value={price} onValueChange={setPrice} /></FormRow>
         <FormRow label="Cost" className="flex-1"><MoneyInput value={cost} onValueChange={setCost} /></FormRow>
+        <FormRow label="Low stock at" className="flex-1">
+          <Input type="number" min={0} step={1} value={threshold} onChange={(e) => setThreshold(e.target.value)} />
+        </FormRow>
         <Button size="sm" variant="outline" onClick={save} disabled={saving || !dirty}>
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>
+
+      <StockAdjustModal
+        open={adjustOpen}
+        onClose={() => setAdjustOpen(false)}
+        product={product}
+        onAdjusted={() => {
+          setAdjustOpen(false);
+          onChanged();
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * Every post-creation stock change goes through this — never a raw overwrite —
+ * so AuditLog stays the complete history (see adjustProductStockTx). "Restock"
+ * covers new inventory arriving; "Correction" covers fixing a miscount/damage
+ * and accepts a negative amount, unlike restock.
+ */
+function StockAdjustModal({
+  open,
+  onClose,
+  product,
+  onAdjusted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  product: Product;
+  onAdjusted: () => void;
+}) {
+  const { toast } = useToast();
+  const [type, setType] = useState<"restock" | "correction">("restock");
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setType("restock");
+      setAmount("");
+      setReason("");
+    }
+  }, [open]);
+
+  async function save() {
+    const raw = Math.trunc(Number(amount));
+    if (!Number.isFinite(raw) || raw === 0) {
+      toast("Enter a non-zero amount");
+      return;
+    }
+    if (type === "restock" && raw < 0) {
+      toast("Restock amount must be positive — use Correction to reduce stock");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.adjustProductStock(product.id, { delta: raw, type, reason: reason.trim() || undefined });
+      toast(type === "restock" ? "Stock added" : "Stock corrected");
+      onAdjusted();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Adjust stock — ${product.name}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">Current stock: {product.stock}</p>
+        <FormRow label="Type">
+          <Select value={type} onChange={(e) => setType(e.target.value as "restock" | "correction")}>
+            <option value="restock">Restock (new inventory arrived)</option>
+            <option value="correction">Correction (fix a miscount/damage)</option>
+          </Select>
+        </FormRow>
+        <FormRow label={type === "restock" ? "Amount received" : "Amount (+/-)"}>
+          <Input
+            type="number"
+            step={1}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder={type === "restock" ? "e.g. 20" : "e.g. -2"}
+          />
+        </FormRow>
+        <FormRow label="Reason (optional)">
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Shipment from supplier" />
+        </FormRow>
+      </div>
+    </Modal>
   );
 }
 

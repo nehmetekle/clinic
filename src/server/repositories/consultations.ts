@@ -733,6 +733,9 @@ async function buildConsultationContentTx(
     ...products.map((p) => ({
       kind: "product", label: p.name, detail: "Product",
       quantity: p.quantity, unitPrice: p.unitPrice, currency: p.currency, covered: false,
+      // Carried through so settlement can deduct inventory by the exact final
+      // quantity in the basket — see settleVisitBasket in visitBaskets.ts.
+      productId: p.productId,
     })),
   ];
 

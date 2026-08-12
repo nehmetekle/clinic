@@ -1,6 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { toProduct } from "../serialize";
 import { NotFoundError } from "../http";
+import { writeAudit } from "./audit";
+import { userIdByEmail } from "./staff";
 import type { Product } from "@/lib/types";
 import type { CreateProductInput, UpdateProductInput } from "@/lib/validation";
 
@@ -20,6 +23,8 @@ export async function createProduct(input: CreateProductInput): Promise<Product>
       cost: input.cost ?? 0,
       currency: input.currency ?? "USD",
       active: input.active ?? true,
+      stock: input.stock ?? 0,
+      lowStockThreshold: input.lowStockThreshold ?? 5,
     },
   });
   return toProduct(row);
@@ -36,6 +41,7 @@ export async function updateProduct(id: string, input: UpdateProductInput): Prom
       cost: input.cost ?? undefined,
       currency: input.currency ?? undefined,
       active: input.active ?? undefined,
+      lowStockThreshold: input.lowStockThreshold ?? undefined,
     },
   });
   return toProduct(row);
@@ -45,4 +51,72 @@ export async function deleteProduct(id: string): Promise<void> {
   const existing = await db.product.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError("Product not found");
   await db.product.delete({ where: { id } });
+}
+
+type StockAdjustmentType = "sale" | "restock" | "correction";
+
+/**
+ * The single choke point for every stock change — `Product.stock` is never
+ * written anywhere else. `delta` is signed (negative = leaves inventory,
+ * positive = returns to it); stock is allowed to go negative (oversold) by
+ * design, never blocked here. Every call writes one AuditLog row, so the log
+ * is the complete history of how the current count was reached. Returns null
+ * (a silent no-op) when the catalog product no longer exists — a sale line
+ * whose product was deleted from the catalog meanwhile must not fail the
+ * consultation save over an inventory count that has nothing left to track.
+ * Runs in the caller's transaction so it commits/rolls back atomically with
+ * the sale, restock, or correction that triggered it.
+ */
+export async function adjustProductStockTx(
+  tx: Prisma.TransactionClient,
+  params: {
+    productId: string;
+    delta: number;
+    type: StockAdjustmentType;
+    reason?: string | null;
+    // Extra human-readable context appended to the audit label, e.g. "Visit #12 — Jane Doe".
+    context?: string | null;
+    actorName?: string | null;
+    actorEmail?: string | null;
+    // When the caller already has a resolved user id (e.g. settlement, which
+    // resolves it once up front), pass it here to skip the email lookup below.
+    // Takes precedence over actorEmail when provided (including explicit null).
+    actorUserId?: string | null;
+  },
+): Promise<Product | null> {
+  const { delta, type } = params;
+  if (delta === 0) return null;
+
+  const existing = await tx.product.findUnique({ where: { id: params.productId } });
+  if (!existing) return null;
+
+  const newStock = existing.stock + delta;
+  const row = await tx.product.update({
+    where: { id: params.productId },
+    data: { stock: newStock },
+  });
+
+  const action =
+    type === "sale"
+      ? delta < 0
+        ? "Product sold"
+        : "Product sale reversed"
+      : type === "restock"
+        ? "Product restocked"
+        : "Stock corrected";
+  const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+  const suffix = type === "sale" ? params.context : params.reason || "no reason given";
+  const entityLabel = `${existing.name} ${deltaStr} → stock ${newStock}${suffix ? ` — ${suffix}` : ""}`;
+
+  const userId =
+    params.actorUserId !== undefined ? params.actorUserId : await userIdByEmail(params.actorEmail ?? undefined);
+  await writeAudit(tx, {
+    userId,
+    userName: params.actorName,
+    action,
+    entityType: "Product",
+    entityLabel,
+  });
+
+  return toProduct(row);
 }

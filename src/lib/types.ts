@@ -74,6 +74,10 @@ export interface Product {
   cost?: number;
   currency: Currency;
   active: boolean;
+  // Current on-hand count. May be negative (oversold) — see docs/known-issues.md.
+  // Visible to every role, unlike cost.
+  stock: number;
+  lowStockThreshold: number;
 }
 
 // Admin-editable referrer (who sent the patient). The chosen name is snapshotted
@@ -397,6 +401,9 @@ export interface VisitBasketItem {
   // Set on pay-as-you-go session lines so the plan link survives a secretary edit
   // and its settled quantity advances the plan's sessionsPaid. Absent otherwise.
   sessionPlanId?: string;
+  // Set on a "product" line so it survives a secretary edit — settlement deducts
+  // inventory by the final settled quantity per product. Absent otherwise.
+  productId?: string;
 }
 
 export interface VisitBasket {

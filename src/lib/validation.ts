@@ -265,6 +265,9 @@ const visitBasketItemSchema = z
     // Preserved through send/edit so a session line keeps its plan link (settlement
     // advances that plan's sessionsPaid by the final settled quantity).
     sessionPlanId: z.string().nullish(),
+    // Preserved through send/edit so a "product" line keeps its catalog link —
+    // settlement deducts inventory by the final settled quantity per product.
+    productId: z.string().nullish(),
   })
   .superRefine((v, ctx) => refineMoneyCap(v.unitPrice, v.currency, ctx, "unitPrice"));
 
@@ -394,6 +397,11 @@ export const createProductSchema = z.object({
   cost: z.coerce.number().min(0).optional(),
   currency: z.enum(["USD", "LBP"]).optional(),
   active: z.boolean().optional(),
+  // Initial on-hand count — a plain field like price/cost since nothing existed
+  // before to diff against. Every change AFTER creation must go through
+  // adjustProductStockSchema instead, so it's always an audited delta.
+  stock: z.coerce.number().int().min(0).optional(),
+  lowStockThreshold: z.coerce.number().int().min(0).optional(),
 });
 
 export const updateProductSchema = z.object({
@@ -402,6 +410,18 @@ export const updateProductSchema = z.object({
   cost: z.coerce.number().min(0).optional(),
   currency: z.enum(["USD", "LBP"]).optional(),
   active: z.boolean().optional(),
+  // Reorder point only — NOT stock itself, which is adjustment-only (see above).
+  lowStockThreshold: z.coerce.number().int().min(0).optional(),
+});
+
+// Admin-only inventory adjustment: a signed delta (never a raw overwrite) so
+// AuditLog stays the full history of every stock change. "sale" is applied
+// automatically by the consultation save path (see consultations.ts); this
+// schema is for the two manual kinds an admin triggers from the Pricing page.
+export const adjustProductStockSchema = z.object({
+  delta: z.coerce.number().int().refine((n) => n !== 0, "Amount can't be zero"),
+  type: z.enum(["restock", "correction"]),
+  reason: z.string().trim().max(500).optional(),
 });
 
 // "None" is a reserved, built-in dropdown choice meaning "came organically" — it's
@@ -619,6 +639,7 @@ export type UpdateStaffSupplementsInput = z.infer<typeof updateStaffSupplementsS
 export type UpdateStaffConsultationFeeInput = z.infer<typeof updateStaffConsultationFeeSchema>;
 export type CreateProductInput = z.infer<typeof createProductSchema>;
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
+export type AdjustProductStockInput = z.infer<typeof adjustProductStockSchema>;
 export type CreateReferrerInput = z.infer<typeof createReferrerSchema>;
 export type UpdateReferrerInput = z.infer<typeof updateReferrerSchema>;
 export type UpdateServicePriceInput = z.infer<typeof updateServicePriceSchema>;

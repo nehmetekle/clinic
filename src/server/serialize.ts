@@ -119,6 +119,8 @@ export function toProduct(p: PProduct): Product {
     cost: p.cost,
     currency: asCurrency(p.currency),
     active: p.active,
+    stock: p.stock,
+    lowStockThreshold: p.lowStockThreshold,
   };
 }
 

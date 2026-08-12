@@ -51,6 +51,7 @@ export function AdminDashboard() {
   // Refetch when the window changes; keep the current view mounted meanwhile so
   // the selector doesn't flash a full-page spinner on every toggle.
   const { data, loading, error } = useApi(() => api.getDashboard(range), [range.from, range.to]);
+  const products = useApi(() => api.listProducts());
 
   if (loading && !data) return <Loading />;
   if (error) return <ErrorState message={error} />;
@@ -58,6 +59,9 @@ export function AdminDashboard() {
 
   const { finance, counts } = data;
   const noShows = data.todaysAppointments.filter((a) => a.status === "no_show").length;
+  const lowStockProducts = (products.data ?? [])
+    .filter((p) => p.active && p.stock <= p.lowStockThreshold)
+    .sort((a, b) => a.stock - b.stock);
 
   return (
     <div>
@@ -260,6 +264,28 @@ export function AdminDashboard() {
               ))}
               {data.unpaidClients.length === 0 && (
                 <li className="text-sm text-slate-400">No outstanding debts.</li>
+              )}
+            </ul>
+
+            <p className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Low stock ({lowStockProducts.length})
+            </p>
+            <ul className="space-y-2">
+              {lowStockProducts.map((p) => (
+                <li key={p.id}>
+                  <Link
+                    href="/pricing"
+                    className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2 hover:bg-slate-50"
+                  >
+                    <span className="text-sm text-slate-700">{p.name}</span>
+                    <span className={cn("text-sm font-medium", p.stock <= 0 ? "text-rose-600" : "text-amber-600")}>
+                      {p.stock <= 0 ? `Out of stock (${p.stock})` : `${p.stock} left`}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+              {lowStockProducts.length === 0 && (
+                <li className="text-sm text-slate-400">No products low on stock.</li>
               )}
             </ul>
           </CardBody>

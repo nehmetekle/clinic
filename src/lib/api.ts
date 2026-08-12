@@ -30,6 +30,7 @@ import type {
   VisitBasketStatus,
 } from "./types";
 import type {
+  AdjustProductStockInput,
   CreateAppointmentInput,
   CreateClientInput,
   CreateConsultationInput,
@@ -316,6 +317,8 @@ export const api = {
   updateProduct: (id: string, body: UpdateProductInput) =>
     putJson<Product>(`/api/products/${id}`, body),
   deleteProduct: (id: string) => deleteJson(`/api/products/${id}`),
+  adjustProductStock: (id: string, body: AdjustProductStockInput) =>
+    postJson<Product>(`/api/products/${id}/stock`, body),
 
   listReferrers: () => getJson<Referrer[]>("/api/referrers"),
   createReferrer: (body: CreateReferrerInput) => postJson<Referrer>("/api/referrers", body),

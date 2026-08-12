@@ -361,6 +361,15 @@ model Product {
   cost      Float    @default(0)
   currency  String   @default("USD")
   active    Boolean  @default(true)
+  // Current on-hand quantity. Only ever changed through an audited adjustment
+  // (sale/restock/correction) — never a raw overwrite — so AuditLog stays the
+  // complete history of how it got here. May go negative (oversold); the app
+  // shows that as a backorder flag rather than blocking the sale.
+  stock     Int      @default(0)
+  // Admin-set reorder point for this specific product (differs a lot by item —
+  // a bulk supplement vs. a rarely-stocked one). stock <= this triggers the
+  // low-stock notification/badge.
+  lowStockThreshold Int @default(5)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 }
@@ -439,6 +448,10 @@ model VisitBasketItem {
   currency      String       @default("USD")
   covered       Boolean      @default(false)
   sessionPlanId String?
+  // Permanent catalog reference for a "product" line (survives rename/delete,
+  // like ConsultationProduct.productId) — lets settlement deduct inventory by
+  // the exact final quantity sitting in the basket. Null for non-product lines.
+  productId     String?
   createdAt     DateTime     @default(now())
   basket        VisitBasket  @relation(fields: [basketId], references: [id], onDelete: Cascade)
   sessionPlan   SessionPlan? @relation(fields: [sessionPlanId], references: [id])

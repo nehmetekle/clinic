@@ -1880,7 +1880,14 @@ function ConsultationEditor() {
                                   <Select value={p.productId} onChange={(e) => updateProduct(i, { productId: e.target.value })}>
                                     <option value="">Select…</option>
                                     {sellableProducts.map((sp) => (
-                                      <option key={sp.id} value={sp.id}>{sp.name}</option>
+                                      <option key={sp.id} value={sp.id}>
+                                        {sp.name}
+                                        {sp.stock <= 0
+                                          ? " — out of stock"
+                                          : sp.stock <= sp.lowStockThreshold
+                                            ? ` — ${sp.stock} left`
+                                            : ""}
+                                      </option>
                                     ))}
                                   </Select>
                                 )}
@@ -1898,6 +1905,17 @@ function ConsultationEditor() {
                                 {isSold && <span className="ml-1 text-xs text-slate-400">· frozen at time of sale</span>}
                               </p>
                             )}
+                            {!isSold && p.productId && (() => {
+                              const live = sellableProducts.find((sp) => sp.id === p.productId);
+                              if (!live) return null;
+                              const remaining = live.stock - qty;
+                              if (remaining >= 0) return null;
+                              return (
+                                <p className="mt-1 text-xs text-rose-600">
+                                  Only {Math.max(live.stock, 0)} in stock — this will oversell by {Math.abs(remaining)}.
+                                </p>
+                              );
+                            })()}
                             <div className="mt-2 flex justify-end">
                               <button
                                 type="button"

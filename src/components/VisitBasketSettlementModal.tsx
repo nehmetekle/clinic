@@ -43,6 +43,9 @@ type EditItem = {
   // Kept so a pay-as-you-go session line's plan link survives the edit and its
   // settled quantity advances the plan at settlement.
   sessionPlanId?: string;
+  // Kept so a "product" line's catalog link survives the edit — settlement
+  // deducts inventory by the final settled quantity per product.
+  productId?: string;
 };
 
 /**
@@ -82,6 +85,7 @@ export function VisitBasketSettlementModal({
       covered: i.covered,
       sent: true,
       sessionPlanId: i.sessionPlanId,
+      productId: i.productId,
     })),
   );
   const [discountOpen, setDiscountOpen] = useState(Boolean(basket.discountType));
@@ -167,6 +171,7 @@ export function VisitBasketSettlementModal({
       currency: product.currency,
       covered: false,
       sent: false,
+      productId: product.id,
     });
     setAddProductId("");
     setAddProductQty("1");
@@ -201,6 +206,7 @@ export function VisitBasketSettlementModal({
         currency: i.currency,
         covered: i.covered,
         sessionPlanId: i.sessionPlanId,
+        productId: i.productId,
       })),
       discountType: discountOpen && Number(discountValue) > 0 ? discountType : null,
       discountValue: discountOpen ? Number(discountValue) || 0 : 0,

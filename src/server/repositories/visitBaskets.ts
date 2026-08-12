@@ -8,6 +8,7 @@ import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { auditMoney, writeAudit } from "./audit";
 import { clearClientDebtTx, createClientDebtTx } from "./clientDebts";
 import { createPayment } from "./payments";
+import { adjustProductStockTx } from "./products";
 import { getUsdToLbp } from "./settings";
 import { userIdByEmail } from "./staff";
 import type {
@@ -41,6 +42,10 @@ export type BasketItemInput = {
   // Pay-as-you-go session line: the settled (non-covered) quantity advances this
   // plan's sessionsPaid at settlement. null for everything else (packages/products).
   sessionPlanId?: string | null;
+  // Permanent catalog reference for a "product" line — the final settled quantity
+  // per productId is what settleVisitBasket deducts from inventory. null for
+  // everything else (blood tests/treatments/custom lines never map to a Product).
+  productId?: string | null;
 };
 
 /** Normalizes a basket item payload into a row create object. */
@@ -54,6 +59,7 @@ function itemCreate(i: BasketItemInput) {
     currency: i.currency ?? "USD",
     covered: i.covered ?? false,
     sessionPlanId: i.sessionPlanId ?? null,
+    productId: i.productId ?? null,
   };
 }
 
@@ -68,6 +74,7 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     currency: asCurrency(i.currency),
     covered: i.covered,
     sessionPlanId: i.sessionPlanId ?? undefined,
+    productId: i.productId ?? undefined,
   }));
   const totals = basketTotals(
     items,
@@ -633,6 +640,34 @@ export async function settleVisitBasket(
     });
     if (flipped.count === 0) {
       throw new ConflictError("This basket is already settled.");
+    }
+
+    // Inventory: deduct by the FINAL settled quantity of each product line —
+    // `row.items` was read fresh at the top of this transaction, so it already
+    // reflects any quantity edits the secretary saved before settling. This is
+    // the only place stock is deducted for a sale (see adjustProductStockTx in
+    // server/repositories/products.ts); the `flipped` guard above means this
+    // runs at most once per basket, so a re-settle attempt can never deduct
+    // twice. Net by productId first — the same product can appear as more than
+    // one line (e.g. the dietitian's sent line plus one the secretary added).
+    const soldByProduct = new Map<string, number>();
+    for (const item of row.items) {
+      if (item.productId) {
+        soldByProduct.set(item.productId, (soldByProduct.get(item.productId) ?? 0) + item.quantity);
+      }
+    }
+    if (soldByProduct.size > 0) {
+      const clientName = `${row.client.firstName} ${row.client.lastName}`;
+      for (const [productId, qty] of soldByProduct) {
+        await adjustProductStockTx(tx, {
+          productId,
+          delta: -qty,
+          type: "sale",
+          context: `${clientName} — basket settled${primaryReceipt ? ` (receipt ${primaryReceipt})` : ""}`,
+          actorName: input.actorName,
+          actorUserId: input.createdById ?? null,
+        });
+      }
     }
 
     // Pay-as-you-go session plans (SEPARATE from Packages): the FINAL settled
