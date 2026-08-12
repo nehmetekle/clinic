@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarPlus, CalendarSearch } from "lucide-react";
+import { CalendarClock, CalendarPlus, CalendarSearch } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -10,11 +10,16 @@ import { AppointmentBadge, Badge } from "@/components/ui/Badge";
 import { FormRow, Input } from "@/components/ui/Field";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
+import {
+  isReschedulable,
+  RescheduleAppointmentModal,
+} from "@/components/ScheduleAppointmentModal";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { todayIso } from "@/lib/config";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
+import type { Appointment } from "@/lib/types";
 import { bmiCategory, formatDate, formatTime } from "@/lib/utils";
 
 export default function AppointmentsPage() {
@@ -23,10 +28,17 @@ export default function AppointmentsPage() {
   const isClinical = user?.role === "dietitian" || user?.role === "admin";
   // Dietitians can't book appointments — booking is a secretary/admin action.
   const canBook = user?.role !== "dietitian";
-  const { data, loading, error } = useApi(() => api.listAppointments());
+  // Deliberately a *positive* role test rather than reusing `canBook`'s "not a
+  // dietitian": `canBook` also passes while `user` is still undefined, which
+  // would flash a Reschedule button the API answers with 403. Mirrors
+  // `canManageAppointments` on the server exactly.
+  const canManageAppointments = user?.role === "secretary" || user?.role === "admin";
+  const { data, loading, error, refetch } = useApi(() => api.listAppointments());
   const consultations = useApi(() => api.listConsultations());
 
   const [selectedDate, setSelectedDate] = useState(todayIso());
+  // Moving a booking to another slot — front desk only, same right as booking.
+  const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
 
   const appointments = data ?? [];
   const allVisits = consultations.data ?? [];
@@ -102,9 +114,25 @@ export default function AppointmentsPage() {
                     <TD className="text-slate-500">{VISIT_TYPE_LABELS[a.visitType] ?? a.visitType}</TD>
                     <TD><AppointmentBadge status={a.status} /></TD>
                     <TD>
-                      {/* The whole row opens the patient profile; the real status
-                          lives in the badge column, so this is just that affordance. */}
-                      <span className="text-xs font-medium text-brand-700">View</span>
+                      <div className="flex items-center justify-end gap-3">
+                        {canManageAppointments && isReschedulable(a) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            // The row itself navigates to the profile — keep the
+                            // click here from doing both.
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRescheduleTarget(a);
+                            }}
+                          >
+                            <CalendarClock className="h-3.5 w-3.5" /> Reschedule
+                          </Button>
+                        )}
+                        {/* The whole row opens the patient profile; the real status
+                            lives in the badge column, so this is just that affordance. */}
+                        <span className="text-xs font-medium text-brand-700">View</span>
+                      </div>
                     </TD>
                   </TR>
                 ))}
@@ -190,6 +218,12 @@ export default function AppointmentsPage() {
           )}
         </div>
       )}
+
+      <RescheduleAppointmentModal
+        appointment={rescheduleTarget}
+        onClose={() => setRescheduleTarget(null)}
+        onRescheduled={refetch}
+      />
     </div>
   );
 }

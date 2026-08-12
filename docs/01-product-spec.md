@@ -38,7 +38,8 @@ Permissions are enforced on the **server** (every API call), not just hidden in 
 | Create / edit client profile | ✅ | ✏️ basic only | ✅ |
 | Search clients | ✅ | ✅ (own + assigned) | ✅ |
 | Assign package to client | ✅ | ❌ | ✅ |
-| Schedule / reschedule appointment | ✅ | ✅ (own) | ✅ |
+| Schedule appointment | ✅ | ❌ † | ✅ |
+| Reschedule appointment | ✅ | ❌ | ✅ |
 | Check-in / manage daily queue | ✅ | ✅ (status only) | ✅ |
 | Record payment | ✅ | ❌ | ✅ |
 | Record expense | ✅ | ❌ | ✅ |
@@ -51,6 +52,13 @@ Permissions are enforced on the **server** (every API call), not just hidden in 
 | View audit log | ❌ | ❌ | ✅ |
 | Export / backup data | ❌ | ❌ | ✅ |
 | Settings (clinic-wide) | ❌ | ❌ | ✅ |
+
+> † Booking and rescheduling are front-desk work: the dietitian works the day
+> they're given. **Rescheduling** is enforced on both sides — the UI only offers
+> it to secretary/admin and `PATCH /api/appointments/[id]/reschedule` answers a
+> dietitian with 403 (`canManageAppointments`, `src/server/auth.ts`).
+> **Booking** is currently only hidden in the UI: `POST /api/appointments` still
+> accepts any signed-in role. See [known-issues.md](known-issues.md) §12.
 
 > \* The secretary sees a client's *non-clinical* summary (package, sessions, payment status, appointment), **not** medical notes, allergies detail, or consultation clinical content beyond what's needed for scheduling. This is the key privacy boundary. (Configurable in Settings if the clinic wants the secretary to see medical alerts.)
 

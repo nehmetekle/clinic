@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
+  CalendarClock,
   CalendarPlus,
   CalendarX,
   ChevronLeft,
@@ -15,7 +16,12 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/ui/StatCard";
-import { FormRow, Select, Textarea, WeekdayDateInput } from "@/components/ui/Field";
+import { FormRow, Select, Textarea } from "@/components/ui/Field";
+import {
+  isReschedulable,
+  RescheduleAppointmentModal,
+  ScheduleAppointmentModal,
+} from "@/components/ScheduleAppointmentModal";
 import { Tabs } from "@/components/ui/Tabs";
 import {
   AppointmentBadge,
@@ -31,7 +37,6 @@ import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { todayIso } from "@/lib/config";
 import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
@@ -46,23 +51,19 @@ import {
   bmiCategory,
   cardSurchargeAmount,
   cn,
-  defaultSlot,
   formatDate,
   formatMoney,
   formatTime,
   initials,
-  timeSlots,
 } from "@/lib/utils";
-
-const SLOTS = timeSlots();
 
 // A future, still-scheduled appointment can be cancelled from the profile.
 // Same-day no-shows are handled on the Queue; this is for upcoming bookings the
 // client calls ahead to cancel. Cancelling only sets status — it never deletes
 // the row, so the appointment stays in history (matching No-show).
-function isCancellable(a: Appointment): boolean {
-  return a.status === "scheduled" && a.date >= todayIso();
-}
+// Same window as rescheduling — an upcoming, untouched booking. A slot that has
+// already been checked in, seen or passed is history either way.
+const isCancellable = isReschedulable;
 
 export default function ClientProfilePage() {
   const params = useParams<{ id: string }>();
@@ -70,18 +71,17 @@ export default function ClientProfilePage() {
   const { user } = useSession();
   const { toast } = useToast();
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [scheduleSaving, setScheduleSaving] = useState(false);
   // Front-desk cancellation of an upcoming appointment (confirm before acting).
   const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null);
   const [cancelSaving, setCancelSaving] = useState(false);
+  // Front-desk move of an upcoming appointment to a new slot.
+  const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
   // Collect (clear) / write off (void) a tracked debt.
   const [debtAction, setDebtAction] = useState<{ debt: ClientDebt; mode: "clear" | "void" } | null>(null);
   const [debtMethod, setDebtMethod] = useState<PaymentMethod>("cash");
   // Why the debt is being written off — mandatory for a void (mirrors the server).
   const [debtVoidReason, setDebtVoidReason] = useState("");
   const [debtSaving, setDebtSaving] = useState(false);
-  const initialSlot = defaultSlot(todayIso());
-  const [booking, setBooking] = useState({ date: initialSlot.date, time: initialSlot.time });
   // Post-check-in correction of clinical notes (dietitian/admin); personal
   // details are edited on the check-in form itself (see the Personal tab).
   const [editNotesOpen, setEditNotesOpen] = useState(false);
@@ -195,29 +195,6 @@ export default function ClientProfilePage() {
       toast((e as Error).message);
     } finally {
       setDebtSaving(false);
-    }
-  }
-
-  async function scheduleAppointment() {
-    setScheduleSaving(true);
-    try {
-      // Keep the client's assigned dietitian on the appointment (resolved by name).
-      const dietitianId =
-        (staff.data ?? []).find((s) => s.fullName === data!.client.assignedDietitian)?.id ?? null;
-      await api.createAppointment({
-        clientId: data!.client.id,
-        dietitianId,
-        date: booking.date,
-        time: booking.time,
-        visitType: "follow_up",
-      });
-      toast("Appointment scheduled");
-      setScheduleOpen(false);
-      refetch();
-    } catch (e) {
-      toast((e as Error).message);
-    } finally {
-      setScheduleSaving(false);
     }
   }
 
@@ -547,9 +524,14 @@ export default function ClientProfilePage() {
                         {canManageAppointments && (
                           <TD>
                             {isCancellable(a) && (
-                              <Button size="sm" variant="danger" onClick={() => setCancelTarget(a)}>
-                                <CalendarX className="h-3.5 w-3.5" /> Cancel
-                              </Button>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => setRescheduleTarget(a)}>
+                                  <CalendarClock className="h-3.5 w-3.5" /> Reschedule
+                                </Button>
+                                <Button size="sm" variant="danger" onClick={() => setCancelTarget(a)}>
+                                  <CalendarX className="h-3.5 w-3.5" /> Cancel
+                                </Button>
+                              </div>
                             )}
                           </TD>
                         )}
@@ -917,30 +899,20 @@ export default function ClientProfilePage() {
         )}
       </Modal>
 
-      <Modal
+      <ScheduleAppointmentModal
         open={scheduleOpen}
         onClose={() => setScheduleOpen(false)}
-        title={`Schedule appointment — ${client.firstName} ${client.lastName}`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setScheduleOpen(false)}>Cancel</Button>
-            <Button onClick={scheduleAppointment} disabled={scheduleSaving}>
-              {scheduleSaving ? "Saving…" : "Schedule"}
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormRow label="Date">
-            <WeekdayDateInput min={todayIso()} value={booking.date} onChange={(v) => setBooking({ ...booking, date: v })} />
-          </FormRow>
-          <FormRow label="Time slot">
-            <Select value={booking.time} onChange={(e) => setBooking({ ...booking, time: e.target.value })}>
-              {SLOTS.map((t) => <option key={t} value={t}>{formatTime(t)}</option>)}
-            </Select>
-          </FormRow>
-        </div>
-      </Modal>
+        clientId={client.id}
+        clientName={`${client.firstName} ${client.lastName}`}
+        defaultDietitianId={(staff.data ?? []).find((s) => s.fullName === client.assignedDietitian)?.id ?? null}
+        onScheduled={refetch}
+      />
+
+      <RescheduleAppointmentModal
+        appointment={rescheduleTarget}
+        onClose={() => setRescheduleTarget(null)}
+        onRescheduled={refetch}
+      />
 
       <Modal
         open={cancelTarget != null}

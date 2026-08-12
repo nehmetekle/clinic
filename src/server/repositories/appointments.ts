@@ -5,6 +5,7 @@ import {
   asVisitType,
   dateOnly,
 } from "../serialize";
+import { ConflictError, NotFoundError } from "../http";
 import { clinicDayRange, todayIso } from "@/lib/config";
 import type { Appointment } from "@/lib/types";
 
@@ -117,6 +118,54 @@ export async function updateAppointmentStatus(
       status,
       completedAt: status === "completed" ? new Date() : null,
       ...(opts.dietitianId !== undefined ? { dietitianId: opts.dietitianId } : {}),
+    },
+    include,
+  });
+  return toAppointment(row, opts);
+}
+
+/**
+ * Move an existing booking to a new slot (date/time), optionally reassigning the
+ * doctor or correcting the visit type. Edits the row in place — the appointment
+ * keeps its id and its `scheduled` status, so nothing downstream (queue, basket,
+ * consultation) has to be re-pointed and the profile shows one row per booking.
+ *
+ * Only a still-`scheduled` appointment can move: once a patient is checked in,
+ * with the dietitian, or the visit is closed/cancelled/no-showed, the slot is
+ * history and "rescheduling" it would rewrite what actually happened — book a
+ * new appointment instead.
+ */
+export async function rescheduleAppointment(
+  id: string,
+  input: {
+    dietitianId?: string | null;
+    date: string;
+    time: string;
+    visitType: string;
+  },
+  opts: { includeMedicalHistoryStatus?: boolean } = {},
+): Promise<Appointment> {
+  // Sweep first, so an appointment this read would auto-mark `no_show` can't be
+  // rescheduled through a stale `scheduled` status.
+  await expirePastScheduledAppointments();
+  const existing = await db.appointment.findUnique({ where: { id }, select: { status: true } });
+  if (!existing) throw new NotFoundError("Appointment not found");
+  if (existing.status !== "scheduled") {
+    throw new ConflictError("Only a scheduled appointment can be rescheduled.");
+  }
+  const row = await db.appointment.update({
+    where: { id },
+    data: {
+      dietitianId: input.dietitianId ?? null,
+      date: new Date(input.date),
+      time: input.time,
+      visitType: input.visitType,
+      // Clear the WhatsApp reminder stamps: they record that the patient was
+      // told about the OLD slot. `runAppointmentReminders` only picks up rows
+      // with a null stamp, so leaving them set would silently deny the patient
+      // both reminders for the slot they were actually moved to.
+      reminder24hSentAt: null,
+      reminder2hSentAt: null,
     },
     include,
   });

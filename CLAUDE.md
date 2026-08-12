@@ -119,8 +119,25 @@ Still open:
 - **Full data export** — per-report CSV export works ([reports/page.tsx](src/app/(app)/reports/page.tsx)), but "Export all data (CSV)" in Settings is still a stub.
 - **Printable / PDF receipts** — receipt numbers are generated; a printable/PDF receipt is not. (The Food List PDF below is the first use of the PDF pipeline — reuse `src/server/pdf/`.)
 - **File upload/download** — the client-profile "Upload" is a stub. (Download works: blood-test results and the generated Food List PDF both appear on the Files tab.)
-- **Reminders** — no scheduler/cron; appointment status catch-up runs lazily on read.
+- **Reminders** — appointment status catch-up still runs lazily on read (no cron
+  for that). WhatsApp appointment reminders, however, **are** implemented:
+  `src/server/reminders.ts` + `POST /api/cron/reminders` (24h and ~1h, each sent
+  once, tracked by the `reminderNNSentAt` columns). Rescheduling nulls both
+  stamps so a moved patient is reminded about the new slot — see
+  [docs/known-issues.md](docs/known-issues.md) §12.
 - **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (double-booking, phone/email dedup, name-based stats, per-year receipt numbering, …).
+
+## Rescheduling an appointment
+`PATCH /api/appointments/[id]/reschedule` moves a booking in place (date/time/
+doctor/visit type; status stays `scheduled`), kept separate from the status
+endpoint. **Secretary/admin only** — enforced by `canManageAppointments`, not
+just hidden. Offered on the client profile, Appointments & history, and the queue
+board (including the otherwise read-only other-day board). `isReschedulable` in
+`components/ScheduleAppointmentModal.tsx` is the single eligibility predicate
+shared by every surface and mirrors the server guard. **There is no
+double-booking protection** — not for rescheduling and not for booking; see
+[docs/known-issues.md](docs/known-issues.md) §6 and §12 before assuming a slot is
+exclusive.
 
 ## Food List (Nutrient-Rich Foods List)
 A web + PDF reproduction of Layaka's paper intake form, used to record what a

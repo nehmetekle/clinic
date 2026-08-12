@@ -150,6 +150,15 @@ export const createAppointmentSchema = z.object({
   notes: z.string().optional(),
 });
 
+/**
+ * Moving an existing booking to a new slot. Same when/who/what fields as
+ * `createAppointmentSchema` (and the same past-date/weekend rules — a
+ * reschedule can't land somewhere a fresh booking couldn't), minus `clientId`:
+ * a reschedule never moves an appointment to a different patient.
+ */
+export const rescheduleAppointmentSchema = createAppointmentSchema
+  .omit({ clientId: true, notes: true });
+
 export const createConsultationSchema = z.object({
   clientId: z.string().min(1),
   dietitianId: z.string().nullish(),
@@ -516,6 +525,7 @@ export const medicalHistorySchema = z.object({
   conditions: z.array(z.string()).optional(),
   intoleranceDetail: text,
   conditionsOther: text,
+  medicalHistoryNote: text,
 
   hasAllergies: yesNo,
   allergiesDetail: text,
@@ -530,6 +540,7 @@ export const medicalHistorySchema = z.object({
   familyHistory: z.array(z.string()).optional(),
   familyCancerDetail: text,
   familyOther: text,
+  familyHistoryNote: text,
 
   drinksWater: yesNo,
   waterGlasses: text,
@@ -548,6 +559,8 @@ export const medicalHistorySchema = z.object({
   snacksFrequently: yesNo,
   feelsFatigued: yesNo,
   moodSwings: yesNo,
+
+  lifestyleNotes: z.record(z.string(), z.string()).optional(),
 });
 
 // A pay-as-you-go session plan (per-session client, separate from Packages).
@@ -629,6 +642,7 @@ export type UpdateClientInput = z.infer<typeof updateClientSchema>;
 export type CreatePackageInput = z.infer<typeof createPackageSchema>;
 export type UpdatePackageInput = z.infer<typeof updatePackageSchema>;
 export type CreateAppointmentInput = z.infer<typeof createAppointmentSchema>;
+export type RescheduleAppointmentInput = z.infer<typeof rescheduleAppointmentSchema>;
 export type CreateConsultationInput = z.infer<typeof createConsultationSchema>;
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 export type UpdateVisitBasketInput = z.infer<typeof updateVisitBasketSchema>;

@@ -44,6 +44,7 @@ import type {
   CreateStaffInput,
   UpdateStaffInput,
   MedicalHistoryInput,
+  RescheduleAppointmentInput,
   SettleVisitBasketInput,
   UpdateBloodSampleInput,
   UpdateClientInput,
@@ -204,6 +205,10 @@ export const api = {
   // visit to that doctor in one write, so the patient lands in only their queue.
   checkInAppointment: (id: string, dietitianId: string | null) =>
     patchJson<Appointment>(`/api/appointments/${id}`, { status: "checked_in", dietitianId }),
+  // Move a booking to a new slot (date/time/doctor/visit type). Separate endpoint
+  // from the status patch above — a reschedule leaves the appointment `scheduled`.
+  rescheduleAppointment: (id: string, body: RescheduleAppointmentInput) =>
+    patchJson<Appointment>(`/api/appointments/${id}/reschedule`, body),
 
   listConsultations: (filter?: {
     clientId?: string;

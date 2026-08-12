@@ -58,11 +58,17 @@ loader. ([use-api.ts](../src/lib/use-api.ts).)
 
 Each item: what's wrong · where it lives · severity.
 
-### ⚠️ #6 — Appointments can be double-booked
-Nothing stops two appointments from being created for the same dietitian at the
-same date and time; there's no slot-conflict check.
-- **Where:** [appointments.ts `createAppointment`](../src/server/repositories/appointments.ts) — no validation before create.
+### ⚠️ #6 — Appointments can be double-booked (booking **and** rescheduling)
+Nothing stops two appointments from occupying the same dietitian/date/time; there
+is no slot-conflict check anywhere, and no DB uniqueness backing it (the
+`Appointment` table has only its primary key and two foreign keys — verified with
+`\d "Appointment"`). Both write paths are affected:
+- **Where:** [appointments.ts `createAppointment`](../src/server/repositories/appointments.ts) — no validation before create; and `rescheduleAppointment` in the same file — a reschedule can move a booking straight onto an occupied slot.
+- **Verified:** creating twice into `2026-08-21 12:00` for one dietitian returned `201` both times; rescheduling a 16:00 booking onto an existing 08:00 booking returned `200`, leaving two `scheduled` rows on the identical slot.
 - **Effect:** Two clients booked into one slot; discovered only when both arrive.
+- **Note:** rescheduling *inherits* this gap rather than introducing it. Any fix
+  belongs in one shared slot-conflict check called by both paths, not bolted onto
+  one of them.
 
 ### ⚠️ #7 — Duplicate patient / staff-email edge cases
 Patient de-duplication compares phone numbers in JavaScript with no database
@@ -524,3 +530,65 @@ even when nothing changed — and every close re-rendered the PDF for nothing (p
 a bogus "Regenerated Food List PDF" audit entry). The upsert now **skips the
 write when language/patientName/notes/selections all match**. Anything else that
 starts keying off `updatedAt` inherits that guarantee; don't remove it.
+
+---
+
+## 12. Rescheduling appointments — permissions, reach, and the booking mismatch
+
+Moving an existing booking to a new slot. Added after the Food List work; this
+section is the reference for what it does and does not do.
+
+### What it is
+`PATCH /api/appointments/[id]/reschedule` edits the appointment **in place** —
+same row, same id, status stays `scheduled`. It changes only date, time, doctor
+and visit type. It is deliberately a separate endpoint from the sibling
+`PATCH /api/appointments/[id]`, which is the status-transition write used by the
+queue and by cancellation: one touches the slot and never the status, the other
+touches the status and never the slot.
+
+Chosen over cancel-and-rebook so a moved appointment keeps its identity (nothing
+downstream has to be re-pointed) and the profile shows one row per booking rather
+than a cancelled/scheduled pair. **Trade-off:** there is therefore no record of
+the previous slot — the appointment's history is not versioned. If an audit trail
+of moves is ever needed, that's a new table, not a tweak.
+
+### Rescheduling clears the reminder stamps
+`reminder24hSentAt` / `reminder2hSentAt` record that the patient was told about
+the **old** slot, and `runAppointmentReminders` only picks up rows where they are
+null. An in-place move therefore has to null both, or the patient silently gets
+no reminder for the slot they were actually moved to. `rescheduleAppointment`
+does this in the same write — don't remove it.
+
+### Who can do it
+Secretary and admin. **A dietitian cannot** — `canManageAppointments`
+(`src/server/auth.ts`) returns 403, and every UI surface gates on the matching
+positive role test. Verified live: identical request returned `403` as dietitian,
+`200` as secretary, `200` as admin, `403` with no session.
+
+Note this is *narrower* than the sibling status endpoint, which any signed-in
+role may call — a dietitian can still advance their own queue, they just can't
+move a slot. That asymmetry is intentional.
+
+### Where it's offered
+Client profile → Appointments tab · Appointments & history (day table) · Queue
+board, **including the other-day board**, which is otherwise read-only — an
+upcoming booking is exactly what the front desk gets phoned about. Eligibility is
+the same predicate everywhere (`isReschedulable`, exported from
+`components/ScheduleAppointmentModal.tsx`): status `scheduled` **and** not in the
+past. It mirrors the server guard so the UI can't offer what the API refuses.
+Verified live: `checked_in`, `with_dietitian`, `completed`, `cancelled` and
+`no_show` all return `409 Only a scheduled appointment can be rescheduled.`
+
+### ⚠️ Booking permissions don't match rescheduling's
+`POST /api/appointments` guards on `actingRole` only, so **any** signed-in role —
+including a dietitian — can create an appointment through the API. The UI hides
+booking from dietitians (`canBook`), so this is a UI-only restriction, the same
+class of gap as §7's sidebar. Rescheduling is enforced on both sides; booking is
+not. Left as-is rather than silently tightening a pre-existing endpoint — but if
+booking is meant to be front-desk-only, `POST /api/appointments` should move to
+`canManageAppointments` too.
+
+### No schema change
+The feature reuses existing columns; no migration was added. Confirmed against
+the live database — `Appointment` still carries only its primary key and the
+client/dietitian foreign keys.

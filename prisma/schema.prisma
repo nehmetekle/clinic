@@ -134,6 +134,7 @@ model MedicalHistory {
   conditions         String   @default("[]")
   intoleranceDetail  String?
   conditionsOther    String?
+  medicalHistoryNote String?
   hasAllergies       Boolean?
   allergiesDetail    String?
   takingMedications  Boolean?
@@ -145,6 +146,7 @@ model MedicalHistory {
   familyHistory      String   @default("[]")
   familyCancerDetail String?
   familyOther        String?
+  familyHistoryNote  String?
   drinksWater        Boolean?
   waterGlasses       String?
   drinksCaffeine     Boolean?
@@ -162,6 +164,7 @@ model MedicalHistory {
   snacksFrequently   Boolean?
   feelsFatigued      Boolean?
   moodSwings         Boolean?
+  lifestyleNotes     String   @default("{}")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)

@@ -6,9 +6,10 @@ import { Check, ChevronLeft, Phone, Search, UserPlus } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { FieldGrid, FormRow, Input, PhoneInput, Select, WeekdayDateInput, isValidPhone } from "@/components/ui/Field";
+import { FieldGrid, FormRow, Input, PhoneInput, Select, isValidPhone } from "@/components/ui/Field";
 import { Loading } from "@/components/ui/States";
 import { DuplicatePhoneWarning } from "@/components/DuplicatePhoneWarning";
+import { AppointmentScheduleFields, defaultAppointmentBooking } from "@/components/ScheduleAppointmentModal";
 import { useApi } from "@/lib/use-api";
 import { useSession } from "@/lib/session";
 import { useClientSearch } from "@/lib/use-client-search";
@@ -16,23 +17,14 @@ import { useDuplicatePhone } from "@/lib/use-duplicate-phone";
 import { api, DuplicatePhoneError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { todayIso, NONE_REFERRER } from "@/lib/config";
-import { cn, defaultSlot, formatTime, timeSlots } from "@/lib/utils";
-import { VISIT_TYPE_LABELS, VISIT_TYPE_VALUES } from "@/lib/types";
-import type { Client, VisitType } from "@/lib/types";
-
-const SLOTS = timeSlots();
+import { cn } from "@/lib/utils";
+import type { Client } from "@/lib/types";
 
 // Red outline for a required field that hasn't been answered yet.
 const missingClass = "border-rose-400 focus:border-rose-500 focus:ring-rose-500/30";
 
 // Date today, time = next available 30-minute slot based on the current clock.
-const initialSlot = defaultSlot(todayIso());
-const BOOKING_DEFAULT = {
-  dietitianId: "",
-  date: initialSlot.date,
-  time: initialSlot.time,
-  visitType: "follow_up" as VisitType,
-};
+const BOOKING_DEFAULT = defaultAppointmentBooking();
 
 const NEW_PATIENT_DEFAULT = { firstName: "", lastName: "", phone: "", referralSource: "" };
 
@@ -331,25 +323,7 @@ export default function PhoneBookingPage() {
           {showAppointment && (
             <div className="mt-5 border-t border-slate-100 pt-5">
               <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Appointment</p>
-              <FieldGrid>
-                <FormRow label="Date"><WeekdayDateInput min={todayIso()} value={booking.date} onChange={(v) => setBooking({ ...booking, date: v })} /></FormRow>
-                <FormRow label="Time slot">
-                  <Select value={booking.time} onChange={(e) => setBooking({ ...booking, time: e.target.value })}>
-                    {SLOTS.map((t) => <option key={t} value={t}>{formatTime(t)}</option>)}
-                  </Select>
-                </FormRow>
-                <FormRow label="Doctor">
-                  <Select value={booking.dietitianId} onChange={(e) => setBooking({ ...booking, dietitianId: e.target.value })}>
-                    <option value="">Select doctor…</option>
-                    {dietitians.map((d) => <option key={d.id} value={d.id}>{d.fullName}</option>)}
-                  </Select>
-                </FormRow>
-                <FormRow label="Visit type">
-                  <Select value={booking.visitType} onChange={(e) => setBooking({ ...booking, visitType: e.target.value as VisitType })}>
-                    {VISIT_TYPE_VALUES.map((v) => <option key={v} value={v}>{VISIT_TYPE_LABELS[v]}</option>)}
-                  </Select>
-                </FormRow>
-              </FieldGrid>
+              <AppointmentScheduleFields value={booking} onChange={setBooking} dietitians={dietitians} />
             </div>
           )}
         </CardBody>

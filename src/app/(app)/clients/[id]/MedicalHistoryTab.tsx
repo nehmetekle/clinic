@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Pencil } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { FormRow, Input, Textarea } from "@/components/ui/Field";
+import { FormRow, Input } from "@/components/ui/Field";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -18,6 +18,7 @@ import {
   MEDICAL_CONDITIONS,
   SLEEP_HOURS,
   WATER_GLASSES,
+  type LifestyleNoteKey,
   type MedicalHistory,
 } from "@/lib/types";
 import type { MedicalHistoryInput } from "@/lib/validation";
@@ -27,6 +28,7 @@ type FormState = {
   conditions: string[];
   intoleranceDetail: string;
   conditionsOther: string;
+  medicalHistoryNote: string;
   hasAllergies: boolean | null;
   allergiesDetail: string;
   takingMedications: boolean | null;
@@ -38,6 +40,7 @@ type FormState = {
   familyHistory: string[];
   familyCancerDetail: string;
   familyOther: string;
+  familyHistoryNote: string;
   drinksWater: boolean | null;
   waterGlasses: string;
   drinksCaffeine: boolean | null;
@@ -55,12 +58,14 @@ type FormState = {
   snacksFrequently: boolean | null;
   feelsFatigued: boolean | null;
   moodSwings: boolean | null;
+  lifestyleNotes: Partial<Record<LifestyleNoteKey, string>>;
 };
 
 const EMPTY: FormState = {
   conditions: [],
   intoleranceDetail: "",
   conditionsOther: "",
+  medicalHistoryNote: "",
   hasAllergies: null,
   allergiesDetail: "",
   takingMedications: null,
@@ -72,6 +77,7 @@ const EMPTY: FormState = {
   familyHistory: [],
   familyCancerDetail: "",
   familyOther: "",
+  familyHistoryNote: "",
   drinksWater: null,
   waterGlasses: "",
   drinksCaffeine: null,
@@ -89,6 +95,7 @@ const EMPTY: FormState = {
   snacksFrequently: null,
   feelsFatigued: null,
   moodSwings: null,
+  lifestyleNotes: {},
 };
 
 function fromRecord(m: MedicalHistory): FormState {
@@ -97,6 +104,7 @@ function fromRecord(m: MedicalHistory): FormState {
     conditions: m.conditions ?? [],
     intoleranceDetail: s(m.intoleranceDetail),
     conditionsOther: s(m.conditionsOther),
+    medicalHistoryNote: s(m.medicalHistoryNote),
     hasAllergies: m.hasAllergies,
     allergiesDetail: s(m.allergiesDetail),
     takingMedications: m.takingMedications,
@@ -108,6 +116,7 @@ function fromRecord(m: MedicalHistory): FormState {
     familyHistory: m.familyHistory ?? [],
     familyCancerDetail: s(m.familyCancerDetail),
     familyOther: s(m.familyOther),
+    familyHistoryNote: s(m.familyHistoryNote),
     drinksWater: m.drinksWater,
     waterGlasses: s(m.waterGlasses),
     drinksCaffeine: m.drinksCaffeine,
@@ -125,6 +134,7 @@ function fromRecord(m: MedicalHistory): FormState {
     snacksFrequently: m.snacksFrequently,
     feelsFatigued: m.feelsFatigued,
     moodSwings: m.moodSwings,
+    lifestyleNotes: m.lifestyleNotes ?? {},
   };
 }
 
@@ -134,6 +144,7 @@ function toPayload(f: FormState): MedicalHistoryInput {
     conditions: f.conditions,
     intoleranceDetail: t(f.intoleranceDetail),
     conditionsOther: t(f.conditionsOther),
+    medicalHistoryNote: t(f.medicalHistoryNote),
     hasAllergies: f.hasAllergies,
     allergiesDetail: t(f.allergiesDetail),
     takingMedications: f.takingMedications,
@@ -145,6 +156,7 @@ function toPayload(f: FormState): MedicalHistoryInput {
     familyHistory: f.familyHistory,
     familyCancerDetail: t(f.familyCancerDetail),
     familyOther: t(f.familyOther),
+    familyHistoryNote: t(f.familyHistoryNote),
     drinksWater: f.drinksWater,
     waterGlasses: t(f.waterGlasses),
     drinksCaffeine: f.drinksCaffeine,
@@ -162,6 +174,7 @@ function toPayload(f: FormState): MedicalHistoryInput {
     snacksFrequently: f.snacksFrequently,
     feelsFatigued: f.feelsFatigued,
     moodSwings: f.moodSwings,
+    lifestyleNotes: f.lifestyleNotes,
   };
 }
 
@@ -176,6 +189,52 @@ const pillClass = (active: boolean) =>
       : "border-slate-200 bg-white text-slate-400 hover:border-slate-300",
   );
 
+/**
+ * Always-visible, borderless note line — just an underline that appears on
+ * focus, so an empty note still reads as plain text ("click to type") rather
+ * than a form control. Sits at the end of its question group, visibly
+ * smaller/lighter than the question itself so the two are never confused.
+ */
+function NoteField({
+  note,
+  onChange,
+}: {
+  note?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <input
+      type="text"
+      value={note ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="Add a note…"
+      className="mt-1.5 w-full border-0 border-b border-transparent bg-transparent px-0 py-0.5 text-xs text-slate-500 placeholder:text-slate-300 focus:border-slate-200 focus:outline-none"
+    />
+  );
+}
+
+/**
+ * One full lifestyle question, from the main prompt down to its note —
+ * bordered and padded as a unit so each question is visually distinct from
+ * the next, however many sub-fields it has in between.
+ */
+function LifestyleQuestion({
+  note,
+  onNoteChange,
+  children,
+}: {
+  note?: string;
+  onNoteChange: (v: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2 border-b border-slate-100 py-3.5 first:pt-0 last:border-0 last:pb-0">
+      {children}
+      <NoteField note={note} onChange={onNoteChange} />
+    </div>
+  );
+}
+
 /** Yes/No toggle sitting right next to its question (tri-state until answered). */
 function YesNo({
   label,
@@ -187,8 +246,8 @@ function YesNo({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-slate-50 py-2 last:border-0">
-      <span className="text-sm text-slate-700">{label}</span>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <span className="text-sm font-medium text-slate-700">{label}</span>
       <div className="flex gap-1.5">
         {[
           { label: "Yes", v: true },
@@ -294,11 +353,27 @@ function CheckItem({
 const fmtYes = (v: boolean | null, detail?: string) =>
   v === true ? (detail ? `Yes — ${detail}` : "Yes") : v === false ? "No" : "Not answered";
 
-function ViewItem({ label, value }: { label: string; value: React.ReactNode }) {
+function ViewItem({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: React.ReactNode;
+  note?: string;
+}) {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-50 py-2.5 last:border-0">
-      <span className="text-sm text-slate-500">{label}</span>
-      <span className="text-sm font-semibold text-slate-800">{value}</span>
+    <div className="border-b border-slate-50 py-2.5 last:border-0">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <span className="text-sm text-slate-500">{label}</span>
+        <span className="text-sm font-semibold text-slate-800">{value}</span>
+      </div>
+      {note && (
+        <p className="mt-1 text-sm font-semibold text-slate-600">
+          <span className="font-normal text-slate-400">Note: </span>
+          {note}
+        </p>
+      )}
     </div>
   );
 }
@@ -346,6 +421,13 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
   if (error) return <ErrorState message={error} />;
 
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
+  const setNote = (key: LifestyleNoteKey, v: string) =>
+    setForm((f) => {
+      const lifestyleNotes = { ...f.lifestyleNotes };
+      if (v.trim()) lifestyleNotes[key] = v;
+      else delete lifestyleNotes[key];
+      return { ...f, lifestyleNotes };
+    });
   const toggle = (key: "conditions" | "familyHistory", value: string) =>
     setForm((f) => ({
       ...f,
@@ -467,6 +549,13 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
                   />
                 </FormRow>
               )}
+              <div className="border-t border-slate-100 pt-3">
+                <span className="text-sm font-medium text-slate-700">Additional notes</span>
+                <NoteField
+                  note={form.medicalHistoryNote}
+                  onChange={(v) => set({ medicalHistoryNote: v })}
+                />
+              </div>
             </div>
           ) : (
             <div>
@@ -476,6 +565,9 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
               )}
               {form.conditions.includes("Other") && form.conditionsOther && (
                 <ViewItem label="Other details" value={form.conditionsOther} />
+              )}
+              {form.medicalHistoryNote && (
+                <ViewItem label="Additional notes" value={form.medicalHistoryNote} />
               )}
             </div>
           )}
@@ -487,26 +579,21 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
         <CardHeader title="Allergies" />
         <CardBody>
           {editing ? (
-            <div className="space-y-3">
+            <LifestyleQuestion
+              note={form.allergiesDetail}
+              onNoteChange={(v) => set({ allergiesDetail: v })}
+            >
               <YesNo
                 label="Does the patient have any known food or drug allergies?"
                 value={form.hasAllergies}
                 onChange={(v) => set({ hasAllergies: v })}
               />
-              {form.hasAllergies === true && (
-                <FormRow label="If yes, please list">
-                  <Textarea
-                    rows={2}
-                    value={form.allergiesDetail}
-                    onChange={(e) => set({ allergiesDetail: e.target.value })}
-                  />
-                </FormRow>
-              )}
-            </div>
+            </LifestyleQuestion>
           ) : (
             <ViewItem
               label="Known food or drug allergies"
-              value={fmtYes(form.hasAllergies, form.allergiesDetail)}
+              value={fmtYes(form.hasAllergies)}
+              note={form.allergiesDetail}
             />
           )}
         </CardBody>
@@ -517,63 +604,54 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
         <CardHeader title="Medications & supplements" />
         <CardBody>
           {editing ? (
-            <div className="space-y-3">
-              <YesNo
-                label="Is the patient currently taking any medications or commercial weight-loss pills?"
-                value={form.takingMedications}
-                onChange={(v) => set({ takingMedications: v })}
-              />
-              {form.takingMedications === true && (
-                <FormRow label="Please list all with dosage and frequency">
-                  <Textarea
-                    rows={2}
-                    value={form.medicationsDetail}
-                    onChange={(e) => set({ medicationsDetail: e.target.value })}
-                  />
-                </FormRow>
-              )}
-              <YesNo
-                label="Is the patient taking any supplements, vitamins, or herbal products?"
-                value={form.takingSupplements}
-                onChange={(v) => set({ takingSupplements: v })}
-              />
-              {form.takingSupplements === true && (
-                <FormRow label="Please list">
-                  <Textarea
-                    rows={2}
-                    value={form.supplementsDetail}
-                    onChange={(e) => set({ supplementsDetail: e.target.value })}
-                  />
-                </FormRow>
-              )}
-              <YesNo
-                label="Has the patient ever had any surgeries?"
-                value={form.hadSurgeries}
-                onChange={(v) => set({ hadSurgeries: v })}
-              />
-              {form.hadSurgeries === true && (
-                <FormRow label="Please specify type and date">
-                  <Textarea
-                    rows={2}
-                    value={form.surgeriesDetail}
-                    onChange={(e) => set({ surgeriesDetail: e.target.value })}
-                  />
-                </FormRow>
-              )}
+            <div>
+              <LifestyleQuestion
+                note={form.medicationsDetail}
+                onNoteChange={(v) => set({ medicationsDetail: v })}
+              >
+                <YesNo
+                  label="Is the patient currently taking any medications or commercial weight-loss pills?"
+                  value={form.takingMedications}
+                  onChange={(v) => set({ takingMedications: v })}
+                />
+              </LifestyleQuestion>
+              <LifestyleQuestion
+                note={form.supplementsDetail}
+                onNoteChange={(v) => set({ supplementsDetail: v })}
+              >
+                <YesNo
+                  label="Is the patient taking any supplements, vitamins, or herbal products?"
+                  value={form.takingSupplements}
+                  onChange={(v) => set({ takingSupplements: v })}
+                />
+              </LifestyleQuestion>
+              <LifestyleQuestion
+                note={form.surgeriesDetail}
+                onNoteChange={(v) => set({ surgeriesDetail: v })}
+              >
+                <YesNo
+                  label="Has the patient ever had any surgeries?"
+                  value={form.hadSurgeries}
+                  onChange={(v) => set({ hadSurgeries: v })}
+                />
+              </LifestyleQuestion>
             </div>
           ) : (
             <div>
               <ViewItem
                 label="Medications / weight-loss pills"
-                value={fmtYes(form.takingMedications, form.medicationsDetail)}
+                value={fmtYes(form.takingMedications)}
+                note={form.medicationsDetail}
               />
               <ViewItem
                 label="Supplements / vitamins / herbal"
-                value={fmtYes(form.takingSupplements, form.supplementsDetail)}
+                value={fmtYes(form.takingSupplements)}
+                note={form.supplementsDetail}
               />
               <ViewItem
                 label="Previous surgeries"
-                value={fmtYes(form.hadSurgeries, form.surgeriesDetail)}
+                value={fmtYes(form.hadSurgeries)}
+                note={form.surgeriesDetail}
               />
             </div>
           )}
@@ -618,6 +696,13 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
                   />
                 </FormRow>
               )}
+              <div className="border-t border-slate-100 pt-3">
+                <span className="text-sm font-medium text-slate-700">Additional notes</span>
+                <NoteField
+                  note={form.familyHistoryNote}
+                  onChange={(v) => set({ familyHistoryNote: v })}
+                />
+              </div>
             </div>
           ) : (
             <div>
@@ -627,6 +712,9 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
               )}
               {form.familyHistory.includes("Other") && form.familyOther && (
                 <ViewItem label="Other details" value={form.familyOther} />
+              )}
+              {form.familyHistoryNote && (
+                <ViewItem label="Additional notes" value={form.familyHistoryNote} />
               )}
             </div>
           )}
@@ -638,137 +726,259 @@ export function MedicalHistoryTab({ clientId }: { clientId: string }) {
         <CardHeader title="Lifestyle" />
         <CardBody>
           {editing ? (
-            <div className="space-y-3">
-              <YesNo
-                label="Does the patient drink enough water daily?"
-                value={form.drinksWater}
-                onChange={(v) => set({ drinksWater: v })}
-              />
-              <FormRow label="How many glasses?">
-                <PillSelect
-                  options={WATER_GLASSES}
-                  value={form.waterGlasses}
-                  onChange={(v) => set({ waterGlasses: v })}
+            <div>
+              <LifestyleQuestion
+                note={form.lifestyleNotes.drinksWater}
+                onNoteChange={(v) => setNote("drinksWater", v)}
+              >
+                <YesNo
+                  label="Does the patient drink enough water daily?"
+                  value={form.drinksWater}
+                  onChange={(v) => set({ drinksWater: v })}
                 />
-              </FormRow>
-              <YesNo
-                label="Does the patient drink coffee, tea, or energy drinks?"
-                value={form.drinksCaffeine}
-                onChange={(v) => set({ drinksCaffeine: v })}
-              />
-              <YesNo
-                label="Does the patient drink alcohol?"
-                value={form.drinksAlcohol}
-                onChange={(v) => set({ drinksAlcohol: v })}
-              />
-              {form.drinksAlcohol === true && (
-                <FormRow label="If yes, how often?">
+                <FormRow label="How many glasses?">
                   <PillSelect
-                    options={ALCOHOL_FREQUENCY}
-                    value={form.alcoholFrequency}
-                    onChange={(v) => set({ alcoholFrequency: v })}
+                    options={WATER_GLASSES}
+                    value={form.waterGlasses}
+                    onChange={(v) => set({ waterGlasses: v })}
                   />
                 </FormRow>
-              )}
-              <YesNo
-                label="Does the patient smoke?"
-                value={form.smokes}
-                onChange={(v) => set({ smokes: v })}
-              />
-              {form.smokes === true && (
-                <FormRow label="How many per day?">
-                  <PillSelect
-                    options={CIGARETTES_PER_DAY}
-                    value={form.cigarettesPerDay}
-                    onChange={(v) => set({ cigarettesPerDay: v })}
-                  />
-                </FormRow>
-              )}
-              <YesNo
-                label="Does the patient exercise regularly?"
-                value={form.exercises}
-                onChange={(v) => set({ exercises: v })}
-              />
-              {form.exercises === true && (
-                <div className="space-y-3">
-                  <FormRow label="Type of activity">
-                    <div className="space-y-2">
-                      <PillMulti
-                        options={EXERCISE_TYPES}
-                        selected={exercisePresets}
-                        onToggle={toggleExercise}
-                      />
-                      <Input
-                        value={exerciseOther}
-                        onChange={(e) =>
-                          set({ exerciseType: joinExercise(exercisePresets, e.target.value) })
-                        }
-                        placeholder="Other activity (optional)"
-                      />
-                    </div>
-                  </FormRow>
-                  <FormRow label="Frequency per week">
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.drinksCaffeine}
+                onNoteChange={(v) => setNote("drinksCaffeine", v)}
+              >
+                <YesNo
+                  label="Does the patient drink coffee, tea, or energy drinks?"
+                  value={form.drinksCaffeine}
+                  onChange={(v) => set({ drinksCaffeine: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.drinksAlcohol}
+                onNoteChange={(v) => setNote("drinksAlcohol", v)}
+              >
+                <YesNo
+                  label="Does the patient drink alcohol?"
+                  value={form.drinksAlcohol}
+                  onChange={(v) => set({ drinksAlcohol: v })}
+                />
+                {form.drinksAlcohol === true && (
+                  <FormRow label="If yes, how often?">
                     <PillSelect
-                      options={EXERCISE_FREQUENCY}
-                      value={form.exerciseFrequency}
-                      onChange={(v) => set({ exerciseFrequency: v })}
+                      options={ALCOHOL_FREQUENCY}
+                      value={form.alcoholFrequency}
+                      onChange={(v) => set({ alcoholFrequency: v })}
                     />
                   </FormRow>
-                </div>
-              )}
-              <FormRow label="Hours of sleep per night">
-                <PillSelect
-                  options={SLEEP_HOURS}
-                  value={form.sleepHours}
-                  onChange={(v) => set({ sleepHours: v })}
+                )}
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.smokes}
+                onNoteChange={(v) => setNote("smokes", v)}
+              >
+                <YesNo
+                  label="Does the patient smoke?"
+                  value={form.smokes}
+                  onChange={(v) => set({ smokes: v })}
                 />
-              </FormRow>
-              <YesNo
-                label="Does the patient wake up rested?"
-                value={form.wakesRested}
-                onChange={(v) => set({ wakesRested: v })}
-              />
-              <YesNo
-                label="Does the patient feel stressed often?"
-                value={form.feelsStressed}
-                onChange={(v) => set({ feelsStressed: v })}
-              />
-              <YesNo
-                label="Does the patient follow a specific diet?"
-                value={form.followsDiet}
-                onChange={(v) => set({ followsDiet: v })}
-              />
-              <YesNo
-                label="Does the patient snack frequently?"
-                value={form.snacksFrequently}
-                onChange={(v) => set({ snacksFrequently: v })}
-              />
-              <YesNo
-                label="Does the patient often feel fatigued?"
-                value={form.feelsFatigued}
-                onChange={(v) => set({ feelsFatigued: v })}
-              />
-              <YesNo
-                label="Does the patient experience mood swings?"
-                value={form.moodSwings}
-                onChange={(v) => set({ moodSwings: v })}
-              />
+                {form.smokes === true && (
+                  <FormRow label="How many per day?">
+                    <PillSelect
+                      options={CIGARETTES_PER_DAY}
+                      value={form.cigarettesPerDay}
+                      onChange={(v) => set({ cigarettesPerDay: v })}
+                    />
+                  </FormRow>
+                )}
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.exercises}
+                onNoteChange={(v) => setNote("exercises", v)}
+              >
+                <YesNo
+                  label="Does the patient exercise regularly?"
+                  value={form.exercises}
+                  onChange={(v) => set({ exercises: v })}
+                />
+                {form.exercises === true && (
+                  <div className="space-y-3">
+                    <FormRow label="Type of activity">
+                      <div className="space-y-2">
+                        <PillMulti
+                          options={EXERCISE_TYPES}
+                          selected={exercisePresets}
+                          onToggle={toggleExercise}
+                        />
+                        <Input
+                          value={exerciseOther}
+                          onChange={(e) =>
+                            set({ exerciseType: joinExercise(exercisePresets, e.target.value) })
+                          }
+                          placeholder="Other activity (optional)"
+                        />
+                      </div>
+                    </FormRow>
+                    <FormRow label="Frequency per week">
+                      <PillSelect
+                        options={EXERCISE_FREQUENCY}
+                        value={form.exerciseFrequency}
+                        onChange={(v) => set({ exerciseFrequency: v })}
+                      />
+                    </FormRow>
+                  </div>
+                )}
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.sleepHours}
+                onNoteChange={(v) => setNote("sleepHours", v)}
+              >
+                <div className="space-y-1.5">
+                  <span className="text-sm font-medium text-slate-700">
+                    Hours of sleep per night
+                  </span>
+                  <PillSelect
+                    options={SLEEP_HOURS}
+                    value={form.sleepHours}
+                    onChange={(v) => set({ sleepHours: v })}
+                  />
+                </div>
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.wakesRested}
+                onNoteChange={(v) => setNote("wakesRested", v)}
+              >
+                <YesNo
+                  label="Does the patient wake up rested?"
+                  value={form.wakesRested}
+                  onChange={(v) => set({ wakesRested: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.feelsStressed}
+                onNoteChange={(v) => setNote("feelsStressed", v)}
+              >
+                <YesNo
+                  label="Does the patient feel stressed often?"
+                  value={form.feelsStressed}
+                  onChange={(v) => set({ feelsStressed: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.followsDiet}
+                onNoteChange={(v) => setNote("followsDiet", v)}
+              >
+                <YesNo
+                  label="Does the patient follow a specific diet?"
+                  value={form.followsDiet}
+                  onChange={(v) => set({ followsDiet: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.snacksFrequently}
+                onNoteChange={(v) => setNote("snacksFrequently", v)}
+              >
+                <YesNo
+                  label="Does the patient snack frequently?"
+                  value={form.snacksFrequently}
+                  onChange={(v) => set({ snacksFrequently: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.feelsFatigued}
+                onNoteChange={(v) => setNote("feelsFatigued", v)}
+              >
+                <YesNo
+                  label="Does the patient often feel fatigued?"
+                  value={form.feelsFatigued}
+                  onChange={(v) => set({ feelsFatigued: v })}
+                />
+              </LifestyleQuestion>
+
+              <LifestyleQuestion
+                note={form.lifestyleNotes.moodSwings}
+                onNoteChange={(v) => setNote("moodSwings", v)}
+              >
+                <YesNo
+                  label="Does the patient experience mood swings?"
+                  value={form.moodSwings}
+                  onChange={(v) => set({ moodSwings: v })}
+                />
+              </LifestyleQuestion>
             </div>
           ) : (
             <div>
               <ViewItem label="Drinks enough water daily" value={fmtYes(form.drinksWater)} />
-              <ViewItem label="Glasses per day" value={form.waterGlasses || "—"} />
-              <ViewItem label="Coffee / tea / energy drinks" value={fmtYes(form.drinksCaffeine)} />
-              <ViewItem label="Drinks alcohol" value={fmtYes(form.drinksAlcohol, form.alcoholFrequency)} />
-              <ViewItem label="Smokes" value={fmtYes(form.smokes, form.cigarettesPerDay)} />
-              <ViewItem label="Exercises regularly" value={exerciseSummary} />
-              <ViewItem label="Hours of sleep per night" value={form.sleepHours || "—"} />
-              <ViewItem label="Wakes up rested" value={fmtYes(form.wakesRested)} />
-              <ViewItem label="Feels stressed often" value={fmtYes(form.feelsStressed)} />
-              <ViewItem label="Follows a specific diet" value={fmtYes(form.followsDiet)} />
-              <ViewItem label="Snacks frequently" value={fmtYes(form.snacksFrequently)} />
-              <ViewItem label="Often feels fatigued" value={fmtYes(form.feelsFatigued)} />
-              <ViewItem label="Experiences mood swings" value={fmtYes(form.moodSwings)} />
+              <ViewItem
+                label="Glasses per day"
+                value={form.waterGlasses || "—"}
+                note={form.lifestyleNotes.drinksWater}
+              />
+              <ViewItem
+                label="Coffee / tea / energy drinks"
+                value={fmtYes(form.drinksCaffeine)}
+                note={form.lifestyleNotes.drinksCaffeine}
+              />
+              <ViewItem
+                label="Drinks alcohol"
+                value={fmtYes(form.drinksAlcohol, form.alcoholFrequency)}
+                note={form.lifestyleNotes.drinksAlcohol}
+              />
+              <ViewItem
+                label="Smokes"
+                value={fmtYes(form.smokes, form.cigarettesPerDay)}
+                note={form.lifestyleNotes.smokes}
+              />
+              <ViewItem
+                label="Exercises regularly"
+                value={exerciseSummary}
+                note={form.lifestyleNotes.exercises}
+              />
+              <ViewItem
+                label="Hours of sleep per night"
+                value={form.sleepHours || "—"}
+                note={form.lifestyleNotes.sleepHours}
+              />
+              <ViewItem
+                label="Wakes up rested"
+                value={fmtYes(form.wakesRested)}
+                note={form.lifestyleNotes.wakesRested}
+              />
+              <ViewItem
+                label="Feels stressed often"
+                value={fmtYes(form.feelsStressed)}
+                note={form.lifestyleNotes.feelsStressed}
+              />
+              <ViewItem
+                label="Follows a specific diet"
+                value={fmtYes(form.followsDiet)}
+                note={form.lifestyleNotes.followsDiet}
+              />
+              <ViewItem
+                label="Snacks frequently"
+                value={fmtYes(form.snacksFrequently)}
+                note={form.lifestyleNotes.snacksFrequently}
+              />
+              <ViewItem
+                label="Often feels fatigued"
+                value={fmtYes(form.feelsFatigued)}
+                note={form.lifestyleNotes.feelsFatigued}
+              />
+              <ViewItem
+                label="Experiences mood swings"
+                value={fmtYes(form.moodSwings)}
+                note={form.lifestyleNotes.moodSwings}
+              />
             </div>
           )}
         </CardBody>

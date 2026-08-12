@@ -646,6 +646,7 @@ export interface MedicalHistory {
   conditions: string[];
   intoleranceDetail?: string;
   conditionsOther?: string;
+  medicalHistoryNote?: string;
 
   hasAllergies: boolean | null;
   allergiesDetail?: string;
@@ -660,6 +661,7 @@ export interface MedicalHistory {
   familyHistory: string[];
   familyCancerDetail?: string;
   familyOther?: string;
+  familyHistoryNote?: string;
 
   drinksWater: boolean | null;
   waterGlasses?: string;
@@ -679,8 +681,29 @@ export interface MedicalHistory {
   feelsFatigued: boolean | null;
   moodSwings: boolean | null;
 
+  /** Free-text notes keyed by lifestyle question (see LIFESTYLE_NOTE_KEYS). */
+  lifestyleNotes: Partial<Record<LifestyleNoteKey, string>>;
+
   updatedAt?: string;
 }
+
+// Lifestyle questions a note can be attached to — one per YesNo/quick-pick
+// question in the Lifestyle card, keyed to match the FormState field name.
+export const LIFESTYLE_NOTE_KEYS = [
+  "drinksWater",
+  "drinksCaffeine",
+  "drinksAlcohol",
+  "smokes",
+  "exercises",
+  "sleepHours",
+  "wakesRested",
+  "feelsStressed",
+  "followsDiet",
+  "snacksFrequently",
+  "feelsFatigued",
+  "moodSwings",
+] as const;
+export type LifestyleNoteKey = (typeof LIFESTYLE_NOTE_KEYS)[number];
 
 export interface AuditEntry {
   id: string;

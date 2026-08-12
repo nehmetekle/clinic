@@ -25,6 +25,10 @@ import { Input } from "@/components/ui/Field";
 import { AppointmentBadge, Badge } from "@/components/ui/Badge";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { VisitBasketSettlementModal } from "@/components/VisitBasketSettlementModal";
+import {
+  isReschedulable,
+  RescheduleAppointmentModal,
+} from "@/components/ScheduleAppointmentModal";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -122,6 +126,42 @@ function canMarkNoShow(status: AppointmentStatus): boolean {
 
 // Initials for a card avatar, derived from the displayed client name (first +
 // last word). Purely presentational — no new data is introduced.
+/**
+ * The patient's name on a queue row, as the way into their profile. Every place
+ * the board shows a client (flow cards and the Done list) uses this one
+ * component rather than repeating a "Profile" button per card — the name is the
+ * affordance, so the card's action row is left for real queue actions.
+ * `stopPropagation` keeps it from also firing any handler on an enclosing
+ * card/row, so opening a profile can never double as a queue action.
+ */
+function ClientNameLink({
+  clientName,
+  clientId,
+  className,
+}: {
+  clientName: string;
+  clientId: string;
+  className?: string;
+}) {
+  const router = useRouter();
+  return (
+    <button
+      type="button"
+      title={`Open ${clientName}'s profile`}
+      onClick={(e) => {
+        e.stopPropagation();
+        router.push(`/clients/${clientId}`);
+      }}
+      className={cn(
+        "truncate text-left hover:text-brand-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 rounded-sm",
+        className,
+      )}
+    >
+      {clientName}
+    </button>
+  );
+}
+
 function nameInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -159,6 +199,8 @@ export default function QueuePage() {
   const [openBasket, setOpenBasket] = useState<VisitBasket | null>(null);
   // Which in-clinic card has its "⋮" overflow menu open (by appointment id).
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // A patient who rings ahead to move their slot, without leaving the board.
+  const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
   useEffect(() => {
     if (!data) return;
     if (isToday) {
@@ -401,7 +443,14 @@ export default function QueuePage() {
                       const openConsult = showConsult
                         ? openConsultByClient.get(a.clientId)
                         : undefined;
-                      const soloProfile = !showAdvance && !showConsult;
+                      // Rescheduling is the one action that also makes sense on
+                      // another day's (otherwise read-only) board: an upcoming
+                      // booking is exactly what the desk gets called about. Same
+                      // eligibility the API enforces, so the button is never a lie.
+                      const showReschedule = isSecretary && isReschedulable(a);
+                      // Nothing to render an action row for — the name is the
+                      // link to the profile, so a read-only card has no buttons.
+                      const hasRowActions = showAdvance || showConsult || showReschedule || showLeftMenu;
                       return (
                         <div
                           key={a.id}
@@ -420,9 +469,11 @@ export default function QueuePage() {
                               {nameInitials(a.clientName)}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold text-slate-800">
-                                {a.clientName}
-                              </p>
+                              <ClientNameLink
+                                clientName={a.clientName}
+                                clientId={a.clientId}
+                                className="block w-full text-sm font-semibold text-slate-800"
+                              />
                               <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                                 <Clock className="h-3 w-3 shrink-0" /> {formatTime(a.time)}
                               </p>
@@ -464,6 +515,10 @@ export default function QueuePage() {
                               <Button size="sm" className="w-full" onClick={() => startCheckIn(a)}>
                                 <CheckCircle2 className="h-3.5 w-3.5" /> Check in
                               </Button>
+                              {/* Two lightweight ways the slot can end other than
+                                  the patient walking in: they didn't come, or they
+                                  moved it. Same ghost weight so neither competes
+                                  with Check in. */}
                               <div className="grid grid-cols-2 gap-2">
                                 <Button
                                   size="sm"
@@ -473,16 +528,21 @@ export default function QueuePage() {
                                 >
                                   <UserX className="h-3.5 w-3.5" /> No-show
                                 </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => router.push(`/clients/${a.clientId}`)}
-                                >
-                                  Profile
-                                </Button>
+                                {showReschedule && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRescheduleTarget(a);
+                                    }}
+                                  >
+                                    <CalendarClock className="h-3.5 w-3.5" /> Reschedule
+                                  </Button>
+                                )}
                               </div>
                             </div>
-                          ) : (
+                          ) : hasRowActions ? (
                             <div className="mt-3 flex gap-2">
                               {showAdvance && (
                                 <Button size="sm" className="flex-1" onClick={() => advance(a)}>
@@ -506,14 +566,19 @@ export default function QueuePage() {
                                   {openConsult ? "Continue" : "Consult"}
                                 </Button>
                               )}
-                              <Button
-                                size="sm"
-                                variant={soloProfile ? "outline" : "ghost"}
-                                className={cn(soloProfile && "flex-1")}
-                                onClick={() => router.push(`/clients/${a.clientId}`)}
-                              >
-                                Profile
-                              </Button>
+                              {showReschedule && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="flex-1"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRescheduleTarget(a);
+                                  }}
+                                >
+                                  <CalendarClock className="h-3.5 w-3.5" /> Reschedule
+                                </Button>
+                              )}
                               {showLeftMenu && (
                                 <div className="relative">
                                   <Button
@@ -551,7 +616,7 @@ export default function QueuePage() {
                                 </div>
                               )}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                       );
                     })}
@@ -674,7 +739,11 @@ export default function QueuePage() {
                   >
                     <div className="flex items-center gap-3">
                       <AppointmentBadge status={a.status} />
-                      <span className="text-sm font-medium text-slate-800">{a.clientName}</span>
+                      <ClientNameLink
+                        clientName={a.clientName}
+                        clientId={a.clientId}
+                        className="text-sm font-medium text-slate-800"
+                      />
                     </div>
                     <div className="flex items-center gap-4 text-xs text-slate-500">
                       <span className="inline-flex items-center gap-1">
@@ -690,13 +759,6 @@ export default function QueuePage() {
                           <RotateCcw className="h-3.5 w-3.5" /> Undo
                         </Button>
                       )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => router.push(`/clients/${a.clientId}`)}
-                      >
-                        Profile
-                      </Button>
                     </div>
                   </li>
                 ))}
@@ -706,10 +768,16 @@ export default function QueuePage() {
         </Card>
       )}
 
+      <RescheduleAppointmentModal
+        appointment={rescheduleTarget}
+        onClose={() => setRescheduleTarget(null)}
+        onRescheduled={refetch}
+      />
+
       <p className="mt-4 text-xs text-slate-400">
         {isToday
           ? "Check-in opens the patient registration form; required details must be completed before proceeding. Queue transitions are saved to the database."
-          : "You're viewing another day — the board is read-only. Switch back to Today to check patients in and move them through the queue."}
+          : "You're viewing another day — the board is read-only apart from rescheduling an upcoming booking. Switch back to Today to check patients in and move them through the queue."}
       </p>
     </div>
   );

@@ -14,11 +14,29 @@ function parseList(value: string | null): string[] {
   }
 }
 
+/** Tolerant parse of a JSON-encoded string->string map column. */
+function parseNotes(value: string | null): Record<string, string> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === "string" && entry[1].trim().length > 0,
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
 function toMedicalHistory(m: PMedicalHistory): MedicalHistory {
   return {
     conditions: parseList(m.conditions),
     intoleranceDetail: m.intoleranceDetail ?? undefined,
     conditionsOther: m.conditionsOther ?? undefined,
+    medicalHistoryNote: m.medicalHistoryNote ?? undefined,
 
     hasAllergies: m.hasAllergies,
     allergiesDetail: m.allergiesDetail ?? undefined,
@@ -33,6 +51,7 @@ function toMedicalHistory(m: PMedicalHistory): MedicalHistory {
     familyHistory: parseList(m.familyHistory),
     familyCancerDetail: m.familyCancerDetail ?? undefined,
     familyOther: m.familyOther ?? undefined,
+    familyHistoryNote: m.familyHistoryNote ?? undefined,
 
     drinksWater: m.drinksWater,
     waterGlasses: m.waterGlasses ?? undefined,
@@ -51,6 +70,8 @@ function toMedicalHistory(m: PMedicalHistory): MedicalHistory {
     snacksFrequently: m.snacksFrequently,
     feelsFatigued: m.feelsFatigued,
     moodSwings: m.moodSwings,
+
+    lifestyleNotes: parseNotes(m.lifestyleNotes),
 
     updatedAt: m.updatedAt.toISOString(),
   };
@@ -75,6 +96,7 @@ export async function upsertMedicalHistory(
     conditions: JSON.stringify(input.conditions ?? []),
     intoleranceDetail: ns(input.intoleranceDetail),
     conditionsOther: ns(input.conditionsOther),
+    medicalHistoryNote: ns(input.medicalHistoryNote),
 
     hasAllergies: nb(input.hasAllergies),
     allergiesDetail: ns(input.allergiesDetail),
@@ -89,6 +111,7 @@ export async function upsertMedicalHistory(
     familyHistory: JSON.stringify(input.familyHistory ?? []),
     familyCancerDetail: ns(input.familyCancerDetail),
     familyOther: ns(input.familyOther),
+    familyHistoryNote: ns(input.familyHistoryNote),
 
     drinksWater: nb(input.drinksWater),
     waterGlasses: ns(input.waterGlasses),
@@ -107,6 +130,8 @@ export async function upsertMedicalHistory(
     snacksFrequently: nb(input.snacksFrequently),
     feelsFatigued: nb(input.feelsFatigued),
     moodSwings: nb(input.moodSwings),
+
+    lifestyleNotes: JSON.stringify(input.lifestyleNotes ?? {}),
   };
 
   const row = await db.medicalHistory.upsert({

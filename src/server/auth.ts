@@ -56,6 +56,14 @@ export async function canHandleMoney(req: Request): Promise<boolean> {
   return role === "secretary" || role === "admin";
 }
 
+/** The schedule is the front desk's book: booking, rescheduling and cancelling
+ * appointments belong to the secretary (and admin). A dietitian works the day
+ * they're given — they never move a patient's slot. */
+export async function canManageAppointments(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "secretary" || role === "admin";
+}
+
 /** Writing off (voiding) a tracked debt forgives money the clinic is owed — an
  * accountability event reserved for the admin. The secretary can collect a debt
  * (records a real payment) but never write one off. */
