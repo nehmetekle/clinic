@@ -22,6 +22,10 @@ import { WHATSAPP_STALE_MESSAGE } from "@/lib/whatsapp";
  * reaches a patient has to be made here, at the moment the bytes are handed out.
  * A plain download (no intent) is unaffected: staff may still fetch the old sheet
  * deliberately, and printing it is their call.
+ *
+ * `?disposition=inline` asks for the PDF to be *displayed* rather than saved, so
+ * the Print button can open it in the browser's own PDF viewer (which owns the
+ * print dialog). Same bytes, same access rules — only the header differs.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
@@ -39,7 +43,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
 
     // filename is sanitized at generation (word chars, dots, dashes, spaces,
     // parens), so it's safe in the header; the RFC 5987 form covers any spaces.
-    const disposition = `attachment; filename="${file.filename}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`;
+    const inline = new URL(req.url).searchParams.get("disposition") === "inline";
+    const disposition = `${inline ? "inline" : "attachment"}; filename="${file.filename}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`;
     return new Response(new Uint8Array(file.data), {
       status: 200,
       headers: {

@@ -11,6 +11,7 @@ import {
   ClipboardList,
   History,
   Layers,
+  Minus,
   Pencil,
   Plus,
   Salad,
@@ -170,7 +171,69 @@ const SERVICE_ACCENTS = {
   treatments: "border-t-2 border-t-amber-300",
   products: "border-t-2 border-t-emerald-300",
 } as const;
-const TREATMENT_ROW_ACCENTS = ["border-t-2 border-t-amber-300", "border-t-2 border-t-brand-300"];
+/** Label on the left, control on the right — the dense form row used per treatment. */
+function DataRow({
+  label,
+  children,
+  align = "center",
+}: {
+  label: string;
+  children: React.ReactNode;
+  align?: "center" | "start";
+}) {
+  return (
+    <div
+      className={cn(
+        "flex justify-between gap-4 px-3 py-2",
+        align === "center" ? "items-center" : "items-start",
+      )}
+    >
+      <span className="shrink-0 py-1 text-xs font-medium text-slate-500">{label}</span>
+      <div className="min-w-0 flex-1 text-right">{children}</div>
+    </div>
+  );
+}
+
+/** Compact −/+ count control. Emits the raw string the treatment form stores. */
+function Stepper({
+  value,
+  onChange,
+  min = 0,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  min?: number;
+}) {
+  const n = toCount(value, min);
+  const step = (delta: number) => onChange(String(Math.max(min, n + delta)));
+  return (
+    <div className="inline-flex h-9 items-center rounded-lg bg-white ring-1 ring-inset ring-slate-200 focus-within:ring-2 focus-within:ring-brand-500/40">
+      <button
+        type="button"
+        onClick={() => step(-1)}
+        disabled={n <= min}
+        aria-label="Decrease"
+        className="flex h-full w-8 items-center justify-center rounded-l-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:opacity-30 disabled:hover:bg-transparent"
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </button>
+      <input
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ""))}
+        className="h-full w-11 border-x border-slate-100 bg-transparent text-center text-sm font-semibold tabular-nums text-slate-800 focus:outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => step(1)}
+        aria-label="Increase"
+        className="flex h-full w-8 items-center justify-center rounded-r-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
 
 /**
  * A titled card built for scannable hierarchy: a soft gradient header band, a
@@ -421,7 +484,6 @@ function ConsultationEditor() {
   const [servicesOpen, setServicesOpen] = useState(false);
   const [bloodTests, setBloodTests] = useState<string[]>([]);
   const [bloodOther, setBloodOther] = useState("");
-  const [nurseRequired, setNurseRequired] = useState(false);
   const [treatments, setTreatments] = useState<TreatmentForm[]>([]);
   const [treatmentsOpen, setTreatmentsOpen] = useState(false);
   const [products, setProducts] = useState<ProductForm[]>([]);
@@ -1194,7 +1256,6 @@ function ConsultationEditor() {
         followUpPlan: form.followUpPlan || undefined,
         bloodCollection,
         bloodTests: finalBloodTests,
-        nurseRequired,
         visitDiscountType: discountOpen && discountValueForSave > 0 ? discountType : undefined,
         visitDiscountValue: discountOpen ? discountValueForSave : undefined,
         visitDiscountReason:
@@ -1519,22 +1580,6 @@ function ConsultationEditor() {
             onOpenChange={setServicesOpen}
             bodyClassName="space-y-3"
           >
-              {/* Nurse needed — single tick, no dropdown */}
-              <div className="overflow-hidden rounded-xl border border-slate-200">
-                <label className="flex cursor-pointer items-center gap-3 bg-slate-50/60 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={nurseRequired}
-                    onChange={(e) => setNurseRequired(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-500/30"
-                  />
-                  <span>
-                    <span className="block text-sm font-medium text-slate-800">Nurse needed</span>
-                    <span className="block text-xs text-slate-400">Flag nurse support for this visit.</span>
-                  </span>
-                </label>
-              </div>
-
               {/* 1. Blood collection */}
               <Section
                 title="Blood collection"
@@ -1604,31 +1649,55 @@ function ConsultationEditor() {
                     const chargedSessions = treatmentBillable[i] ?? 0;
                     const hasSource = Boolean(t.clientPackageId || t.applyPackageId);
                     const treatmentPrice = t.machine ? treatmentPriceFor(t.machine) : undefined;
-                    // Pay-as-you-go session plan linked to this treatment (if any).
-                    const sessionPlan = t.sessionPlan ? linkedSessionPlan(t) : undefined;
-                    const sessionCredit = sessionPlan?.credit ?? 0;
+                    const rowTotal = appliedBundle
+                      ? bundleCharge
+                      : treatmentPrice
+                        ? treatmentPrice.price * chargedSessions
+                        : 0;
+                    const rowCurrency = appliedBundle
+                      ? appliedBundle.currency
+                      : treatmentPrice?.currency ?? "USD";
+                    const controlClass = "ml-auto h-9 w-full max-w-[17rem]";
                     return (
                       <div
                         key={i}
-                        className={cn(
-                          "space-y-3 rounded-lg border border-slate-200 p-4",
-                          TREATMENT_ROW_ACCENTS[i % TREATMENT_ROW_ACCENTS.length],
-                        )}
+                        className="overflow-hidden rounded-xl bg-white ring-1 ring-slate-200 transition-colors hover:ring-slate-300"
                       >
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium text-slate-700">Treatment {i + 1}</p>
+                        <div className="flex items-center gap-2.5 border-b border-slate-100 px-3 py-2">
+                          <span className="text-xs font-semibold tabular-nums text-slate-300">
+                            {String(i + 1).padStart(2, "0")}
+                          </span>
+                          <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-slate-800">
+                            {t.machine ? treatmentName(t.machine, t.machineOther) : "New treatment"}
+                          </p>
+                          {t.machine && treatmentPrice && (
+                            <span className="shrink-0 text-xs tabular-nums text-slate-400">
+                              {formatMoney(treatmentPrice.price, treatmentPrice.currency)}/session
+                            </span>
+                          )}
+                          {rowTotal > 0 ? (
+                            <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                              {formatMoney(rowTotal, rowCurrency)}
+                            </span>
+                          ) : (
+                            sessionsUsed > 0 && (
+                              <span className="shrink-0 text-xs font-medium text-emerald-600">Covered</span>
+                            )
+                          )}
                           <button
                             type="button"
                             onClick={() => setTreatments((prev) => prev.filter((_, idx) => idx !== i))}
-                            className="text-slate-400 hover:text-rose-600"
+                            aria-label={`Remove treatment ${i + 1}`}
+                            className="-mr-1 shrink-0 rounded-md p-1.5 text-slate-300 transition-colors hover:bg-rose-50 hover:text-rose-600"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
 
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <FormRow label="Machine / treatment">
+                        <div className="divide-y divide-slate-100">
+                          <DataRow label="Machine">
                             <Select
+                              className={controlClass}
                               value={t.machine}
                               onChange={(e) =>
                                 updateTreatment(i, {
@@ -1660,81 +1729,66 @@ function ConsultationEditor() {
                                 </option>
                               ))}
                             </Select>
-                          </FormRow>
+                          </DataRow>
+
                           {t.machine === "Other" && (
-                            <FormRow label="Custom machine name">
-                              <Input value={t.machineOther} onChange={(e) => updateTreatment(i, { machineOther: e.target.value })} />
-                            </FormRow>
+                            <DataRow label="Custom name">
+                              <Input
+                                className={controlClass}
+                                value={t.machineOther}
+                                onChange={(e) => updateTreatment(i, { machineOther: e.target.value })}
+                              />
+                            </DataRow>
                           )}
-                        </div>
 
-                        {!t.machine && activeBundles.length > 0 && (
-                          <p className="text-xs text-slate-400">
-                            Pick a machine to draw from the patient&apos;s bundle or start a new one
-                            ({activeBundles.length} available).
-                          </p>
-                        )}
-
-                        {t.machine && (
-                          <>
-                            <p className="text-sm text-slate-500">
-                              Catalog price:{" "}
-                              <span className="font-medium text-slate-700">
-                                {treatmentPrice
-                                  ? formatMoney(treatmentPrice.price, treatmentPrice.currency)
-                                  : "Price not set"}
-                              </span>
-                            </p>
-
-                            {showBodyParts && (
-                              <div>
-                                <p className="mb-1.5 text-xs font-medium text-slate-500">Body part(s)</p>
-                                {preset ? (
-                                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                                    {preset.map((bp) => (
-                                      <CheckLine
-                                        key={bp}
-                                        checked={t.bodyParts.includes(bp)}
-                                        onChange={() => updateTreatment(i, { bodyParts: toggle(t.bodyParts, bp) })}
-                                        label={bp}
-                                      />
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <Input
-                                    value={t.bodyPartCustom}
-                                    onChange={(e) => updateTreatment(i, { bodyPartCustom: e.target.value })}
-                                    placeholder="Body parts (comma separated)"
-                                  />
-                                )}
-                                {preset && t.bodyParts.includes("Other") && (
-                                  <Input
-                                    className="mt-2"
-                                    value={t.bodyPartCustom}
-                                    onChange={(e) => updateTreatment(i, { bodyPartCustom: e.target.value })}
-                                    placeholder="Custom body part(s), comma separated"
-                                  />
-                                )}
-                              </div>
-                            )}
-
-                            <div className="space-y-3 rounded-lg bg-slate-50 p-3">
-                              <p className="text-xs font-semibold text-slate-600">Bundle &amp; sessions</p>
-                              {pkgs.length > 0 && (
-                                <ul className="space-y-1 text-xs text-slate-600">
-                                  {pkgs.map((p) => {
-                                    const rem = p.totalSessions - p.usedSessions;
+                          {t.machine && showBodyParts && (
+                            <DataRow label="Body parts" align="start">
+                              {preset ? (
+                                <div className="flex flex-wrap justify-end gap-1.5">
+                                  {preset.map((bp) => {
+                                    const on = t.bodyParts.includes(bp);
                                     return (
-                                      <li key={p.id}>
-                                        <span className="font-medium">{p.machine}:</span> {rem} session{rem !== 1 ? "s" : ""} remaining
-                                        <span className="text-slate-400"> · {p.packageName}</span>
-                                      </li>
+                                      <button
+                                        key={bp}
+                                        type="button"
+                                        aria-pressed={on}
+                                        onClick={() => updateTreatment(i, { bodyParts: toggle(t.bodyParts, bp) })}
+                                        className={cn(
+                                          "rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors",
+                                          on
+                                            ? "bg-brand-50 text-brand-700 ring-brand-300"
+                                            : "text-slate-500 ring-slate-200 hover:bg-slate-50 hover:text-slate-700",
+                                        )}
+                                      >
+                                        {bp}
+                                      </button>
                                     );
                                   })}
-                                </ul>
+                                </div>
+                              ) : (
+                                <Input
+                                  className="h-9 text-left"
+                                  value={t.bodyPartCustom}
+                                  onChange={(e) => updateTreatment(i, { bodyPartCustom: e.target.value })}
+                                  placeholder="Body parts (comma separated)"
+                                />
                               )}
-                              <FormRow label="Bundle">
+                              {preset && t.bodyParts.includes("Other") && (
+                                <Input
+                                  className="mt-1.5 h-9 text-left"
+                                  value={t.bodyPartCustom}
+                                  onChange={(e) => updateTreatment(i, { bodyPartCustom: e.target.value })}
+                                  placeholder="Custom body part(s), comma separated"
+                                />
+                              )}
+                            </DataRow>
+                          )}
+
+                          {t.machine && (
+                            <>
+                              <DataRow label="Billing">
                                 <Select
+                                  className={controlClass}
                                   value={
                                     t.applyPackageId
                                       ? `bundle:${t.applyPackageId}`
@@ -1815,95 +1869,80 @@ function ConsultationEditor() {
                                     </optgroup>
                                   )}
                                 </Select>
-                              </FormRow>
-                              {selectedPkg && (
-                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                                  <Stat label="Package" value={selectedPkg.packageName} />
-                                  <Stat label="Machine" value={selectedPkg.machine ?? "—"} />
-                                  <Stat label="Total" value={String(selectedPkg.totalSessions)} />
-                                  <Stat label="Used" value={String(selectedPkg.usedSessions)} />
-                                  <Stat label="Remaining" value={String(selectedPkg.totalSessions - selectedPkg.usedSessions)} />
-                                  <Stat label="Current session #" value={String(selectedPkg.usedSessions + 1)} />
-                                  <Stat
-                                    label="After this visit"
-                                    value={String(Math.max(0, selectedPkg.totalSessions - selectedPkg.usedSessions - sessionsUsed))}
+                              </DataRow>
+
+                              <DataRow label="Sessions needed">
+                                <div className="flex justify-end">
+                                  <Stepper
+                                    value={t.sessionsNeeded}
+                                    onChange={(v) => updateTreatment(i, { sessionsNeeded: v })}
                                   />
                                 </div>
-                              )}
-                              {appliedBundle && (
-                                <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
-                                  Starting <span className="font-medium">{appliedBundle.name}</span> — fixed bundle price{" "}
-                                  <span className="font-medium">{formatMoney(bundleCharge, appliedBundle.currency)}</span>{" "}
-                                  charged this visit (not the per-session rate). All {appliedBundle.sessions} sessions
-                                  become available now: {sessionsUsed} used today ·{" "}
-                                  {Math.max(0, appliedBundle.sessions - sessionsUsed)} left after this visit.
-                                </div>
-                              )}
-                              {t.sessionPlan && (
-                                <div className="space-y-1 rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
-                                  {sessionPlan ? (
-                                    <p>
-                                      Pay-as-you-go plan · <span className="font-medium">{sessionPlan.sessionsPaid} paid</span>,{" "}
-                                      {sessionPlan.sessionsUsed} used ·{" "}
-                                      <span className="font-medium">{sessionCredit} session{sessionCredit === 1 ? "" : "s"} of credit</span> available.
-                                    </p>
-                                  ) : (
-                                    <p>
-                                      New pay-as-you-go plan for {t.machine || "this treatment"} — no prepaid credit yet.
-                                    </p>
-                                  )}
-                                  {chargedSessions === 0 ? (
-                                    sessionsUsed > 0 && (
-                                      <p className="font-medium text-emerald-700">
-                                        {coveredSessions > 0
-                                          ? "Fully covered by credit — nothing to collect today."
-                                          : "Already paid for — nothing to collect today."}
-                                      </p>
-                                    )
-                                  ) : (
-                                    <p>
-                                      Charging {chargedSessions} session{chargedSessions === 1 ? "" : "s"} at{" "}
-                                      {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "per session"}
-                                      {treatmentPrice ? (
-                                        <> = <span className="font-medium">{formatMoney(treatmentPrice.price * chargedSessions, treatmentPrice.currency)}</span></>
-                                      ) : null}
-                                      . {sessionsUsed} used today
-                                      {coveredSessions > 0 ? ` (${coveredSessions} covered by credit)` : ""} ·{" "}
-                                      {Math.max(0, chargedSessions + sessionCredit - sessionsUsed)} left after this visit.
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-                              <div className="grid gap-3 sm:grid-cols-2">
-                                <FormRow label="Number of sessions needed">
-                                  <Input type="number" min={0} value={t.sessionsNeeded} onChange={(e) => updateTreatment(i, { sessionsNeeded: e.target.value })} />
-                                </FormRow>
-                                <FormRow label="Sessions used today">
-                                  <Input type="number" min={0} value={t.sessionsUsed} onChange={(e) => updateTreatment(i, { sessionsUsed: e.target.value })} />
-                                </FormRow>
-                              </div>
-                              {hasSource && sessionsUsed > 0 && (
-                                <p className="text-xs">
-                                  {coveredSessions > 0 && (
-                                    <span className="text-emerald-600">
-                                      {coveredSessions} free from the bundle
-                                    </span>
-                                  )}
-                                  {coveredSessions > 0 && chargedSessions > 0 && <span className="text-slate-400"> · </span>}
-                                  {chargedSessions > 0 && (
-                                    <span className="text-amber-600">
-                                      {chargedSessions} charged (balance used up) at {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "per session"}
-                                    </span>
-                                  )}
-                                </p>
-                              )}
-                            </div>
+                              </DataRow>
 
-                            <FormRow label="Notes">
-                              <Textarea rows={2} value={t.notes} onChange={(e) => updateTreatment(i, { notes: e.target.value })} />
-                            </FormRow>
-                          </>
-                        )}
+                              <DataRow label="Used today">
+                                <div className="flex items-center justify-end gap-2">
+                                  {coveredSessions > 0 && (
+                                    <span className="text-xs text-emerald-600">{coveredSessions} from balance</span>
+                                  )}
+                                  <Stepper
+                                    value={t.sessionsUsed}
+                                    onChange={(v) => updateTreatment(i, { sessionsUsed: v })}
+                                  />
+                                </div>
+                              </DataRow>
+
+                              {selectedPkg && (
+                                <div className="flex items-center gap-3 px-3 py-2 text-xs text-slate-500">
+                                  <span className="truncate">{selectedPkg.packageName}</span>
+                                  <div className="h-1 flex-1 overflow-hidden rounded-full bg-slate-100">
+                                    <div
+                                      className="h-full rounded-full bg-brand-500"
+                                      style={{
+                                        width: `${Math.min(100, Math.round((selectedPkg.usedSessions / Math.max(1, selectedPkg.totalSessions)) * 100))}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="shrink-0 tabular-nums">
+                                    {Math.max(0, selectedPkg.totalSessions - selectedPkg.usedSessions - sessionsUsed)} left after today
+                                  </span>
+                                </div>
+                              )}
+
+                              {appliedBundle && (
+                                <div className="px-3 py-2 text-xs text-slate-500">
+                                  <span className="font-medium text-slate-700">{appliedBundle.name}</span> ·{" "}
+                                  {appliedBundle.sessions} sessions for{" "}
+                                  {formatMoney(bundleCharge, appliedBundle.currency)} ·{" "}
+                                  {Math.max(0, appliedBundle.sessions - sessionsUsed)} left after today
+                                </div>
+                              )}
+
+                              {hasSource && chargedSessions > 0 && (
+                                <div className="px-3 py-2 text-xs text-amber-600">
+                                  Balance used up — {chargedSessions} charged at{" "}
+                                  {treatmentPrice ? formatMoney(treatmentPrice.price, treatmentPrice.currency) : "the session price"}
+                                </div>
+                              )}
+
+                              <DataRow label="Notes" align="start">
+                                <Textarea
+                                  rows={2}
+                                  value={t.notes}
+                                  onChange={(e) => updateTreatment(i, { notes: e.target.value })}
+                                  className="text-left"
+                                />
+                              </DataRow>
+                            </>
+                          )}
+
+                          {!t.machine && activeBundles.length > 0 && (
+                            <p className="px-3 py-2 text-xs text-slate-400">
+                              Pick a machine to draw from the patient&apos;s bundle or start a new one
+                              ({activeBundles.length} available).
+                            </p>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -2270,15 +2309,6 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between">
       <span className="text-slate-400">{label}</span>
       <span className="font-medium text-slate-700">{value}</span>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-white px-2 py-1.5">
-      <p className="text-[10px] uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="truncate text-xs font-medium text-slate-700">{value}</p>
     </div>
   );
 }

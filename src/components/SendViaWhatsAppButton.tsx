@@ -121,7 +121,7 @@ export function SendViaWhatsAppButton({
         return;
       }
       if (!res.ok) {
-        toast("Couldn't download the PDF — try the Download button.");
+        toast("Couldn't download the PDF — open it with Print and save it from there.");
         return;
       }
       const url = URL.createObjectURL(await res.blob());
@@ -131,7 +131,7 @@ export function SendViaWhatsAppButton({
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      toast("Couldn't download the PDF — try the Download button.");
+      toast("Couldn't download the PDF — open it with Print and save it from there.");
     }
   }
 

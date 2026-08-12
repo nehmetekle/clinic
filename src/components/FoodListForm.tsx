@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Download, FileText, Languages, Loader2 } from "lucide-react";
+import { AlertTriangle, FileText, Languages, Loader2, Printer } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Field";
 import {
@@ -274,12 +274,16 @@ export function FoodListForm({
         <div className="flex shrink-0 items-center gap-2">
           {generatedFile && (
             <>
+              {/* Opens the PDF inline in a new tab so the browser's viewer can
+                  print it — the form exists to be handed to the patient on
+                  paper. Still a link, so "Save as" remains available. */}
               <a
-                href={`/api/consultation-files/${generatedFile.id}`}
-                download={generatedFile.filename}
+                href={`/api/consultation-files/${generatedFile.id}?disposition=inline`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
               >
-                <Download className="h-4 w-4" /> Download
+                <Printer className="h-4 w-4" /> Print
               </a>
               <SendViaWhatsAppButton
                 fileId={generatedFile.id}

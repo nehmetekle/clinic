@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, FileText, FlaskConical, MessageCircle, Salad } from "lucide-react";
+import { Download, FileText, FlaskConical, MessageCircle, Printer, Salad } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useApi } from "@/lib/use-api";
@@ -95,12 +95,18 @@ export function FilesTab({
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1">
+                  {/* Print, not Download: this sheet's purpose is a printout
+                      handed to the patient at the desk. Opens the PDF inline in
+                      a new tab — the browser's viewer owns the print dialog —
+                      and stays a real link, so "Save as" is still one
+                      right-click away for anyone who wants the file. */}
                   <a
-                    href={api.consultationFileUrl(f.id)}
-                    download={f.filename}
+                    href={api.consultationFilePrintUrl(f.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
                   >
-                    <Download className="h-4 w-4" /> Download
+                    <Printer className="h-4 w-4" /> Print
                   </a>
                   {/* Food List forms are what gets sent on to the patient; a lab
                       result is clinical and is never WhatsApp'd from here. */}
