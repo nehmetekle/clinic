@@ -502,6 +502,10 @@ export interface ConsultationFile {
   uploadedById: string | null;
   uploadedByName: string;
   createdAt: string; // ISO timestamp
+  /** The Food List was edited after this PDF was generated, so it prints the old
+   * answers. Sending it would hand the patient a superseded form, so the send
+   * button refuses on it — see `isFoodListPdfStale`. */
+  stale: boolean;
 }
 
 /** A consultation file plus the visit it belongs to — powers the client profile's

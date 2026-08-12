@@ -318,6 +318,13 @@ model ConsultationFile {
   consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
   uploadedBy     User?        @relation(fields: [uploadedById], references: [id])
 
+  // One current file per visit per kind, enforced by the database rather than by
+  // application timing: the manual "Generate PDF" button and the automatic
+  // catch-up at close can fire at the same moment, and a find-then-create pair
+  // lets both inserts through. `saveConsultationFile` upserts against this key,
+  // so a regenerate replaces the row in place instead of stacking near-identical
+  // sheets the front desk would have to choose between.
+  @@unique([consultationId, kind])
   @@index([consultationId])
 }
 

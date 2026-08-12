@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
-    "db:create-admin": "tsx prisma/create-admin.ts"
+    "db:create-admin": "tsx prisma/create-admin.ts",
+    "test:race": "sh tests/race/run.sh"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

@@ -50,6 +50,10 @@ export function whatsAppChatUrl(phone: string, text?: string): string | null {
 export const WHATSAPP_BAD_PHONE_MESSAGE =
   "This patient's phone number isn't a complete international number, so WhatsApp can't open a chat for it. Edit the patient's phone to include a country code and a full number (e.g. +961 70 000 000) and try again.";
 
+/** Shown in place of the button when the PDF no longer matches the saved form. */
+export const WHATSAPP_STALE_MESSAGE =
+  "The Food List has changed since this PDF was generated, so it prints the old answers. Regenerate the PDF (or close the visit, which regenerates it) and then send the new one.";
+
 /** The message pre-typed into the chat alongside a Food List PDF. */
 export function foodListMessage(firstName: string): string {
   const name = firstName.trim();

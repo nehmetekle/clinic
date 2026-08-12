@@ -160,8 +160,11 @@ patient actually eats.
   **if you move them, update that or the route 500s in production only.**
   `POST /api/consultations/[id]/food-list-pdf` renders and attaches it.
 - **Attachments** — `ConsultationFile` mirrors `BloodSampleFile` (bytes inline in
-  Postgres, `data` never selected for listings). One file per visit per `kind`:
-  regenerating replaces. Downloadable by **every** role (unlike lab results); the
+  Postgres, `data` never selected for listings). One file per visit per `kind`,
+  enforced by a DB unique constraint on `(consultationId, kind)` —
+  `saveConsultationFile` upserts against it, so regenerating replaces the row in
+  place (stable id, refreshed `createdAt`) and two generators racing can't stack
+  copies. See [docs/known-issues.md](docs/known-issues.md) §13. Downloadable by **every** role (unlike lab results); the
   client profile's Files tab is therefore visible to the secretary too, scoped to
   consultation documents only.
 - **Generated automatically on close.** `ensureFoodListPdf`
@@ -170,9 +173,13 @@ patient actually eats.
   PDF" still leaves a sendable file behind (a closed visit is read-only — there's
   no going back). Also re-renders if the form was edited after the last PDF.
   No-ops when no form exists or nothing is ticked; **never throws** — close has
-  already committed. Runs at the route layer, outside the close transaction.
+  already committed. Failures are still invisible to the user but are reported as
+  a structured `food_list_pdf.failed` line via `src/server/observability.ts`. Runs at the route layer, outside the close transaction.
 - **"Send via WhatsApp"** sits next to every Download for a Food List PDF (the
-  editor's card and the Files tab), for **all three roles**. It downloads the PDF
+  editor's card and the Files tab), for **all three roles**. It refuses on a PDF
+  the form has moved past (`stale` on every file listing, from the shared
+  `isFoodListPdfStale`) and asks for a regenerate instead — see
+  [docs/known-issues.md](docs/known-issues.md) §13. It downloads the PDF
   and opens a `wa.me` chat on the patient's number with a message pre-typed —
   **it cannot attach the file**, which is a WhatsApp platform restriction with no
   workaround, so the sender attaches it by hand. `whatsAppChatUrl`
@@ -211,4 +218,6 @@ patient actually eats.
 - Validate writes with Zod in `src/lib/validation.ts`; keep route handlers thin.
 - Postgres everywhere (dev and prod) via `DATABASE_URL`/`DIRECT_URL` in `.env` — see `.env.example`. Prod points these at Neon.
 - After changes: `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` and `npm run build` should both pass.
+- Concurrency tests for the Food List PDF pipeline: `npm run test:race` (needs a
+  `*_test` Postgres database — see [tests/race/README.md](tests/race/README.md)).
 - Login: `npm run db:create-admin` (see "Run it" above) for the one real admin account — there is no role switcher any more, that was a spoofable dev shortcut removed as part of V3. There is no seed data; don't add any.

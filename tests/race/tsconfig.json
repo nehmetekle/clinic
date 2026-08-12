@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // The app leaves JSX for Next to transform ("preserve"); these tests are run
+    // straight through tsx/esbuild, so they need a real runtime.
+    "jsx": "react-jsx"
+  }
+}

@@ -110,6 +110,7 @@ export function FilesTab({
                       filename={f.filename}
                       phone={clientPhone}
                       firstName={clientFirstName}
+                      stale={f.stale}
                     />
                   )}
                 </span>

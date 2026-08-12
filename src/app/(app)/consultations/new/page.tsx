@@ -446,6 +446,28 @@ function ConsultationEditor() {
   });
   const [foodListFile, setFoodListFile] = useState<ConsultationFile | undefined>();
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  // The form has been edited since the attached PDF was generated, so that PDF
+  // prints superseded answers and must not be sent to the patient. Seeded from
+  // the server's own `stale` flag when a visit is re-opened, then maintained
+  // locally — an edit the doctor hasn't saved yet is just as stale, and only the
+  // editor can see it.
+  const [foodListChangedSincePdf, setFoodListChangedSincePdf] = useState(false);
+  const foodListPdfStale = Boolean(foodListFile) && foodListChangedSincePdf;
+
+  // Writing the visit is busy for the WHOLE chain, not just the save request:
+  // "Generate PDF" saves silently, renders, and only then adopts the new visit's
+  // id into the URL. Between the save returning and that id landing, `saving` is
+  // already false while `editId` is still empty — a Save or Close pressed in that
+  // window is treated as a brand-new visit and lands on the open one the server
+  // already has, silently dropping the doctor's edits (Close reports "Visit
+  // closed" on a visit that stays open). Every write button is disabled for the
+  // full chain instead.
+  const busy = saving || generatingPdf;
+  // `busy` only takes effect at the next render, so it can't stop a second click
+  // dispatched before React re-renders (a real double-click, or a slow frame).
+  // This ref refuses re-entry synchronously — the guard that actually prevents
+  // two close/save requests being in flight at once.
+  const writeInFlightRef = useRef(false);
 
   // ---- Recommended supplements: this dietitian's own editable options ----
   // The list is personal to the acting dietitian, so one dietitian's choices
@@ -710,7 +732,9 @@ function ConsultationEditor() {
       .listClientConsultationFiles(clientId)
       .then((files) => {
         if (cancelled) return;
-        setFoodListFile(files.find((f) => f.consultationId === editId && f.kind === "food-list"));
+        const file = files.find((f) => f.consultationId === editId && f.kind === "food-list");
+        setFoodListFile(file);
+        setFoodListChangedSincePdf(file?.stale ?? false);
       })
       .catch(() => {
         /* non-critical: the button just reads "Generate PDF" */
@@ -1119,6 +1143,10 @@ function ConsultationEditor() {
       toast("Please add a reason for the discount.");
       return null;
     }
+    // A save is already running (including the silent one inside "Generate
+    // PDF"): ignore the click rather than firing a second, concurrent write.
+    if (writeInFlightRef.current) return null;
+    writeInFlightRef.current = true;
     setSaving(true);
     try {
       const me = (staff.data ?? []).find((s) => s.email === user?.email);
@@ -1173,6 +1201,7 @@ function ConsultationEditor() {
       return null;
     } finally {
       setSaving(false);
+      writeInFlightRef.current = false;
     }
   }
 
@@ -1194,6 +1223,8 @@ function ConsultationEditor() {
       if (!id) return; // save() already explained why it was rejected
       const file = await api.generateFoodListPdf(id);
       setFoodListFile(file);
+      // Rendered from the form as just saved, so the two are in step again.
+      setFoodListChangedSincePdf(false);
       toast("Food List PDF generated — it's on the client's Files tab");
       // A brand-new visit only got its id just now. Adopt it into the URL (in
       // place — same route, no navigation) so the next Save updates this visit
@@ -1434,12 +1465,16 @@ function ConsultationEditor() {
               <FoodListForm
                 draft={foodList}
                 language={foodListLanguage}
-                onChange={setFoodList}
+                onChange={(next) => {
+                  setFoodList(next);
+                  setFoodListChangedSincePdf(true);
+                }}
                 onChangeLanguage={() => setFoodListLanguage(null)}
                 onGeneratePdf={generateFoodListPdf}
                 generating={generatingPdf}
                 generatedFile={foodListFile}
-                canGenerate={!saving}
+                pdfStale={foodListPdfStale}
+                canGenerate={!busy}
                 patientPhone={client.phone}
                 patientFirstName={client.firstName}
               />
@@ -1945,7 +1980,7 @@ function ConsultationEditor() {
                   variant="ghost"
                   className="text-rose-600 hover:bg-rose-50"
                   onClick={() => setConfirmDelete(true)}
-                  disabled={saving || deleting}
+                  disabled={busy || deleting}
                 >
                   <Trash2 className="h-4 w-4" /> Delete visit
                 </Button>
@@ -1953,11 +1988,15 @@ function ConsultationEditor() {
             </div>
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="outline" onClick={() => router.back()}>Cancel</Button>
-              <Button variant="outline" onClick={() => save(false)} disabled={saving}>
-                {saving ? "Saving…" : editId ? "Save changes (keep open)" : "Save as in-progress"}
+              <Button variant="outline" onClick={() => save(false)} disabled={busy}>
+                {saving ? "Saving…" : generatingPdf ? "Generating PDF…" : editId ? "Save changes (keep open)" : "Save as in-progress"}
               </Button>
-              <Button onClick={() => save(true)} disabled={saving || closeBlocked} title={closeBlocked ? closeBlockedReason : undefined}>
-                {saving ? "Saving…" : "Close visit"}
+              <Button
+                onClick={() => save(true)}
+                disabled={busy || closeBlocked}
+                title={closeBlocked ? closeBlockedReason : undefined}
+              >
+                {saving ? "Saving…" : generatingPdf ? "Generating PDF…" : "Close visit"}
               </Button>
             </div>
           </div>

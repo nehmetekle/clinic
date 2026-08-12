@@ -592,3 +592,122 @@ booking is meant to be front-desk-only, `POST /api/appointments` should move to
 The feature reuses existing columns; no migration was added. Confirmed against
 the live database — `Appointment` still carries only its primary key and the
 client/dietitian foreign keys.
+
+## 13. Food List PDF — concurrency (audit fixes #1, #2, #3, #5)
+
+A review of the Food List PDF pipeline found that "one current PDF per visit"
+and "one save at a time" were both timing assumptions rather than enforced
+rules. Fixed; reproduced first with real overlapping-write tests, which live in
+[`tests/race/`](../tests/race) and run with `npm run test:race` against a
+dedicated `*_test` database (the runner refuses any other name).
+
+### The window that made it reachable (#1, #5)
+"Generate PDF" is a chain: save silently → render → adopt the new visit's id into
+the URL. `saving` went back to false after the first link, while `editId` was
+still empty, so Save and Close looked available in the middle of it. What a click
+in that window actually did — measured, not assumed:
+
+- **Save** → the server's "one open visit per client" guard (`createConsultation`)
+  returned the visit that had just been created and skipped writing, so the
+  doctor got "Saved — visit in progress" while their edits were **silently
+  dropped**.
+- **Close visit** → same path, and because that guard returns before the close
+  block, the visit was reported closed (and the editor swapped to the saved
+  screen) while it stayed **open** in the database.
+
+A *duplicate visit row* — the risk the audit named — needs two `createConsultation`
+calls genuinely in flight together, which the test suite confirms does fork the
+visit (two rows, both `visitNumber` 1). The gap plus a double-click is how a
+doctor would get there.
+
+Both are now closed off in the editor: `busy = saving || generatingPdf` disables
+Save, Close and Delete for the whole chain, and `save()` refuses re-entry through
+a ref synchronously, because `busy` only takes effect at the next render and a
+double-click doesn't wait for one.
+
+### One file per visit per kind, in the database (#2)
+`ConsultationFile` now carries `@@unique([consultationId, kind])` (migration
+`20260812140000_one_consultation_file_per_kind`, which collapses any existing
+duplicates to the newest row first). `saveConsultationFile` upserts against that
+key instead of find → delete → create; losing an insert race raises P2002, which
+is retried once as a plain replace and never reaches the doctor. Both renders are
+byte-identical anyway, so last-writer-wins is the correct outcome here.
+
+Two consequences worth knowing:
+- The row's **id is now stable** across regenerations. Downloads send
+  `Cache-Control: private, no-store`, so a stable URL can't serve a stale sheet.
+- The upsert **moves `createdAt` forward** on replace, exactly as delete-and-recreate
+  did. That column is the staleness signal at close — if it ever stops being
+  refreshed, a regenerated sheet looks permanently older than the edit that
+  prompted it.
+
+### Closing a visit is claimed, not just checked (#5)
+`closeConsultation` read `status`, logged the discount/fee-waive entries, then
+wrote `closed`. Two closes arriving together both read "open", so both logged and
+both fired the Food List catch-up. The status write is now a conditional
+`updateMany` on `status: "open"` placed **before** the logging: the second caller
+waits on the row lock, matches nothing, and gets the existing
+`"This visit is already closed."` conflict.
+
+### Staleness reads the newest file (#3)
+The close-time check in `ensureFoodListPdf` takes one file with
+`orderBy: { createdAt: "desc" }`. The constraint above means there is only one —
+the ordering is what keeps the comparison correct for rows that predate it, and
+the test drops the index for the duration to prove it against a two-file visit.
+
+### A stale sheet can't be sent (#4)
+`isFoodListPdfStale` ([src/lib/food-list.ts](../src/lib/food-list.ts)) is now the
+one definition of "this PDF prints superseded answers", used by all three places
+that care: the close-time catch-up, the `stale` flag every file listing returns,
+and "Send via WhatsApp", which turns into a "Regenerate the PDF before sending"
+notice rather than handing over the old form.
+
+It **blocks rather than regenerating on the way out** on purpose: regenerating
+means awaiting the server, and the moment the click handler yields, the pop-up
+blocker eats the chat window — the same one-gesture constraint (§11) that already
+rules out generating on demand from that button. The doctor regenerates (or
+closes the visit, which regenerates), then sends.
+
+The flag is the affordance, not the guarantee: it's only as current as the
+listing it came from, so a Files tab left open while the form is edited in
+another tab would still show a live button. The send therefore asks for the bytes
+with `?intent=send`, and
+[the download route](../src/app/api/consultation-files/[fileId]/route.ts) re-checks
+freshness at that moment and answers `409 {code:"stale_food_list"}` — the button
+reports it and turns into the regenerate notice. A plain download is deliberately
+unaffected: staff may still fetch an old sheet on purpose.
+
+The editor's card additionally tracks edits **not saved yet**
+(`foodListChangedSincePdf`), which the server's flag can't see; it's seeded from
+that flag when a saved visit is re-opened and cleared when the PDF is generated.
+
+### Failed generation is reported (#6)
+Still silent for the user — a visit that has already closed must not turn into an
+error — but no longer silent for you.
+[`src/server/observability.ts`](../src/server/observability.ts) writes one
+structured line to `console.error` (whatever runs the app captures stderr; no new
+dependency, no monitoring service):
+
+```
+{"level":"error","event":"food_list_pdf.failed","consultationId":"…","trigger":"close","stage":"render","language":"en","selectionCount":12,"errorName":"Error","errorMessage":"ENOENT: no such file or directory, open '…/fonts/Carlito-Bold.ttf'"}
+```
+
+Alert on `event`. `trigger` separates a doctor's button press from the automatic
+catch-up at close (the one that would otherwise rot unnoticed), `stage` is
+`load` / `render` / `store`. **Ids and shape only** — never the patient's name or
+phone, never the answers; the patient's name is scrubbed out of error *messages*
+too, because a Postgres error quoting the generated filename would otherwise name
+them. Expected outcomes (`NotFoundError`, `ConflictError` — "save the form first")
+are not incidents and are never reported. The reporter itself can't throw.
+
+Known trade-off: the message scrubber redacts anything phone-shaped, so a date or
+a long id inside an error message may come back as `[redacted-number]`. That's the
+safe direction to be wrong in.
+
+### Still open from that audit
+- **Concurrent `createConsultation` can still fork a visit** (two rows, same
+  visit number) if two creates are genuinely simultaneous — the UI can no longer
+  send them, but the API can be driven that way from two tabs. Enforcing it
+  properly means a partial unique index (`"clientId" WHERE status = 'open'`),
+  which Prisma can't express in `schema.prisma` and would report as drift, or
+  locking the client row inside the create transaction.

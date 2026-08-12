@@ -235,6 +235,26 @@ export const FOOD_LIST_ITEM_COUNT = FOOD_LIST_ITEM_IDS.size;
  * order. Used on both read and write so a stale or hand-crafted id can never
  * reach the PDF renderer or the checkbox state.
  */
+/**
+ * Is the generated PDF older than the form it prints?
+ *
+ * The one definition of "stale" in the app. `ensureFoodListPdf` uses it to decide
+ * whether closing a visit must re-render the sheet, the file listings use it to
+ * flag a PDF that no longer matches the form, and "Send via WhatsApp" refuses on
+ * the strength of that flag — one comparison, so those three can't disagree about
+ * whether what the patient receives is current.
+ *
+ * No PDF at all is not "stale" (there is nothing to send); a PDF with no form
+ * behind it isn't either.
+ */
+export function isFoodListPdfStale(
+  pdfCreatedAt: Date | string | null | undefined,
+  formUpdatedAt: Date | string | null | undefined,
+): boolean {
+  if (!pdfCreatedAt || !formUpdatedAt) return false;
+  return new Date(pdfCreatedAt).getTime() < new Date(formUpdatedAt).getTime();
+}
+
 export function normalizeFoodListSelections(ids: readonly string[]): string[] {
   const wanted = new Set(ids.filter((id) => FOOD_LIST_ITEM_IDS.has(id)));
   return FOOD_LIST_CATEGORIES.flatMap((c) => c.items.filter((i) => wanted.has(i.id)).map((i) => i.id));

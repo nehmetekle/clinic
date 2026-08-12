@@ -275,6 +275,12 @@ export const api = {
   // Direct URL for an <a href> download. Unlike a blood-test result, the finished
   // Food List PDF is downloadable by every role.
   consultationFileUrl: (fileId: string) => `/api/consultation-files/${fileId}`,
+  // Same file, fetched for onward sending to the patient. The server re-checks
+  // that the PDF still matches the form on this intent and refuses if it doesn't
+  // — a Files tab opened before the form changed can otherwise still offer a
+  // superseded sheet (its `stale` flag is only as fresh as its last fetch).
+  consultationFileSendUrl: (fileId: string) =>
+    `/api/consultation-files/${fileId}?intent=send`,
   // Every consultation-generated document for a patient (client profile Files tab).
   listClientConsultationFiles: (clientId: string) =>
     getJson<ClientConsultationFile[]>(`/api/clients/${clientId}/consultation-files`),

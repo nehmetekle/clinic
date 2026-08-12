@@ -1,6 +1,10 @@
-import { getConsultationFileForDownload } from "@/server/repositories/consultationFiles";
+import {
+  getConsultationFileForDownload,
+  isConsultationFileStale,
+} from "@/server/repositories/consultationFiles";
 import { actingRole } from "@/server/auth";
 import { handleError, json } from "@/server/http";
+import { WHATSAPP_STALE_MESSAGE } from "@/lib/whatsapp";
 
 /**
  * Download a consultation-generated document (the Food List PDF).
@@ -9,11 +13,27 @@ import { handleError, json } from "@/server/http";
  * is a printout handed to the patient, so the secretary needs it at the front
  * desk as much as the doctor does. Any signed-in role may fetch it; an
  * unauthenticated request still gets nothing (`actingRole` fails closed).
+ *
+ * `?intent=send` means "this is going to the patient", and is refused when the
+ * Food List has been edited since this PDF was rendered. The UI already hides the
+ * send button on a stale file, but that flag is only as fresh as the listing it
+ * came from — a Files tab left open while the doctor edits the form in another
+ * tab still shows a live button, so the guarantee that a superseded sheet never
+ * reaches a patient has to be made here, at the moment the bytes are handed out.
+ * A plain download (no intent) is unaffected: staff may still fetch the old sheet
+ * deliberately, and printing it is their call.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
     if (!(await actingRole(req))) return json({ error: "Not allowed" }, 403);
     const { fileId } = await params;
+
+    if (new URL(req.url).searchParams.get("intent") === "send") {
+      if (await isConsultationFileStale(fileId)) {
+        return json({ error: WHATSAPP_STALE_MESSAGE, code: "stale_food_list" }, 409);
+      }
+    }
+
     const file = await getConsultationFileForDownload(fileId);
     if (!file) return json({ error: "File not found" }, 404);
 

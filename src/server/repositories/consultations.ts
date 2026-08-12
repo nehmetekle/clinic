@@ -1125,9 +1125,22 @@ export async function closeConsultation(
     // the secretary settles every basket (fully paid, or with the unpaid balance
     // recorded as a tracked debt) before close, so nothing unpaid reaches here.
     await assertBasketSettledTx(tx, id);
+
+    // Claim the close BEFORE logging it. The status read above can't be trusted
+    // on its own: two closes arriving together (a double-clicked button, a second
+    // tab, a retried request) both see "open" and would both log a discount/fee
+    // waive entry and both fire the Food List catch-up. This conditional update
+    // is the serialization point — the second one to arrive waits on the row lock
+    // and then matches nothing, so exactly one close wins and the other is told
+    // the visit is already closed.
+    const claimed = await tx.consultation.updateMany({
+      where: { id, status: "open" },
+      data: { status: "closed", closedAt: new Date() },
+    });
+    if (claimed.count === 0) throw new ConflictError("This visit is already closed.");
+
     await logVisitDiscountTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
     await logConsultationFeeWaiveTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
-    await tx.consultation.update({ where: { id }, data: { status: "closed", closedAt: new Date() } });
     await completeLinkedAppointmentTx(tx, existing.clientId);
     await retirePaidBasketsTx(tx, id);
   });
