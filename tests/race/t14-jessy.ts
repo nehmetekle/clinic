@@ -360,7 +360,7 @@ async function main() {
         actorName: "Sec",
       });
     } catch (e) { refused = (e as Error).message; }
-    ok("a split that doesn't add up is rejected", refused.includes("must add up"), refused || "no error");
+    ok("a split that doesn't add up is rejected", refused.includes("short"), refused || "no error");
     ok("no payment survived the rollback", (await db.payment.count()) === 0);
     ok("no orphan receivable survived the rollback", (await db.jessyReceivable.count()) === 0);
     ok("the basket is still pending", (await db.visitBasket.findUniqueOrThrow({ where: { id: basketId } })).status === "pending");

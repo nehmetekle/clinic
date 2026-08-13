@@ -6,8 +6,22 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { FormRow, Input, MoneyInput, Select } from "@/components/ui/Field";
 import { VisitBasketCard } from "@/components/VisitBasketCard";
-import { api } from "@/lib/api";
-import { toUsd } from "@/lib/config";
+import { api, StaleFxRateError } from "@/lib/api";
+import { CLINIC } from "@/lib/config";
+import {
+  TENDER_CURRENCY_LABELS,
+  TENDER_CURRENCY_VALUES,
+  formatFxRate,
+  formatTender,
+  formatUsd as formatMoney2,
+  fxRateFor,
+  round2,
+  settlementToleranceUsd,
+  tenderToUsd,
+  usdToTender,
+  type FxRates,
+  type TenderCurrency,
+} from "@/lib/money";
 import { useToast } from "@/lib/toast";
 import {
   basketTotals,
@@ -19,6 +33,7 @@ import {
 } from "@/lib/utils";
 import { useApi } from "@/lib/use-api";
 import {
+  JESSY_METHOD,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
   type ClientDebt,
@@ -106,9 +121,13 @@ export function VisitBasketSettlementModal({
   // The LAST row is the auto-balancer — it always shows/absorbs the remaining, so
   // the split adds up without manual math (enter $100 Cash → the next method shows
   // the rest). One row = an ordinary single-method settlement.
-  const [splits, setSplits] = useState<{ method: PaymentMethod; amount: string }[]>([
-    { method: "cash", amount: "" },
-  ]);
+  // Payment method and tender CURRENCY are independent dimensions: "Cash / USD"
+  // and "Cash / EUR" are two legitimate rows of one settlement, not a duplicate.
+  // Amounts are typed in each row's own currency; the USD equivalent shown beside
+  // it (and enforced by the server) is derived from the admin-set rate.
+  const [splits, setSplits] = useState<
+    { method: PaymentMethod; currency: TenderCurrency; amount: string }[]
+  >([{ method: "cash", currency: "USD", amount: "" }]);
   // Secretary override: record a still-owed remainder as a tracked debt (e.g. the
   // client can only pay part today). Off by default.
   const [debtOpen, setDebtOpen] = useState(false);
@@ -121,6 +140,10 @@ export function VisitBasketSettlementModal({
   const [customAmount, setCustomAmount] = useState("");
   const [customQty, setCustomQty] = useState("1");
   const [saving, setSaving] = useState(false);
+  // Set when a submit was rejected because an FX rate moved mid-checkout. Cleared
+  // as soon as the desk edits anything, so it can never linger over a screen that
+  // has already been re-priced and re-checked.
+  const [staleNotice, setStaleNotice] = useState<string | null>(null);
   // The client's old balance is shown for awareness but is NOT collected by
   // default: the secretary must explicitly tick it. Opt-in (not opt-out) so that
   // forgetting it can never mark an unpaid debt as collected without payment.
@@ -243,10 +266,10 @@ export function VisitBasketSettlementModal({
 
   // Money source of truth is USD (see basketTotals). Old debt total + today's
   // (post-discount) total give the combined "to collect" figure the client owes.
-  const debtTotalUsd = outstandingDebts.reduce(
-    (sum, d) => sum + toUsd(d.amount, d.currency, d.usdToLbp),
-    0,
-  );
+  // `outstandingAmount` is the principal MINUS anything already collected against
+  // it — the same figure settleVisitBasket folds server-side, so the preview and
+  // the enforced total agree on a part-paid debt instead of over-collecting it.
+  const debtTotalUsd = outstandingDebts.reduce((sum, d) => sum + d.outstandingAmount, 0);
   const todayTotalUsd = basketTotals(
     items.map((i) => ({
       quantity: i.quantity,
@@ -264,42 +287,123 @@ export function VisitBasketSettlementModal({
 
   // The single amount actually collected now (USD): today's total + any old balance
   // being collected, minus the deferred remainder recorded as debt. This is what
-  // the payment split must add up to — same figure the server re-derives and
+  // the payment legs must add up to — same figure the server re-derives and
   // enforces. A $0 result (fully deferred/covered) collects nothing, so no split.
-  const round2 = (n: number) => Math.round(n * 100) / 100;
   const collectedNow = Math.max(0, round2(combinedTotalUsd - debtValue));
+
+  // Live admin-controlled rates. These drive the PREVIEW only — the server resolves
+  // them again from Settings when it settles, and its figures are authoritative.
+  // The preview and the server share the very same conversion helpers, so the two
+  // can only disagree if the rate itself changed between preview and submit, which
+  // the server's own tolerance check would then reject rather than silently accept.
+  const fxRates: FxRates = {
+    usdToLbp: settings.data?.usdToLbp ?? CLINIC.defaultUsdToLbp,
+    usdToEur: settings.data?.usdToEur ?? CLINIC.defaultUsdToEur,
+  };
+  /** Rate for a row's currency, or null when it isn't usable (never guessed). */
+  function rateOrNull(currency: TenderCurrency): number | null {
+    try {
+      return fxRateFor(currency, fxRates);
+    } catch {
+      return null;
+    }
+  }
+  /** USD value of a typed native amount; 0 when the rate is unusable. */
+  function legUsd(currency: TenderCurrency, native: number): number {
+    const rate = rateOrNull(currency);
+    if (rate === null) return 0;
+    return tenderToUsd(Math.max(0, native), currency, rate);
+  }
+  const unusableRate = splits.some((r) => rateOrNull(r.currency) === null);
+
   // All rows except the last are manual entries; the last row auto-absorbs the
-  // remainder. So the split always sums to collectedNow — the only invalid state is
+  // remainder — now IN ITS OWN CURRENCY, so choosing EUR on the balancer shows the
+  // euros to physically collect rather than a dollar figure the desk must convert.
+  // So the split always sums to collectedNow; the only invalid state is
   // over-allocation (an earlier row pushes the remainder negative), which blocks
   // settlement, mirroring the debt-cap block.
   const enteredBeforeLast = splits
     .slice(0, -1)
-    .reduce((s, r) => s + Math.max(0, parseNumberInput(r.amount)), 0);
-  const remaining = round2(collectedNow - enteredBeforeLast);
-  const splitOverAllocated = collectedNow > 0 && remaining < -0.005;
-  // Payload: the last row carries the remaining; nothing to send when $0 collected.
+    .reduce((s, r) => s + legUsd(r.currency, parseNumberInput(r.amount)), 0);
+  const remainingUsd = round2(collectedNow - enteredBeforeLast);
+  const balancer = splits[splits.length - 1];
+  const balancerRate = balancer ? rateOrNull(balancer.currency) : null;
+  // The native amount the balancer row must collect to cover `remainingUsd`.
+  const balancerNative =
+    balancer && balancerRate !== null && remainingUsd > 0
+      ? usdToTender(remainingUsd, balancer.currency, balancerRate)
+      : 0;
+  const splitOverAllocated = collectedNow > 0 && remainingUsd < -0.005;
+
+  // Payload: NATIVE amounts per row (the server converts). The last row carries the
+  // balancing native amount; nothing is sent when $0 is collected.
   const effectiveSplits =
     collectedNow > 0
       ? splits.map((r, i) => ({
           method: r.method,
-          amount: i === splits.length - 1 ? Math.max(0, remaining) : Math.max(0, parseNumberInput(r.amount)),
+          currency: r.currency,
+          amount:
+            i === splits.length - 1
+              ? Math.max(0, balancerNative)
+              : Math.max(0, parseNumberInput(r.amount)),
         }))
       : [];
-  // Card fee on top of each split's entered (pre-surcharge) portion — display only;
-  // the split itself always sums to collectedNow, matching what the server expects.
-  const splitSurcharges = effectiveSplits.map((s) => cardSurchargeAmount(s.amount, s.method, surchargeRate));
-  const totalCardSurcharge = round2(splitSurcharges.reduce((s, a) => s + a, 0));
-  const usedMethods = new Set(splits.map((r) => r.method));
-  const canAddMethod =
-    collectedNow > 0 && splits.length < PAYMENT_METHOD_VALUES.length && remaining > 0.005;
+  // USD value of each row as the server will compute it — shown beside the native
+  // amount so the desk never needs a calculator, and used for the running total.
+  const splitUsd = effectiveSplits.map((s) => legUsd(s.currency, s.amount));
+  const paidUsd = round2(splitUsd.reduce((s, a) => s + a, 0));
+  // Residual after rounding each conversion to the cent. Mirrors the server's own
+  // per-converted-leg allowance exactly, so a preview that reads "settled" cannot
+  // be rejected on submit (and vice versa).
+  const settlementTolerance = settlementToleranceUsd(effectiveSplits);
+  const outstandingUsd = round2(collectedNow - paidUsd);
+  const fullyCovered = collectedNow <= 0 || Math.abs(outstandingUsd) <= settlementTolerance;
 
-  function updateSplit(idx: number, patch: Partial<{ method: PaymentMethod; amount: string }>) {
-    setSplits((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  // Card fee on top of each row's entered (pre-surcharge) portion, in that row's
+  // OWN currency — display only, and matching how the server charges it (natively,
+  // a single rounding). The split itself always sums to collectedNow.
+  const splitSurcharges = effectiveSplits.map((s) =>
+    cardSurchargeAmount(s.amount, s.method, surchargeRate),
+  );
+  const totalCardSurchargeUsd = round2(
+    splitSurcharges.reduce((sum, fee, i) => sum + legUsd(effectiveSplits[i].currency, fee), 0),
+  );
+  // A leg is identified by method AND currency, so "Cash / USD" plus "Cash / EUR"
+  // is a valid pair — only an exact duplicate of both is blocked.
+  const usedLegs = new Set(splits.map((r) => `${r.method}|${r.currency}`));
+  const canAddMethod =
+    collectedNow > 0 &&
+    splits.length < PAYMENT_METHOD_VALUES.length * TENDER_CURRENCY_VALUES.length &&
+    remainingUsd > 0.005;
+
+  /** Jessy's receivable ledger is USD-only — the server rejects any other
+   * currency on a jessy leg, so the picker must not offer one either. */
+  function currenciesFor(method: PaymentMethod): readonly TenderCurrency[] {
+    return method === JESSY_METHOD ? (["USD"] as const) : TENDER_CURRENCY_VALUES;
+  }
+
+  function updateSplit(
+    idx: number,
+    patch: Partial<{ method: PaymentMethod; currency: TenderCurrency; amount: string }>,
+  ) {
+    setStaleNotice(null);
+    setSplits((prev) =>
+      prev.map((r, i) => {
+        if (i !== idx) return r;
+        const next = { ...r, ...patch };
+        // Switching a row to Jessy forces it back to USD rather than submitting a
+        // combination the server will refuse.
+        if (next.method === JESSY_METHOD) next.currency = "USD";
+        return next;
+      }),
+    );
   }
   function addSplit() {
-    const next = PAYMENT_METHOD_VALUES.find((m) => !usedMethods.has(m));
+    const next = PAYMENT_METHOD_VALUES.flatMap((m) =>
+      currenciesFor(m).map((c) => ({ method: m, currency: c })),
+    ).find((l) => !usedLegs.has(`${l.method}|${l.currency}`));
     if (!next) return;
-    setSplits((prev) => [...prev, { method: next, amount: "" }]);
+    setSplits((prev) => [...prev, { ...next, amount: "" }]);
   }
   function removeSplit(idx: number) {
     setSplits((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)));
@@ -333,7 +437,19 @@ export function VisitBasketSettlementModal({
       return;
     }
     if (splitOverAllocated) {
-      toast(`The payment split exceeds the ${formatMoney(collectedNow, "USD")} to collect.`);
+      toast(`The payment split exceeds the ${formatMoney2(collectedNow)} to collect.`);
+      return;
+    }
+    // A leg whose rate is unusable would be valued at $0 in this preview while the
+    // server refuses it outright — stop here so the desk gets the real reason.
+    if (unusableRate) {
+      toast("An exchange rate is missing or invalid — set it in Pricing before collecting.");
+      return;
+    }
+    if (!fullyCovered) {
+      toast(
+        `The payment adds up to ${formatMoney2(paidUsd)} of the ${formatMoney2(collectedNow)} being collected.`,
+      );
       return;
     }
     setSaving(true);
@@ -342,6 +458,10 @@ export function VisitBasketSettlementModal({
       await api.updateVisitBasket(basket.id, payload());
       await api.settleVisitBasket(basket.id, {
         splits: effectiveSplits,
+        // The rates this screen priced the foreign legs at. Advisory: the server
+        // uses its OWN rates to value everything and compares these only so that a
+        // rate changed mid-checkout is reported as exactly that.
+        expectedRates: { EUR: fxRates.usdToEur, LBP: fxRates.usdToLbp },
         // Record a still-owed remainder as a tracked debt when the override is on.
         ...(debtValue > 0
           ? { debtAmount: debtValue, debtReason: debtReason.trim() }
@@ -359,7 +479,16 @@ export function VisitBasketSettlementModal({
       onChanged();
       onClose();
     } catch (e) {
-      toast((e as Error).message);
+      // A rate moved between this screen opening and submitting. Nothing was
+      // charged. Pull the new rates in so the amounts on screen re-price
+      // themselves, and tell the desk plainly what happened.
+      if (e instanceof StaleFxRateError) {
+        await settings.refetch();
+        setStaleNotice(e.message);
+        toast("The exchange rate changed — amounts have been updated, please review.");
+      } else {
+        toast((e as Error).message);
+      }
     } finally {
       setSaving(false);
     }
@@ -381,7 +510,17 @@ export function VisitBasketSettlementModal({
             <Button variant="outline" onClick={saveChanges} disabled={saving || discountReasonMissing}>
               {saving ? "Saving…" : "Save changes"}
             </Button>
-            <Button onClick={markPaid} disabled={saving || discountReasonMissing || debtReasonMissing || splitOverAllocated}>
+            <Button
+              onClick={markPaid}
+              disabled={
+                saving ||
+                discountReasonMissing ||
+                debtReasonMissing ||
+                splitOverAllocated ||
+                unusableRate ||
+                !fullyCovered
+              }
+            >
               {saving ? "Saving…" : debtValue > 0 ? "Mark paid + record debt" : "Mark paid"}
             </Button>
           </>
@@ -395,20 +534,51 @@ export function VisitBasketSettlementModal({
       <div className="space-y-4">
         {paid && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-            <div>
-              Settled{basket.paidAt ? ` on ${formatDate(basket.paidAt)}` : ""}
-              {basket.receiptNumber ? ` · receipt ${basket.receiptNumber}` : ""}.
+            <div className="flex items-start justify-between gap-3">
+              <span>
+                Settled{basket.paidAt ? ` on ${formatDate(basket.paidAt)}` : ""}
+                {basket.receiptNumber ? ` · receipt ${basket.receiptNumber}` : ""}.
+              </span>
+              {/* One receipt covers the WHOLE settlement, however many legs it
+                  had — the server rebuilds it from every payment sharing this
+                  basket. A real link so the browser's PDF viewer owns the print
+                  dialog, matching the Food List convention. */}
+              {basket.paymentId && (
+                <a
+                  href={api.receiptPrintUrl(basket.paymentId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 font-medium text-emerald-800 underline hover:text-emerald-900"
+                >
+                  Print receipt
+                </a>
+              )}
             </div>
-            {basket.paymentSplits && basket.paymentSplits.length > 1 && (
-              <ul className="mt-1 space-y-0.5 border-t border-emerald-200 pt-1 text-xs text-emerald-700">
-                {basket.paymentSplits.map((s) => (
-                  <li key={s.receiptNumber} className="flex justify-between gap-3">
-                    <span>{PAYMENT_METHOD_LABELS[s.method] ?? s.method} · {s.receiptNumber}</span>
-                    <span className="font-semibold">{formatMoney(s.amount, "USD")}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {/* Shown for a split settlement, and for ANY settlement that took
+                foreign currency — a single €200 leg needs its native amount and
+                the rate it was banked at just as much as a split does. Rates come
+                from the payment rows themselves, so this never moves. */}
+            {basket.paymentSplits &&
+              (basket.paymentSplits.length > 1 ||
+                basket.paymentSplits.some((s) => s.currency !== "USD")) && (
+                <ul className="mt-1 space-y-0.5 border-t border-emerald-200 pt-1 text-xs text-emerald-700">
+                  {basket.paymentSplits.map((s) => (
+                    <li key={s.receiptNumber} className="flex justify-between gap-3">
+                      <span>
+                        {PAYMENT_METHOD_LABELS[s.method] ?? s.method} · {s.receiptNumber}
+                      </span>
+                      <span className="text-right">
+                        <span className="font-semibold">{formatTender(s.nativeAmount, s.currency)}</span>
+                        {s.currency !== "USD" && (
+                          <span className="block text-[11px] text-emerald-600">
+                            ≈ {formatMoney2(s.amount)} · {formatFxRate(s.currency, s.fxRate)}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
           </div>
         )}
 
@@ -548,7 +718,7 @@ export function VisitBasketSettlementModal({
               {outstandingDebts.map((d) => (
                 <li key={d.id} className="flex justify-between gap-3">
                   <span className="truncate">{d.reason}</span>
-                  <span className="whitespace-nowrap">{formatMoney(d.amount, d.currency)}</span>
+                  <span className="whitespace-nowrap">{formatMoney2(d.outstandingAmount)}</span>
                 </li>
               ))}
             </ul>
@@ -575,10 +745,16 @@ export function VisitBasketSettlementModal({
             <div className="space-y-2">
               {splits.map((row, idx) => {
                 const isBalancer = idx === splits.length - 1;
-                // Methods free to pick in this row: unused ones + this row's own.
+                // Legs free to pick in this row: any method whose (method,currency)
+                // pair isn't already taken, plus this row's own.
                 const options = PAYMENT_METHOD_VALUES.filter(
-                  (m) => m === row.method || !usedMethods.has(m),
+                  (m) =>
+                    m === row.method ||
+                    currenciesFor(m).some((c) => !usedLegs.has(`${m}|${c}`)),
                 );
+                const rowRate = rateOrNull(row.currency);
+                const rowNative = effectiveSplits[idx]?.amount ?? 0;
+                const rowUsd = splitUsd[idx] ?? 0;
                 const rowSurcharge = splitSurcharges[idx] ?? 0;
                 return (
                   <div key={idx}>
@@ -593,10 +769,32 @@ export function VisitBasketSettlementModal({
                           ))}
                         </Select>
                       </FormRow>
-                      <FormRow label={idx === 0 ? "Amount (USD)" : ""} className="w-32">
+                      <FormRow label={idx === 0 ? "Currency" : ""} className="w-28">
+                        <Select
+                          value={row.currency}
+                          disabled={row.method === JESSY_METHOD}
+                          onChange={(e) =>
+                            updateSplit(idx, { currency: e.target.value as TenderCurrency })
+                          }
+                        >
+                          {currenciesFor(row.method).map((c) => (
+                            <option
+                              key={c}
+                              value={c}
+                              // Same method AND same currency is a true duplicate.
+                              disabled={c !== row.currency && usedLegs.has(`${row.method}|${c}`)}
+                            >
+                              {TENDER_CURRENCY_LABELS[c]}
+                            </option>
+                          ))}
+                        </Select>
+                      </FormRow>
+                      <FormRow label={idx === 0 ? "Amount" : ""} className="w-36">
                         {isBalancer ? (
-                          // Auto-balancer: shows the remaining so the split always
-                          // adds up. Read-only — the secretary types the other rows.
+                          // Auto-balancer: shows what still has to be collected,
+                          // converted into THIS row's currency, so the desk is told
+                          // the euros/lira to take rather than a dollar figure.
+                          // Read-only — the secretary types the other rows.
                           <div
                             className={`flex h-10 items-center justify-end rounded-lg border px-3 text-sm font-semibold ${
                               splitOverAllocated
@@ -604,7 +802,7 @@ export function VisitBasketSettlementModal({
                                 : "border-slate-200 bg-slate-50 text-slate-700"
                             }`}
                           >
-                            {formatMoney(remaining, "USD")}
+                            {rowRate === null ? "—" : formatTender(rowNative, row.currency)}
                           </div>
                         ) : (
                           <MoneyInput
@@ -619,7 +817,7 @@ export function VisitBasketSettlementModal({
                           type="button"
                           onClick={() => removeSplit(idx)}
                           className="mb-1 px-1 text-xs text-slate-400 hover:text-rose-600"
-                          aria-label="Remove method"
+                          aria-label="Remove payment leg"
                         >
                           Remove
                         </button>
@@ -627,13 +825,29 @@ export function VisitBasketSettlementModal({
                         <span className="w-[52px]" />
                       )}
                     </div>
+                    {row.currency !== "USD" && (
+                      <div className="mt-1 flex items-center justify-end gap-2 pr-[52px] text-xs">
+                        {rowRate === null ? (
+                          <span className="font-medium text-rose-600">
+                            No usable {row.currency} rate — set one in Pricing before collecting.
+                          </span>
+                        ) : (
+                          <>
+                            <span className="font-semibold text-slate-700">
+                              ≈ {formatMoney2(rowUsd)}
+                            </span>
+                            <span className="text-slate-400">{formatFxRate(row.currency, rowRate)}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                     {rowSurcharge > 0 && (
                       <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
                         <span className="font-medium">Card fee {surchargeRate}%</span>
-                        <span>+{formatMoney(rowSurcharge, "USD")}</span>
+                        <span>+{formatTender(rowSurcharge, row.currency)}</span>
                         <span className="text-amber-400">→</span>
                         <span className="font-semibold">
-                          {formatMoney((effectiveSplits[idx]?.amount ?? 0) + rowSurcharge, "USD")} charged
+                          {formatTender(rowNative + rowSurcharge, row.currency)} charged
                         </span>
                       </div>
                     )}
@@ -641,19 +855,34 @@ export function VisitBasketSettlementModal({
                 );
               })}
             </div>
-            {totalCardSurcharge > 0 && (
+            {/* Bill total only. The running "paid"/"remaining" pair was dropped as
+                redundant: the last row auto-absorbs the balance, so a correctly
+                filled screen always reads $0 remaining, and the two extra lines
+                added noise to what is normally a one-row USD settlement. The
+                per-row "≈ $x" still gives the desk everything it needs to
+                reconcile, and the server remains the authority either way. */}
+            <div className="mt-3 flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm">
+              <span className="text-slate-500">Bill total</span>
+              <span className="font-medium text-slate-700">{formatMoney2(collectedNow)}</span>
+            </div>
+            {staleNotice && (
+              <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {staleNotice}
+              </p>
+            )}
+            {totalCardSurchargeUsd > 0 && (
               <div className="mt-3 flex items-center justify-between rounded-md bg-amber-50 px-3 py-2 text-sm">
                 <span className="text-amber-800">
                   Card fee{splitSurcharges.filter((s) => s > 0).length > 1 ? "s" : ""} added
                 </span>
                 <span className="font-semibold text-amber-900">
-                  +{formatMoney(totalCardSurcharge, "USD")} → {formatMoney(collectedNow + totalCardSurcharge, "USD")} total
+                  +{formatMoney2(totalCardSurchargeUsd)} → {formatMoney2(collectedNow + totalCardSurchargeUsd)} total
                 </span>
               </div>
             )}
             {splitOverAllocated ? (
               <p className="mt-2 text-xs text-rose-600">
-                The split adds up to more than the {formatMoney(collectedNow, "USD")} being collected — reduce a method amount.
+                The split adds up to more than the {formatMoney2(collectedNow)} being collected — reduce an amount.
               </p>
             ) : (
               canAddMethod && (
@@ -662,7 +891,7 @@ export function VisitBasketSettlementModal({
                   onClick={addSplit}
                   className="mt-2 text-sm font-medium text-brand-700 hover:underline"
                 >
-                  + Split across another method
+                  + Split across another method or currency
                 </button>
               )
             )}

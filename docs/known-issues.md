@@ -876,3 +876,236 @@ byte-for-byte unchanged afterwards, the 409 translation) and permissions, driven
 through the **real route handlers with real session cookies** — admin allowed,
 secretary/dietitian/unauthenticated/forged-session all refused on both read and
 write, with the refusal leaking no ledger data.
+
+---
+
+## 15. Multi-currency tender (USD / EUR / LBP) against USD bills
+
+### The accounting rule (the whole point)
+
+> **Obligations are denominated in USD. Payments may be tendered in USD, EUR or LBP.**
+
+A $1,000 visit is a $1,000 visit however it is paid. A $400 debt stays a $400
+debt even when it is later settled with €368. Nothing in this feature makes a
+bill, a basket, a session plan, a package price or the Jessy ledger foreign —
+only the `Payment` row (the money physically handed over) carries a tender
+currency. That distinction is enforced in the type system: `Currency`
+(`lib/types.ts`) is the denomination of an *obligation* and is still
+`"USD" | "LBP"`; `TenderCurrency` (`lib/money.ts`) is `"USD" | "EUR" | "LBP"`
+and appears only on payments. **Do not widen `Currency`** — doing so would turn
+this into a foreign-currency accounting system, which is out of scope and would
+put FX exposure onto debts the clinic cannot hedge.
+
+### Rate direction, stated once
+
+```
+fxRate = units of the tender currency per 1 USD
+USD equivalent = native amount / fxRate
+```
+
+USD → 1, EUR → ~0.92, LBP → ~89,500. Everything goes through `fxRateFor` /
+`tenderToUsd` in [`src/lib/money.ts`](../src/lib/money.ts) so the direction can
+never be inverted at a call site.
+
+### Where the rate is frozen
+
+`Payment.fxRate` — resolved **server-side from Settings inside the settlement
+transaction** and written with the payment. `amountPaid / fxRate` is that row's
+USD value forever. Every report, dashboard figure and drill-down reads it via
+`paymentUsd`, never today's Settings, so an admin editing the rate cannot
+re-price yesterday. A rate is **never accepted from the client** — there is no
+input field for one, and the Zod schemas strip unknown keys, so a crafted
+request carrying `fxRate` or a pre-computed `amountUsd` is silently discarded
+and the server converts with its own rate.
+
+`Payment.usdToLbp` is untouched and still means exactly what it always did.
+Rows written before this feature have `fxRate = NULL` and are valued through
+that snapshot (`frozenPaymentFxRate`) — which is what makes the change
+behaviour-preserving for existing data. **`usdToLbp` was deliberately NOT
+renamed to a generic `fxRate` across the five models that carry it** (Payment,
+VisitBasket, ClientDebt, SessionPlan, Expense — 80+ call sites): the rename
+would have touched every financial read path for no behavioural gain, since
+only `Payment` can ever hold foreign tender. Migration safety beat aesthetic
+purity here.
+
+### Fail-closed conversion
+
+`toUsd` used to be `currency === "LBP" ? amount / rate : amount` — **anything
+that wasn't LBP was silently treated as already-USD**, and `asCurrency` mapped
+any unrecognised string to `"USD"`. Both now throw. That was harmless while only
+USD and LBP existed and would have become a revenue misstatement the moment a
+EUR row appeared. If you add a currency, add it to the exhaustive switch in
+`fxRateFor` — the compiler will point at every place that needs a decision.
+
+### Rounding and the settlement tolerance
+
+- Each leg is converted and rounded to the cent **exactly once**, in
+  `tenderToUsd`. Callers must not re-round the result.
+- The settlement check is `|Σ legUsd − amountDue| ≤ tolerance`, where
+  `tolerance = 0.005 × (1 + number of non-USD legs)`.
+- **A USD-only settlement keeps the original half-cent epsilon exactly**, so no
+  cent-level underpayment can slip through on the path virtually every
+  settlement takes. Each converted leg buys precisely the half-cent its own
+  rounding can introduce, and no more. It is *not* widened because LBP amounts
+  are large — the size of the native amount is irrelevant, only the number of
+  conversions is. A full cent short is refused (see the tolerance test in t16).
+
+### Card surcharge is calculated natively, not in USD
+
+`createPayment` applies the percentage in the payment's **own** currency. A
+percentage commutes with conversion, so this is economically identical to
+computing in USD and converting — but it rounds once instead of twice and
+preserves this table's existing invariant that `cardSurchargeAmount` is a
+portion of `amountPaid` in the same unit. Don't "fix" it by converting back
+and forth.
+
+### Method × currency is the leg identity
+
+Split settlement folds duplicates on `method|currency`, **not** method alone.
+"Cash / USD $100" and "Cash / EUR €200" are two economically distinct legs of
+one settlement; folding on method would destroy a native amount and mis-state
+the drawer. Each leg becomes its own `Payment` row with its own receipt number.
+
+### Jessy stays USD-only
+
+Rejected in three places: the Zod schema, `createPayment` (the chokepoint every
+Payment goes through), and the UI's currency picker. FIFO allocation across
+receivables is only sound in a single unit — see §14. **Do not generalise it**
+without redesigning the ledger.
+
+### Client debts: USD principal, partial collection
+
+`ClientDebt.paidAmount` (USD) was added so a debt can be *part*-paid. This is
+not a convenience: foreign tender rarely lands on the exact balance (€200
+against a $400 debt is $182.61), so without it the desk would have to fake an
+exact amount. Outstanding = principal (in USD) − `paidAmount`. Overpayment is
+**refused, not clamped** — the app has no credit-balance or refund concept
+anywhere, so inventing one here would create money it can never pay back.
+Both the partial and the full path move the row with a conditional `updateMany`
+guarded on the `paidAmount` it was read at, so two concurrent collections can
+never both apply to a stale balance.
+
+### Hand-written SQL that Prisma cannot express
+
+The `20260813150000_multi_currency_tender` migration adds CHECK constraints —
+`Payment.currency IN ('USD','EUR','LBP')`, `fxRate > 0`, EUR requires a rate,
+`ClientDebt.currency IN ('USD','LBP')`, `0 ≤ paidAmount ≤ amount + 0.005`.
+Like the Jessy ledger's, **these are invisible to Prisma introspection — don't
+lose them if migrations are ever squashed.**
+
+### Tests
+
+[tests/race/t16-multi-currency-tender.ts](../tests/race/t16-multi-currency-tender.ts)
+via `npm run test:race` — 65 assertions covering the USD regression path, the
+worked mixed-currency example, rate freezing across a rate change, method ×
+currency distinctness, under/over-payment, the tolerance boundary, crafted-input
+rejection, Jessy, card surcharge in three currencies, debt partial collection,
+concurrent settlement, and the DB constraints.
+
+---
+
+## 16. FX governance: stale rates, suspicious rates, rate history, receipts
+
+Second-pass hardening on top of §15. Read that first — this section assumes it.
+
+### Stale rate at checkout
+
+The settlement screen sends `expectedRates` (the rates it was displaying) with the
+split. The server values everything with its OWN rates regardless — `expectedRates`
+is **advisory and never used to value anything** — and compares. If a rate the
+settlement actually uses has moved, the whole settlement is rejected with
+`StaleFxRateError` (409, `code: "fx_rate_stale"`) and nothing is written.
+
+Silently re-pricing would be worse than useless: the desk would collect the €368 it
+was shown while the system booked a different USD value, and the patient would walk
+away short. Only currencies the settlement *uses* are checked, so an LBP rate
+change can't block a USD+EUR payment. A forged `expectedRates` can at worst refuse
+its own settlement — it cannot move a single figure.
+
+### Suspicious rate changes
+
+Two layers. `FX_BOUNDS` (absolute) rejects the impossible and fires **first**.
+`FX_SUSPICIOUS_RATIO` (relative) catches the plausible-looking order-of-magnitude
+typo that absolute bounds cannot see — 0.92 → 92, 89,500 → 895.
+
+Thresholds are per-currency **because the currencies are genuinely different**:
+EUR is a floating major pair where 25% in one edit is already a huge correction;
+LBP has a history of step re-pegs (1,507 → 15,000 → 89,500) where several hundred
+percent is legitimate. Expressed as a max ratio in either direction so ×10 and ÷10
+are treated as equally suspicious — a percentage would not be.
+
+The confirmation is **not a bypass flag**. It carries the *value* being confirmed;
+the server re-detects the suspicion from values it reads itself and honours the
+acknowledgement only when the confirmed value equals the value being saved. Being
+warned about 92 and then submitting 46 with the old confirmation attached warns
+again.
+
+### Rate change history
+
+`FxRateChange` — append-only, one row per rate that actually **moves** (a no-op
+re-save writes nothing, which matters because the Pricing form posts both rates
+every time). Every field is server-derived: actor from the verified session,
+`oldValue` read inside the same transaction, `changedAt` a database default. There
+is no POST/PATCH/DELETE anywhere for it. Admin-only to read
+(`GET /api/settings/fx-history`) and to write. A matching line also lands in the
+shared `AuditLog` — the same dual-write pattern the Jessy ledger uses.
+
+**`updateSettings` takes a transaction-scoped advisory lock**
+(`pg_advisory_xact_lock`). Without it two concurrent edits both read the same
+"before" under READ COMMITTED and both log it, so the history would show
+0.92 → 1.00 and 0.92 → 1.10 for what was really 0.92 → 1.00 → 1.10 — a plausible
+lie, which is worse than no history. `SELECT FOR UPDATE` can't be used: it cannot
+lock a Setting row that doesn't exist yet (the first-ever set).
+
+### Printable receipt
+
+`GET /api/receipts/[paymentId]` renders on demand from persisted rows —
+deliberately **not stored**, unlike the Food List PDF. A stored receipt would be a
+second source of truth that could drift from the ledger and would need its own
+staleness handling; one derived from the payment rows is guaranteed to agree with
+them and is structurally incapable of re-pricing. Nothing in the receipt path reads
+Settings.
+
+Passing **any** leg of a split settlement yields the same complete receipt (legs
+share a `visitBasketId`). Gated on `canHandleMoney`. USD-only receipts show no FX
+at all; rate/equivalent lines appear per leg, only where a conversion happened.
+
+### The settlement tolerance was WRONG in §15 and is now fixed
+
+§15 scaled the tolerance by half a cent per converted leg. That was based on a
+false premise and let a full cent of underpayment through on a single-EUR-leg
+settlement (91.99 EUR against a $100 bill was accepted).
+
+Every leg's USD value is `round2(native / rate)` and the amount due is `round2(…)`,
+so **both sides of the comparison are whole numbers of cents and their difference
+is always an exact multiple of $0.01** — there is no sub-cent residue to absorb.
+The tolerance is now a flat `SETTLEMENT_EPSILON_USD = 0.005`, which exists purely
+to forgive IEEE-754 noise (`99.99 - 100` evaluates to `-0.010000000000005`). A full
+cent short or over now fails **by construction**, for USD-only and mixed alike.
+
+### No historical FX fallback
+
+`frozenPaymentFxRate` has **no fallback**: a payment that cannot be valued from its
+own stored data throws, naming the receipt. Evidence this is safe: every revision of
+`createPayment` in the repository's history writes `usdToLbp: await getUsdToLbp()`,
+which is guarded to return a positive rate, so no payment the app has ever written
+lacks one. The `Payment_valuable` CHECK
+(`currency = 'USD' OR fxRate IS NOT NULL OR usdToLbp > 0`) makes it structurally
+impossible going forward — and because `ADD CONSTRAINT` validates existing rows, a
+database that *did* contain such a row fails the migration loudly at deploy time
+instead of mis-valuing it. **That failure is the remediation signal: fix the row,
+re-run.** No historical rate is ever guessed or backfilled.
+
+### `formatMoney` now shows cents when they exist
+
+`minimumFractionDigits: 0, maximumFractionDigits: 2` instead of a hard round to
+whole units. Zero churn for round amounts ($12,450 is unchanged), but a $182.61
+remaining debt no longer renders as "$183" — which had the desk trying to collect
+$183 and being refused as over-payment. Use `formatUsd` where a trailing ".00" is
+wanted as a signal of exactness (receipts, FX equivalents).
+
+### Tests
+
+`tests/race/t17-fx-governance-and-receipts.ts` (81 assertions) and
+`tests/race/t18-adversarial-financial.ts` (80 assertions, driven through the real
+route handlers with real session cookies).

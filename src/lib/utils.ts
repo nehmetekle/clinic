@@ -6,11 +6,31 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * The app-wide money formatter.
+ *
+ * Shows cents ONLY when the amount actually has them. It used to hard-round to
+ * whole units (`maximumFractionDigits: 0`), which was fine while every figure in
+ * the app was a round catalog price — but is actively misleading now that
+ * foreign tender produces real fractional amounts: a $182.61 remaining debt
+ * rendered as "$183", so the desk would try to collect $183 and be refused as
+ * over-payment, and a $217.39 Jessy balance rendered as "$217" could never be
+ * reconciled to zero.
+ *
+ * `minimumFractionDigits: 0` is what keeps this from being a cosmetic rewrite of
+ * every screen: $12,450 still reads "$12,450", not "$12,450.00". Only amounts
+ * that genuinely carry cents gain them. LBP is unaffected — those amounts are
+ * whole numbers by nature.
+ *
+ * Use `formatUsd` (lib/money.ts) instead where a trailing ".00" is *wanted* as a
+ * signal of exactness — receipts, settlement reconciliation, FX equivalents.
+ */
 export function formatMoney(amount: number, currency = "USD") {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(amount);
 }
 
@@ -51,8 +71,21 @@ export function parseNumberInput(value: string) {
 // so a single flat ceiling would wave through absurd USD or reject valid LBP.
 export const MAX_USD = 1_000_000;
 export const MAX_LBP = 10_000_000_000;
+// EUR is close enough to USD in magnitude to share its ceiling.
+export const MAX_EUR = 1_000_000;
 export function moneyCap(currency: string | undefined): number {
-  return currency === "LBP" ? MAX_LBP : MAX_USD;
+  switch (currency) {
+    case "LBP":
+      return MAX_LBP;
+    case "EUR":
+      return MAX_EUR;
+    default:
+      // USD and "unspecified" (which every schema treats as USD). An unknown
+      // currency gets the TIGHTEST cap rather than the loosest — the currency
+      // itself is rejected elsewhere; this must not be the loophole that lets an
+      // absurd amount through while that rejection is being decided.
+      return MAX_USD;
+  }
 }
 
 // Both formatters render in the clinic's timezone (CLINIC.timeZone), so a viewer's

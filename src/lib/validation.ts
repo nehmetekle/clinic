@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
+import { JESSY_METHOD, PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/types";
+import { TENDER_CURRENCY_VALUES } from "@/lib/money";
 import { FOOD_LIST_LANGUAGES } from "@/lib/food-list";
 import { moneyCap } from "@/lib/utils";
 import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
@@ -28,7 +29,19 @@ export function refineMoneyCap(
   ctx: z.RefinementCtx,
   path: string,
 ) {
-  if (amount !== undefined && amount > moneyCap(currency)) {
+  if (amount === undefined) return;
+  // Zod's `.min()/.positive()` accept Infinity (only NaN is rejected by the base
+  // number type), so a crafted `1e400` reaches here as a finite-looking amount
+  // that poisons every sum it lands in. Reject it explicitly before the cap check.
+  if (!Number.isFinite(amount)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [path],
+      message: "Amount must be a finite number.",
+    });
+    return;
+  }
+  if (amount > moneyCap(currency)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: [path],
@@ -36,6 +49,32 @@ export function refineMoneyCap(
     });
   }
 }
+
+// ---- Tender legs (how money was physically handed over) ----
+// Currency and payment method are INDEPENDENT dimensions: "Cash / EUR / €200" and
+// "Cash / USD / $100" are two economically distinct legs of one settlement, not a
+// duplicate. The USD value of a leg is never accepted from the client — the server
+// resolves the admin-controlled rate itself and converts (see repositories).
+export const tenderLegSchema = z
+  .object({
+    method: z.enum(PAYMENT_METHOD_VALUES),
+    // Defaults to USD so every existing caller/payload keeps working unchanged.
+    currency: z.enum(TENDER_CURRENCY_VALUES).default("USD"),
+    amount: z.coerce.number().min(0),
+  })
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.amount, v.currency, ctx, "amount");
+    // Jessy's receivable ledger is USD-only by design (FIFO allocation across
+    // receivables is only sound in a single unit). Enforced here AND in
+    // createPayment — the UI hiding the option is not a control.
+    if (v.method === JESSY_METHOD && v.currency !== "USD") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["currency"],
+        message: "Jessy can only be recorded in USD — its receivable ledger is USD-only.",
+      });
+    }
+  });
 
 // ---- Date-of-birth sanity ----
 // The native <input type="date"> lets users type absurd years (e.g. 20002),
@@ -251,14 +290,26 @@ export const createPaymentSchema = z
     // Reject negative and $0 amounts (a $0 receipt is meaningless), and cap the
     // upper end per currency (R5) rather than silently clamping.
     amountPaid: z.coerce.number().positive("Amount must be greater than 0"),
-    currency: z.enum(["USD", "LBP"]).optional(),
+    // A payment is TENDER, so it may be USD, EUR or LBP — unlike a price or a
+    // debt, which stay USD/LBP obligations. No rate is accepted here: the server
+    // resolves and freezes it (a client-supplied rate is an unaudited discount).
+    currency: z.enum(TENDER_CURRENCY_VALUES).optional(),
     method: z.enum(PAYMENT_METHOD_VALUES),
     notes: z.string().optional(),
     // Optional client-generated key so a double-submit can't create a duplicate
     // payment (R2). Absent for programmatic callers.
     idempotencyKey: z.string().trim().min(1).max(100).optional(),
   })
-  .superRefine((v, ctx) => refineMoneyCap(v.amountPaid, v.currency, ctx, "amountPaid"));
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.amountPaid, v.currency, ctx, "amountPaid");
+    if (v.method === JESSY_METHOD && (v.currency ?? "USD") !== "USD") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["currency"],
+        message: "Jessy can only be recorded in USD — its receivable ledger is USD-only.",
+      });
+    }
+  });
 
 // ---- Visit basket (dietitian → secretary settlement) ----
 const visitBasketItemSchema = z
@@ -315,18 +366,24 @@ export const updateVisitBasketSchema = z
 // as a tracked ClientDebt at the same time.
 export const settleVisitBasketSchema = z
   .object({
-    // How the collected money was tendered, split across one or more methods. One
-    // entry = a single-method settlement. Portions are USD and must sum to the
-    // amount actually collected — that exact-sum check is enforced server-side in
-    // settleVisitBasket (it needs the basket total), mirroring the debt-cap check.
-    splits: z
-      .array(
-        z.object({
-          method: z.enum(PAYMENT_METHOD_VALUES),
-          amount: z.coerce.number().min(0),
-        }),
-      )
-      .default([]),
+    // How the collected money was tendered: one entry per method × currency. A
+    // single-method USD settlement is one entry (unchanged). Amounts are NATIVE to
+    // each entry's currency; the server converts every entry to USD at the rate it
+    // resolves itself and enforces that the total matches what is being collected
+    // (settleVisitBasket — it needs the basket total).
+    splits: z.array(tenderLegSchema).default([]),
+    // The FX rates the settlement screen was DISPLAYING when the desk prepared
+    // this payment, as {currency: rate}. Advisory only, and never used to value
+    // anything: the server resolves its own rates and compares, so that a rate
+    // changed mid-checkout is rejected with a specific "the rate changed" error
+    // instead of a bare arithmetic mismatch. A forged value cannot move a single
+    // figure — at worst it refuses its own settlement.
+    expectedRates: z
+      .object({
+        EUR: z.coerce.number().finite().gt(0).optional(),
+        LBP: z.coerce.number().finite().gt(0).optional(),
+      })
+      .optional(),
     notes: z.string().optional(),
     debtAmount: z.coerce.number().min(0).optional(),
     debtReason: z.string().trim().optional(),
@@ -342,11 +399,11 @@ export const settleVisitBasketSchema = z
         message: "A reason is required when recording a debt.",
       });
     }
-    // Cap the owed-remainder amount (entered in the basket's currency, USD by
-    // default across the app) so an absurd typo is rejected, not accepted. R5.
+    // Cap the owed-remainder amount. A deferred remainder is an OBLIGATION, so it
+    // is always USD — never the tender currency. R5.
     refineMoneyCap(v.debtAmount, "USD", ctx, "debtAmount");
-    // Cap each split portion the same way (USD across the app).
-    v.splits.forEach((s, i) => refineMoneyCap(s.amount, "USD", ctx, `splits.${i}.amount`));
+    // Per-leg caps/currency rules live in tenderLegSchema (each leg is capped in
+    // its OWN currency — an LBP leg legitimately runs to eight digits).
   });
 
 // Secretary clears (collects — records a payment) or voids (writes off) a debt.
@@ -354,18 +411,33 @@ export const updateClientDebtSchema = z
   .object({
     action: z.enum(["clear", "void"]),
     method: z.enum(PAYMENT_METHOD_VALUES).optional(),
+    // How the money was handed over. Omitted => the legacy shorthand "one USD leg
+    // for the debt's full outstanding balance", which is what `method` alone has
+    // always meant. Supplied => the debt is reduced by the USD equivalent of these
+    // legs, which may be a PARTIAL payment. The debt itself stays USD either way.
+    tender: z.array(tenderLegSchema).optional(),
     notes: z.string().optional(),
     // Why the debt is being written off — required for a void so the forgiveness
     // is never unexplained. Ignored for a clear (that records a real payment).
     reason: z.string().trim().optional(),
   })
   .superRefine((v, ctx) => {
-    if (v.action === "clear" && !v.method) {
+    if (v.action === "clear" && !v.method && !(v.tender && v.tender.length > 0)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["method"],
         message: "A payment method is required to clear a debt.",
       });
+    }
+    if (v.action === "clear" && v.tender && v.tender.length > 0) {
+      const positive = v.tender.filter((t) => t.amount > 0);
+      if (positive.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["tender"],
+          message: "Enter an amount to collect.",
+        });
+      }
     }
     if (v.action === "void" && !v.reason) {
       ctx.addIssue({
@@ -409,10 +481,24 @@ export const updateBloodSampleSchema = z
 
 export const updateSettingsSchema = z
   .object({
-    usdToLbp: z.coerce.number().positive().optional(),
-    usdToEur: z.coerce.number().positive().optional(),
+    // `.positive()` alone accepts Infinity in zod (only NaN is rejected by the
+    // base number type). An infinite rate would silently value every LBP/EUR
+    // payment at $0, so both bounds are explicit. The ranges are "this is a
+    // misconfiguration" bounds, far wider than any real move.
+    usdToLbp: z.coerce.number().finite().gt(0).max(100_000_000).optional(),
+    usdToEur: z.coerce.number().finite().gt(0).max(100).optional(),
     // 0 is valid and intentional — it disables the card surcharge entirely.
     cardSurchargePercent: z.coerce.number().min(0).max(100).optional(),
+    // Explicit acknowledgement of a suspicious rate jump, as {rateKey: value}.
+    // NOT a bypass flag: the server re-detects the suspicion from values it reads
+    // itself and only honours an acknowledgement whose VALUE matches the one being
+    // saved, so this can never wave a different number through.
+    confirmSuspicious: z
+      .object({
+        usdToLbp: z.coerce.number().finite().gt(0).optional(),
+        usdToEur: z.coerce.number().finite().gt(0).optional(),
+      })
+      .optional(),
   })
   .refine(
     (v) =>

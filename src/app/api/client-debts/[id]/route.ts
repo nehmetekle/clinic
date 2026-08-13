@@ -26,7 +26,10 @@ export async function PATCH(
     if (input.action === "clear") {
       return json(
         await clearClientDebt(id, {
-          method: input.method!,
+          // One of the two is always present (schema-enforced). `tender` carries
+          // NATIVE amounts only — the server resolves the FX rate itself.
+          method: input.method ?? input.tender?.[0]?.method ?? "cash",
+          tender: input.tender,
           notes: input.notes,
           clearedByName: actor.name,
           // Attribute the settlement payment to the acting user (traceability).

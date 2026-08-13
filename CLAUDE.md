@@ -331,6 +331,57 @@ patient actually eats.
   checkboxes, padding, 4-column print vs responsive screen) are in
   [docs/known-issues.md](docs/known-issues.md) §9 (English) and §10 (Arabic).
 
+## Multi-currency tender (USD / EUR / LBP)
+**Obligations are USD. Payments may be tendered in USD, EUR or LBP.** A $1,000
+bill stays $1,000 however it is paid; a $400 debt stays a $400 debt even when
+settled with €368. Only `Payment` carries a tender currency.
+- **Two currency types, on purpose.** `Currency` ([src/lib/types.ts](src/lib/types.ts))
+  is the denomination of an *obligation* and stays `"USD" | "LBP"`;
+  `TenderCurrency` ([src/lib/money.ts](src/lib/money.ts)) is `"USD" | "EUR" | "LBP"`
+  and appears only on payments. **Don't widen `Currency`** — that would put FX
+  exposure onto bills and debts, which is out of scope.
+- **One rate direction, stated once**: `fxRate` = units of the tender currency
+  per 1 USD; USD value = `native / fxRate`. Everything routes through
+  `fxRateFor` / `tenderToUsd` so it can't be inverted at a call site.
+- **`Payment.fxRate` freezes the rate** at settlement, resolved server-side from
+  Settings inside the transaction. Reports read it via `paymentUsd`, never
+  today's rate, so changing a rate can't re-price history. A rate is never
+  accepted from the client. Legacy rows (`fxRate` null) are USD/LBP and still
+  value through their `usdToLbp` snapshot — which is why `usdToLbp` was
+  deliberately **not** renamed across its five models.
+- **Split legs are `method × currency`**, never method alone — "Cash/USD" and
+  "Cash/EUR" are distinct legs, each its own Payment row and receipt.
+- **Tolerance**: `0.005 × (1 + non-USD legs)`. A USD-only settlement keeps the
+  original exact half-cent epsilon — no regression, no cent-level underpayment.
+- **`toUsd` and `asCurrency` now fail closed** (they used to treat any unknown
+  currency as USD). Add a currency to the exhaustive switch in `fxRateFor` and
+  the compiler will find every site that needs a decision.
+- **Jessy stays USD-only** (schema + `createPayment` + UI). Its FIFO ledger is
+  only sound in one unit.
+- **`ClientDebt.paidAmount`** enables partial collection (needed because foreign
+  tender rarely hits the exact balance). Overpayment is refused — there are no
+  credit balances, as there are no refunds.
+- CHECK constraints in `20260813150000_multi_currency_tender` are hand-written
+  SQL Prisma can't introspect — don't lose them in a squash.
+- **Stale rate at checkout**: the settlement screen sends `expectedRates`
+  (advisory, never used to value anything). If a rate it uses has moved, the
+  settlement is rejected with a specific `fx_rate_stale` error and nothing is
+  written — never silently re-priced.
+- **Suspicious rate changes** need explicit admin confirmation carrying the value
+  being confirmed (not a bypass flag). Absolute `FX_BOUNDS` fire first; the
+  relative `FX_SUSPICIOUS_RATIO` catches order-of-magnitude typos.
+- **`FxRateChange`** is the append-only rate history (admin-only,
+  `GET /api/settings/fx-history`), plus an `AuditLog` line. `updateSettings` takes
+  a `pg_advisory_xact_lock` so concurrent edits can't record a false "old value".
+- **Receipts** (`GET /api/receipts/[paymentId]`) render on demand from frozen
+  payment rows — never stored, never read Settings, so a reprint can't re-price.
+- **The tolerance is a flat half-cent** and does NOT scale with leg count (the
+  earlier per-leg scaling let a full cent through — see §16).
+- Tests: `tests/race/t16-multi-currency-tender.ts`,
+  `t17-fx-governance-and-receipts.ts`, `t18-adversarial-financial.ts` via
+  `npm run test:race`. Full detail in [docs/known-issues.md](docs/known-issues.md)
+  §15 and §16.
+
 ## Working conventions (keep these)
 - Match existing code style; pages are client components using `useApi`; create forms POST then `refetch()`.
 - Validate writes with Zod in `src/lib/validation.ts`; keep route handlers thin.

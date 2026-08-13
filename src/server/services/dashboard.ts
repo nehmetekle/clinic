@@ -7,12 +7,14 @@ import { listExpenses } from "../repositories/expenses";
 import { getJessyOutstanding } from "../repositories/jessy";
 import { listPayments } from "../repositories/payments";
 import { getUsdToLbp } from "../repositories/settings";
+import { debtOutstandingUsd } from "../repositories/clientDebts";
 import { listStaff } from "../repositories/staff";
 import type {
   AppointmentStatus,
   DashboardSummary,
   RecentConsultation,
   Role,
+  TenderBreakdownEntry,
 } from "@/lib/types";
 
 const STATUS_META: Record<AppointmentStatus, { name: string; color: string }> = {
@@ -104,17 +106,23 @@ export async function getDashboardSummaryForRole(
   };
 
   // Finance — income and expenses summed over the selected window.
+  // `amountUsd` is computed by the payment serializer at each row's OWN frozen
+  // rate (see repositories/payments.ts) — the single place FX is applied to money
+  // the clinic has collected, so a EUR/LBP leg lands here already valued and
+  // today's rate can never re-price it.
   const totalIncome = payments
     .filter((p) => inRange(p.date))
-    .reduce((s, p) => s + conv(p.amountPaid, p.currency, p.usdToLbp), 0);
+    .reduce((s, p) => s + p.amountUsd, 0);
   const totalExpenses = expenses
     .filter((e) => inRange(e.date))
     .reduce((s, e) => s + conv(e.amount, e.currency, e.usdToLbp), 0);
   // Money owed = outstanding tracked debts only (current snapshot, not windowed).
-  const unpaidBalance = outstandingDebts.reduce((s, d) => s + conv(d.amount, d.currency, d.usdToLbp), 0);
+  // The still-OWED part of each debt: a partly-collected debt must not report its
+  // full principal as money the clinic is still waiting for.
+  const unpaidBalance = outstandingDebts.reduce((s, d) => s + debtOutstandingUsd(d), 0);
   const paymentsToday = payments
     .filter((p) => p.date === today)
-    .reduce((s, p) => s + conv(p.amountPaid, p.currency, p.usdToLbp), 0);
+    .reduce((s, p) => s + p.amountUsd, 0);
   // Payment-method splits (USD) behind the collected-money figures. Same frozen-rate
   // conversion as the totals they mirror, so a method row always sums to its parent.
   // Keyed by the RAW method value stored on each record (trimmed) — NEVER folded
@@ -125,12 +133,39 @@ export async function getDashboardSummaryForRole(
     const acc: Record<string, number> = {};
     for (const p of rows) {
       const key = (p.method ?? "").trim();
-      acc[key] = (acc[key] ?? 0) + conv(p.amountPaid, p.currency, p.usdToLbp);
+      acc[key] = (acc[key] ?? 0) + p.amountUsd;
     }
     return acc;
   };
-  const incomeByMethod = sumByMethod(payments.filter((p) => inRange(p.date)));
-  const paymentsTodayByMethod = sumByMethod(payments.filter((p) => p.date === today));
+  // Same money, split by method AND tender currency. The NATIVE totals are kept
+  // alongside the USD ones so the drawer can actually be counted — normalising
+  // everything to USD at this point would destroy the only figure the person
+  // counting notes and coins can check against.
+  const sumByTender = (rows: typeof payments): TenderBreakdownEntry[] => {
+    const acc = new Map<string, TenderBreakdownEntry>();
+    for (const p of rows) {
+      const method = (p.method ?? "").trim();
+      const key = `${method}|${p.currency}`;
+      const prev = acc.get(key);
+      acc.set(key, {
+        method,
+        currency: p.currency,
+        usd: (prev?.usd ?? 0) + p.amountUsd,
+        native: (prev?.native ?? 0) + p.amountPaid,
+      });
+    }
+    return [...acc.values()].map((e) => ({
+      ...e,
+      usd: Math.round(e.usd * 100) / 100,
+      native: Math.round(e.native * 100) / 100,
+    }));
+  };
+  const windowed = payments.filter((p) => inRange(p.date));
+  const todays = payments.filter((p) => p.date === today);
+  const incomeByMethod = sumByMethod(windowed);
+  const paymentsTodayByMethod = sumByMethod(todays);
+  const incomeByTender = sumByTender(windowed);
+  const paymentsTodayByTender = sumByTender(todays);
   // Cost of goods sold: frozen package cost for sales whose startDate falls in the
   // window (same flow-figure treatment as income/expenses). ClientPackage has no
   // rate snapshot, so conv() uses the live rate for LBP costs.
@@ -158,6 +193,8 @@ export async function getDashboardSummaryForRole(
     paymentsToday,
     incomeByMethod,
     paymentsTodayByMethod,
+    incomeByTender,
+    paymentsTodayByTender,
   };
 
   // Packages
@@ -211,7 +248,7 @@ export async function getDashboardSummaryForRole(
     month: m.label,
     income: payments
       .filter((p) => p.date.startsWith(m.key))
-      .reduce((s, p) => s + conv(p.amountPaid, p.currency, p.usdToLbp), 0),
+      .reduce((s, p) => s + p.amountUsd, 0),
     expenses: expenses
       .filter((e) => e.date.startsWith(m.key))
       .reduce((s, e) => s + conv(e.amount, e.currency, e.usdToLbp), 0),
@@ -220,7 +257,7 @@ export async function getDashboardSummaryForRole(
   // Revenue by motif (bundle sales land here under their motif too).
   const revenueByPackage = payments.reduce<Record<string, number>>((acc, p) => {
     const name = p.motif;
-    acc[name] = (acc[name] ?? 0) + conv(p.amountPaid, p.currency, p.usdToLbp);
+    acc[name] = (acc[name] ?? 0) + p.amountUsd;
     return acc;
   }, {});
   const packageRevenue = Object.entries(revenueByPackage)
@@ -247,7 +284,7 @@ export async function getDashboardSummaryForRole(
   for (const d of outstandingDebts) {
     debtByClient.set(
       d.clientId,
-      (debtByClient.get(d.clientId) ?? 0) + conv(d.amount, d.currency, d.usdToLbp),
+      (debtByClient.get(d.clientId) ?? 0) + debtOutstandingUsd(d),
     );
   }
   const unpaidClients = clients
@@ -363,6 +400,11 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
       // whoever handles money, so its split rides along.
       incomeByMethod: {},
       paymentsTodayByMethod: canHandleMoney ? summary.finance.paymentsTodayByMethod : {},
+      // The tender (method × currency) splits are the same money as the two maps
+      // above, so they MUST follow the same redaction — otherwise a non-admin could
+      // reconstruct the admin-only income total by summing this array.
+      incomeByTender: [],
+      paymentsTodayByTender: canHandleMoney ? summary.finance.paymentsTodayByTender : [],
     },
     recentPayments: canHandleMoney ? summary.recentPayments : [],
     packagesSold: 0,

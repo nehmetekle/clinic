@@ -16,14 +16,24 @@ import { useApi } from "@/lib/use-api";
 import { useClientSearch } from "@/lib/use-client-search";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { CLINIC, toUsdFrozen, todayIso } from "@/lib/config";
+import { todayIso } from "@/lib/config";
 import { cardSurchargeAmount, formatDate, formatMoney, moneyCap, parseNumberInput } from "@/lib/utils";
 import {
+  JESSY_METHOD,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
   type Client,
   type PaymentMethod,
+  type TenderBreakdownEntry,
 } from "@/lib/types";
+import {
+  TENDER_CURRENCY_LABELS,
+  TENDER_CURRENCY_VALUES,
+  formatFxRate,
+  formatTender,
+  formatUsd,
+  type TenderCurrency,
+} from "@/lib/money";
 
 const EMPTY = {
   clientId: "",
@@ -63,26 +73,38 @@ export default function PaymentsPage() {
   const [idemKey, setIdemKey] = useState("");
 
   const payments = data ?? [];
-  // USD is the single source of truth: LBP payments fold into the same USD total
-  // at the rate frozen on each record when it was logged (not today's rate).
-  const fallbackRate = settings.data?.usdToLbp ?? CLINIC.defaultUsdToLbp;
-  const sumUsd = (fn: (p: (typeof payments)[number]) => number) =>
-    payments.reduce((s, p) => s + toUsdFrozen(fn(p), p.currency, p.usdToLbp, fallbackRate), 0);
-  const collectedUSD = sumUsd((p) => p.amountPaid);
+  // `amountUsd` is computed by the SERVER at each payment's own frozen rate — the
+  // browser never does FX maths on money, so what it displays cannot disagree with
+  // what was banked, and a changed rate cannot move a past day's total.
+  const collectedUSD = payments.reduce((s, p) => s + p.amountUsd, 0);
   // Same USD-folded total, split by payment method, for the click-to-open breakdown
   // on the "Collected" card. Scoped to the viewed day like the total itself. Keyed
   // by the RAW method stored on each record — never folded — so a retired method
   // keeps its own label; a blank value collapses to the "" ("Other") bucket.
   const collectedByMethod = payments.reduce<Record<string, number>>((acc, p) => {
     const key = (p.method ?? "").trim();
-    acc[key] = (acc[key] ?? 0) + toUsdFrozen(p.amountPaid, p.currency, p.usdToLbp, fallbackRate);
+    acc[key] = (acc[key] ?? 0) + p.amountUsd;
     return acc;
   }, {});
-  // Money owed = outstanding tracked debts (not a payment-based charged-minus-paid figure).
-  const outstandingUSD = (debts.data ?? []).reduce(
-    (s, d) => s + toUsdFrozen(d.amount, d.currency, d.usdToLbp, fallbackRate),
-    0,
+  // Same money keyed by method AND tender currency, for the cash-drawer view in the
+  // breakdown modal. Native totals are kept un-normalised — they are the figure the
+  // person counting the drawer can actually check.
+  const collectedByTender = Object.values(
+    payments.reduce<Record<string, TenderBreakdownEntry>>((acc, p) => {
+      const method = (p.method ?? "").trim();
+      const key = `${method}|${p.currency}`;
+      const prev = acc[key];
+      acc[key] = {
+        method,
+        currency: p.currency,
+        usd: (prev?.usd ?? 0) + p.amountUsd,
+        native: (prev?.native ?? 0) + p.amountPaid,
+      };
+      return acc;
+    }, {}),
   );
+  // Money owed = outstanding tracked debts (not a payment-based charged-minus-paid figure).
+  const outstandingUSD = (debts.data ?? []).reduce((s, d) => s + d.outstandingAmount, 0);
 
   // R5: an amount over the sane cap for its currency is rejected with a clear
   // inline message rather than being silently accepted as an absurd receipt.
@@ -134,7 +156,7 @@ export default function PaymentsPage() {
         clientId: form.clientId || undefined,
         motif: form.motif.trim(),
         amountPaid: parseNumberInput(form.amountPaid),
-        currency: form.currency as "USD" | "LBP",
+        currency: form.currency as TenderCurrency,
         method: form.method as PaymentMethod,
         idempotencyKey: idemKey,
       });
@@ -216,6 +238,7 @@ export default function PaymentsPage() {
             title={isToday ? "Collected today by method" : "Collected by method"}
             periodLabel={`on ${formatDate(selectedDate)}`}
             byMethod={collectedByMethod}
+            byTender={collectedByTender}
           />
 
           <Card>
@@ -233,6 +256,7 @@ export default function PaymentsPage() {
                   <TH>Method</TH>
                   <TH>Date</TH>
                   <TH>Recorded by</TH>
+                  <TH></TH>
                 </TR>
               </THead>
               <TBody>
@@ -242,21 +266,45 @@ export default function PaymentsPage() {
                     <TD className="font-medium">{p.clientName ?? "—"}</TD>
                     <TD className="text-slate-500">{p.motif}</TD>
                     <TD className="font-medium">
-                      {formatMoney(p.amountPaid, p.currency)}
+                      {formatTender(p.amountPaid, p.currency)}
                       {p.cardSurchargeAmount > 0 && (
                         <span className="ml-1 text-xs font-normal text-slate-400">
-                          (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                          (incl. {formatTender(p.cardSurchargeAmount, p.currency)} card fee)
+                        </span>
+                      )}
+                      {/* Foreign tender: the USD the clinic actually banked and the
+                          rate frozen on THIS row — never today's. Both are shown
+                          because the equivalent alone can't be checked without the
+                          rate that produced it. */}
+                      {p.currency !== "USD" && (
+                        <span className="block text-xs font-normal text-slate-400">
+                          ≈ {formatUsd(p.amountUsd)}
+                          {p.fxRate !== undefined && ` · ${formatFxRate(p.currency, p.fxRate)}`}
                         </span>
                       )}
                     </TD>
                     <TD className="capitalize text-slate-500">{p.method.replace("_", " ")}</TD>
                     <TD className="text-slate-500">{formatDate(p.date)}</TD>
                     <TD className="text-slate-500">{p.createdByName ?? "—"}</TD>
+                    <TD className="text-right">
+                      {/* A real link, not a fetch: it opens the browser's own PDF
+                          viewer, which owns the print dialog — and "Save as" still
+                          works for anyone who wants the file. Same convention as
+                          the Food List PDF. */}
+                      <a
+                        href={api.receiptPrintUrl(p.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium text-brand-700 hover:underline"
+                      >
+                        Print
+                      </a>
+                    </TD>
                   </TR>
                 ))}
                 {payments.length === 0 && (
                   <TR>
-                    <TD colSpan={7} className="py-8 text-center text-slate-400">
+                    <TD colSpan={8} className="py-8 text-center text-slate-400">
                       No payments collected on this date.
                     </TD>
                   </TR>
@@ -340,13 +388,38 @@ export default function PaymentsPage() {
             )}
           </FormRow>
           <FormRow label="Currency">
-            <Select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
-              <option value="USD">USD ($)</option>
-              <option value="LBP">Lebanese pound (LBP)</option>
+            {/* The currency the money was TENDERED in. Jessy's receivable ledger is
+                USD-only, so the option list narrows rather than letting the desk
+                submit a combination the server refuses. */}
+            <Select
+              value={form.currency}
+              onChange={(e) => setForm({ ...form, currency: e.target.value })}
+            >
+              {(form.method === JESSY_METHOD ? (["USD"] as const) : TENDER_CURRENCY_VALUES).map(
+                (c) => (
+                  <option key={c} value={c}>{TENDER_CURRENCY_LABELS[c]}</option>
+                ),
+              )}
             </Select>
+            {form.currency !== "USD" && (
+              <p className="mt-1 text-xs text-slate-400">
+                Recorded as {form.currency}; reports convert it to USD at the rate frozen now.
+              </p>
+            )}
           </FormRow>
           <FormRow label="Method">
-            <Select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })}>
+            <Select
+              value={form.method}
+              onChange={(e) => {
+                const method = e.target.value;
+                setForm({
+                  ...form,
+                  method,
+                  // Jessy is USD-only — snap back rather than submit an invalid pair.
+                  currency: method === JESSY_METHOD ? "USD" : form.currency,
+                });
+              }}
+            >
               {PAYMENT_METHOD_VALUES.map((m) => (
                 <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
               ))}

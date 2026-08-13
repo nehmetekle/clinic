@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError, type ZodSchema } from "zod";
+import { FxError, StaleFxRateError } from "@/lib/money";
+import { SuspiciousRateError } from "./repositories/settings";
 
 /** Thrown by the server layer for expected, client-correctable conflicts (e.g. duplicates). */
 export class ConflictError extends Error {
@@ -84,6 +86,32 @@ export function handleError(err: unknown): NextResponse {
     return json({ error: err.message, code: "duplicate_phone", matches: err.matches }, 409);
   }
   if (err instanceof ConflictError) {
+    return json({ error: err.message }, 409);
+  }
+  // A rate change big enough to look like a typo. 409 with a machine-readable
+  // code + the detected jumps, so the Pricing page can offer an explicit
+  // confirmation instead of the admin re-typing blind. Nothing was written.
+  if (err instanceof SuspiciousRateError) {
+    return json(
+      {
+        error: err.message,
+        code: "fx_rate_confirmation_required",
+        suspicions: err.suspicions,
+      },
+      409,
+    );
+  }
+  // The admin moved a rate between the settlement screen being prepared and
+  // submitted. Nothing was written. Typed so the desk sees "the rate changed,
+  // review and resubmit" rather than an arithmetic error it cannot act on.
+  if (err instanceof StaleFxRateError) {
+    return json({ error: err.message, code: "fx_rate_stale", rates: err.rates, detail: err.detail }, 409);
+  }
+  // An amount that cannot be converted safely (missing/absurd rate, unsupported
+  // currency). Client-correctable — the desk fixes the rate in Pricing — so it is
+  // a 409 carrying the real reason, never a silent 1:1 conversion and never a 500.
+  if (err instanceof FxError) {
+    console.error(err);
     return json({ error: err.message }, 409);
   }
   if (err instanceof ForbiddenError) {

@@ -1,3 +1,4 @@
+import type { FxRates, FxSuspicion, TenderCurrency } from "@/lib/money";
 import type {
   Appointment,
   AppointmentStatus,
@@ -30,6 +31,7 @@ import type {
   StaffUser,
   VisitBasket,
   VisitBasketStatus,
+  FxRateChangeEntry,
 } from "./types";
 import type {
   AdjustProductStockInput,
@@ -77,6 +79,8 @@ type ApiErrorBody = {
   error?: string;
   code?: string;
   matches?: Client[];
+  suspicions?: FxSuspicion[];
+  rates?: FxRates;
   details?: { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
 };
 
@@ -85,6 +89,37 @@ type ApiErrorBody = {
  * and the duplicate wasn't confirmed. Carries the matches so the form can warn
  * "already a client" and let staff proceed (resubmit with confirmDuplicatePhone).
  */
+/**
+ * Thrown by {@link api.updateSettings} when a rate change is a big enough jump to
+ * look like a data-entry mistake. Carries the detected jumps so the Pricing page
+ * can show exactly what would change and offer an explicit confirmation.
+ * NOTHING was saved when this is thrown.
+ */
+export class SuspiciousRateError extends Error {
+  suspicions: FxSuspicion[];
+  constructor(message: string, suspicions: FxSuspicion[]) {
+    super(message);
+    this.name = "SuspiciousRateError";
+    this.suspicions = suspicions;
+  }
+}
+
+/**
+ * Thrown by {@link api.settleVisitBasket} when the admin changed an exchange rate
+ * between the settlement screen being prepared and submitted. Financially this is
+ * the safe outcome — nothing was recorded — but it needs its own type so the desk
+ * gets "the rate changed, review and resubmit" rather than a maths error it can't
+ * act on. Carries the authoritative rates so the screen can re-price itself.
+ */
+export class StaleFxRateError extends Error {
+  rates: FxRates;
+  constructor(message: string, rates: FxRates) {
+    super(message);
+    this.name = "StaleFxRateError";
+    this.rates = rates;
+  }
+}
+
 export class DuplicatePhoneError extends Error {
   matches: Client[];
   constructor(matches: Client[]) {
@@ -120,6 +155,15 @@ async function sendJson<T>(method: "POST" | "PATCH" | "PUT", url: string, body: 
     // warn and offer "register anyway" — surface them as a typed error.
     if (res.status === 409 && err?.code === "duplicate_phone") {
       throw new DuplicatePhoneError(err.matches ?? []);
+    }
+    if (res.status === 409 && err?.code === "fx_rate_confirmation_required") {
+      throw new SuspiciousRateError(err.error ?? "This rate change needs confirmation.", err.suspicions ?? []);
+    }
+    if (res.status === 409 && err?.code === "fx_rate_stale") {
+      throw new StaleFxRateError(
+        err.error ?? "The exchange rate changed since this payment was prepared.",
+        err.rates ?? { usdToLbp: 0, usdToEur: 0 },
+      );
     }
     throw new Error(apiErrorMessage(err, res.status));
   }
@@ -241,8 +285,17 @@ export const api = {
   // Tracked client debts (money owed but not collected). Cleared = collected now
   // (records a Payment); voided = written off.
   listOutstandingDebts: () => getJson<ClientDebt[]>("/api/client-debts"),
-  clearClientDebt: (id: string, body: { method: PaymentMethod; notes?: string }) =>
-    patchJson<ClientDebt>(`/api/client-debts/${id}`, { action: "clear", ...body }),
+  clearClientDebt: (
+    id: string,
+    body: {
+      method: PaymentMethod;
+      notes?: string;
+      // How the money was handed over. Omitted => collect the full outstanding
+      // balance in USD (the original behaviour). Native amounts only — the USD
+      // value is derived server-side from the admin-set rate, never sent.
+      tender?: { method: PaymentMethod; currency: TenderCurrency; amount: number }[];
+    },
+  ) => patchJson<ClientDebt>(`/api/client-debts/${id}`, { action: "clear", ...body }),
   voidClientDebt: (id: string, body: { reason: string }) =>
     patchJson<ClientDebt>(`/api/client-debts/${id}`, { action: "void", ...body }),
 
@@ -335,8 +388,25 @@ export const api = {
   },
 
   getSettings: () => getJson<ClinicSettings>("/api/settings"),
-  updateSettings: (body: { usdToLbp?: number; usdToEur?: number; cardSurchargePercent?: number }) =>
-    putJson<ClinicSettings>("/api/settings", body),
+  updateSettings: (body: {
+    usdToLbp?: number;
+    usdToEur?: number;
+    cardSurchargePercent?: number;
+    // Explicit acknowledgement of a suspicious jump, keyed by rate and carrying
+    // the exact value confirmed. The server re-detects the suspicion and only
+    // honours this when the value matches — it is not a bypass flag.
+    confirmSuspicious?: { usdToLbp?: number; usdToEur?: number };
+  }) => putJson<ClinicSettings>("/api/settings", body),
+
+  /**
+   * Printable receipt for the settlement a payment belongs to. A real URL (not a
+   * fetch) so "Print" opens the browser's own PDF viewer, which owns the print
+   * dialog — the same convention the Food List PDF uses.
+   */
+  receiptPrintUrl: (paymentId: string) => `/api/receipts/${paymentId}`,
+
+  /** Append-only exchange-rate history (admin-only, read-only). */
+  listFxRateChanges: () => getJson<FxRateChangeEntry[]>("/api/settings/fx-history"),
 
   listProducts: () => getJson<Product[]>("/api/products"),
   createProduct: (body: CreateProductInput) => postJson<Product>("/api/products", body),

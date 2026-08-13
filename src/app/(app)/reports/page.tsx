@@ -125,6 +125,7 @@ export default function ReportsPage() {
         title="Total income by method"
         periodLabel={rangeLabel(range.from, range.to)}
         byMethod={data.finance.incomeByMethod}
+        byTender={data.finance.incomeByTender}
       />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">

@@ -29,6 +29,7 @@ model User {
   totpSecret          String?
   appointments        Appointment[]
   auditLogs           AuditLog[]
+  fxRateChanges       FxRateChange[]
   bloodSamples        BloodSample[]
   bloodSampleFiles    BloodSampleFile[]
   assignedClients     Client[]           @relation("AssignedDietitian")
@@ -423,9 +424,21 @@ model Payment {
   id                  String           @id @default(cuid())
   clientId            String?
   motif               String
+  // NATIVE amount, in `currency` — what the patient physically handed over. It is
+  // never normalised to USD at write time: the USD value is derived from this and
+  // `fxRate`, so both the tender and the accounting figure survive forever.
   amountPaid          Float
+  // Tender currency: USD, EUR or LBP. Constrained by a CHECK in the
+  // multi_currency_tender migration (Prisma cannot express it), so an unsupported
+  // currency cannot exist in the table even if a code path were to slip.
   currency            String           @default("USD")
   usdToLbp            Float            @default(0)
+  // Units of `currency` per 1 USD, FROZEN when this payment was recorded:
+  // amountPaid / fxRate is its USD value, forever. Reports must use this and
+  // never today's Settings, so changing a rate cannot re-price history.
+  // Null only on rows written before multi-currency tender (USD or LBP, where
+  // `usdToLbp` carries exactly the same meaning — see frozenPaymentFxRate).
+  fxRate              Float?
   method              String
   date                DateTime         @default(now())
   receiptNumber       String           @unique
@@ -567,9 +580,16 @@ model ClientDebt {
   id             String        @id @default(cuid())
   clientId       String
   consultationId String?
+  // The PRINCIPAL owed, in `currency`. Never re-priced and never re-denominated:
+  // a $400 debt stays $400 whatever currency it is eventually paid in.
   amount         Float
   currency       String        @default("USD")
   usdToLbp       Float         @default(0)
+  // USD already collected against this debt. A payment tendered in EUR/LBP is
+  // converted at ITS OWN frozen rate before landing here, so the debt carries no
+  // FX exposure. Outstanding = amount (in USD) - paidAmount. Guarded by a CHECK
+  // (0 <= paidAmount) and only ever moved by a conditional, transactional update.
+  paidAmount     Float         @default(0)
   reason         String
   source         String        @default("secretary_override")
   status         String        @default("outstanding")
@@ -675,4 +695,43 @@ model Referrer {
 model Counter {
   key   String @id
   value Int    @default(0)
+}
+
+/// Append-only history of admin changes to an exchange rate.
+///
+/// `Setting` remains the CURRENT value; this is the record of how it got there.
+/// Separate from the generic `AuditLog` (which also gets a line for every change)
+/// because a rate change is the one event whose old/new values must stay
+/// machine-readable: they are financial inputs, not prose, and parsing them back
+/// out of an audit label would be fragile. Same pattern the Jessy ledger uses —
+/// a typed domain row plus the shared audit line.
+///
+/// Every field is SERVER-derived. Nothing here is accepted from the client: the
+/// actor comes from the verified session, `oldValue` is read inside the same
+/// transaction that writes the new one, and `changedAt` is a database default.
+/// There is no update or delete path anywhere in the application.
+model FxRateChange {
+  id                 String   @id @default(cuid())
+  /// Which rate moved: "usdToLbp" | "usdToEur" — the Setting key, so the history
+  /// and the current value can never disagree about what they describe.
+  rateKey            String
+  /// Units of the foreign currency per 1 USD, before and after. `oldValue` is
+  /// null only for the very first recorded change of a rate that was still on its
+  /// built-in default (i.e. no Setting row existed yet) — a real "was unset", not
+  /// a missing read.
+  oldValue           Float?
+  newValue           Float
+  /// True when the change tripped the suspicious-delta guard and an admin
+  /// explicitly confirmed it anyway. This is the marker an auditor looks for.
+  suspiciousOverride Boolean  @default(false)
+  /// The verified acting user. `changedById` is nullable (a user may later be
+  /// deleted) but `changedByName` is frozen text, so the history survives.
+  changedById        String?
+  changedByName      String
+  changedAt          DateTime @default(now())
+  changedBy          User?    @relation(fields: [changedById], references: [id])
+
+  /// Newest-first lookup per rate, which is how the history is always read.
+  @@index([rateKey, changedAt])
+  @@index([changedAt])
 }

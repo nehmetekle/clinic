@@ -1,20 +1,20 @@
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
-import { asCurrency, asPaymentMethod, dateOnly } from "../serialize";
-import { CLINIC, clinicDayRange, todayIso, toUsd } from "@/lib/config";
+import { asPaymentMethod, asTenderCurrency, dateOnly } from "../serialize";
+import { clinicDayRange, todayIso } from "@/lib/config";
 import { cardSurchargeAmount, moneyCap } from "@/lib/utils";
 import { JESSY_METHOD } from "@/lib/types";
+import {
+  fxRateFor,
+  paymentUsd,
+  tenderToUsd,
+  type TenderCurrency,
+} from "@/lib/money";
 import { auditMoney, writeAudit } from "./audit";
 import { nextCounterValue } from "./counters";
-import { getSettings, getUsdToLbp } from "./settings";
+import { getSettings } from "./settings";
 import type { Payment } from "@/lib/types";
-
-/** Money is stored to the cent; re-round every derived figure to keep float
- * drift out of the receivable ledger. */
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 export const paymentInclude = {
   client: true,
@@ -31,8 +31,13 @@ export function toPayment(p: PaymentRow): Payment {
     createdByName: p.createdBy?.fullName ?? undefined,
     motif: p.motif,
     amountPaid: p.amountPaid,
-    currency: asCurrency(p.currency),
+    currency: asTenderCurrency(p.currency),
     usdToLbp: p.usdToLbp,
+    fxRate: p.fxRate ?? undefined,
+    // Server-computed at ITS OWN frozen rate, so no client ever performs FX maths
+    // on money and today's Settings can never re-price this row. Throws (never
+    // guesses) if the row carries no usable frozen rate — see frozenPaymentFxRate.
+    amountUsd: paymentUsd(p),
     cardSurchargeAmount: p.cardSurchargeAmount,
     method: asPaymentMethod(p.method),
     date: dateOnly(p.date)!,
@@ -77,7 +82,8 @@ export async function createPayment(
     clientId?: string | null;
     motif: string;
     amountPaid: number;
-    currency?: string;
+    // TENDER currency. The obligation being settled stays USD — see lib/money.ts.
+    currency?: TenderCurrency;
     method: string;
     notes?: string;
     // Who collected/recorded the money (the acting user, resolved to a User row
@@ -135,9 +141,16 @@ export async function createPayment(
   // method → the clinic's configured surcharge is added on top of `amountPaid`,
   // so it ends up as what the client actually pays. Frozen here, like `usdToLbp`,
   // so a later rate change never reprices history. Every other method is $0.
+  //
+  // The surcharge is calculated in the payment's OWN currency, not in USD. It is
+  // a pure percentage, so `pct% of native / fxRate` and `pct% of (native/fxRate)`
+  // are the same number — but computing it natively means ONE rounding instead of
+  // two, and it preserves this table's existing invariant that
+  // `cardSurchargeAmount` is a portion of `amountPaid` expressed in the same unit.
+  const settings = await getSettings();
   const surcharge =
     input.method === "card"
-      ? cardSurchargeAmount(input.amountPaid, input.method, (await getSettings()).cardSurchargePercent)
+      ? cardSurchargeAmount(input.amountPaid, input.method, settings.cardSurchargePercent)
       : 0;
   const amountPaid = Math.round((input.amountPaid + surcharge) * 100) / 100;
   // R5 applies to what's actually recorded, not just what was entered — a card
@@ -152,7 +165,24 @@ export async function createPayment(
   }
 
   // Freeze the live exchange rate onto the record so reports never re-price it.
-  const usdToLbp = await getUsdToLbp();
+  // `usdToLbp` stays exactly what it always was (the LBP snapshot every existing
+  // row and report reads); `fxRate` is this payment's OWN rate — the one that
+  // values it — resolved server-side from admin-controlled Settings. A rate is
+  // NEVER accepted from the caller: a client-supplied rate is an unaudited
+  // discount channel, so there is deliberately no input field for one.
+  const usdToLbp = settings.usdToLbp;
+  const currency: TenderCurrency = input.currency ?? "USD";
+  // Jessy's receivable ledger is USD-only (FIFO allocation across receivables is
+  // only sound in one unit). Enforced HERE, at the single chokepoint every Payment
+  // goes through, so no route, transaction or future caller can bypass it.
+  if (input.method === JESSY_METHOD && currency !== "USD") {
+    throw new ConflictError(
+      "Jessy can only be recorded in USD — its receivable ledger is USD-only.",
+    );
+  }
+  // Throws (409) on a missing/absurd/non-finite rate rather than guessing: a
+  // payment that cannot be valued must not be recorded.
+  const fxRate = fxRateFor(currency, settings);
 
   // Jessy (third-party payer): the money counts as income right now, exactly like
   // any other method — but Jessy itself still owes the clinic that amount, which
@@ -169,9 +199,7 @@ export async function createPayment(
   // never write Infinity/NaN — the DB's `amount > 0` CHECK would reject that and
   // take the payment down with it. Jessy never carries a card surcharge, so this
   // is the full recorded amount.
-  const receivableUsd = round2(
-    toUsd(amountPaid, input.currency ?? "USD", usdToLbp > 0 ? usdToLbp : CLINIC.defaultUsdToLbp),
-  );
+  const receivableUsd = tenderToUsd(amountPaid, currency, fxRate);
   const jessyReceivable = input.method === JESSY_METHOD
     ? {
         create: {
@@ -200,8 +228,9 @@ export async function createPayment(
         clientId: input.clientId ?? null,
         motif,
         amountPaid,
-        currency: input.currency ?? "USD",
+        currency,
         usdToLbp,
+        fxRate,
         cardSurchargeAmount: surcharge,
         method: input.method,
         date: new Date(),

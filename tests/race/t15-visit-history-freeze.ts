@@ -27,6 +27,14 @@ const ok = (label: string, pass: boolean, detail = "") => {
 
 async function main() {
   await db.auditLog.deleteMany({});
+  // PRE-EXISTING harness bug: this reset deleted payments without first clearing
+  // the Jessy ledger, so whenever t14 ran immediately before it (which the
+  // alphabetical t14 -> t15 order guarantees) the protect_jessy_ledger trigger
+  // refused the delete and this whole file aborted before its first assertion.
+  // TRUNCATE is the sanctioned ledger reset — see harness.ts resetJessyLedger.
+  await db.$executeRawUnsafe(
+    `TRUNCATE TABLE "JessySettlement", "JessyReceivable", "JessySettlementAllocation" CASCADE`,
+  );
   await db.payment.deleteMany({});
   await db.consultation.deleteMany({});
   await db.clientPackage.deleteMany({});

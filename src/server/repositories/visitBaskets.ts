@@ -4,12 +4,23 @@ import { ConflictError, NotFoundError } from "../http";
 import { asCurrency } from "../serialize";
 import { basketLineUsd, basketTotals } from "@/lib/utils";
 import { CLINIC, toUsd } from "@/lib/config";
+import {
+  StaleFxRateError,
+  describeStaleRates,
+  detectStaleRates,
+  frozenPaymentFxRate,
+  fxRateFor,
+  round2,
+  settlementToleranceUsd,
+  tenderToUsd,
+  type TenderCurrency,
+} from "@/lib/money";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { auditMoney, writeAudit } from "./audit";
 import { clearClientDebtTx, createClientDebtTx } from "./clientDebts";
 import { createPayment } from "./payments";
 import { adjustProductStockTx } from "./products";
-import { getUsdToLbp } from "./settings";
+import { getSettings, getUsdToLbp } from "./settings";
 import { userIdByEmail } from "./staff";
 import type {
   Currency,
@@ -106,15 +117,24 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     paymentId: b.paymentId ?? undefined,
     receiptNumber: b.payment?.receiptNumber ?? undefined,
     paymentSplits: b.settlementPayments.length
-      ? b.settlementPayments.map((p) => ({
-          method: p.method as PaymentMethod,
+      ? b.settlementPayments.map((p) => {
+          // Value every leg at ITS OWN frozen rate, never today's — this is what
+          // a settled basket (and any receipt built from it) must show forever.
+          const { currency, fxRate } = frozenPaymentFxRate(p);
           // The basket-attributable portion — excludes the card surcharge, so
           // every split's amount still sums to `total` above, same as what the
           // secretary entered. The fee itself (0 for non-card) is separate.
-          amount: p.amountPaid - p.cardSurchargeAmount,
-          cardSurchargeAmount: p.cardSurchargeAmount,
-          receiptNumber: p.receiptNumber,
-        }))
+          const nativeNet = round2(p.amountPaid - p.cardSurchargeAmount);
+          return {
+            method: p.method as PaymentMethod,
+            currency,
+            nativeAmount: nativeNet,
+            fxRate,
+            amount: tenderToUsd(nativeNet, currency, fxRate),
+            cardSurchargeAmount: p.cardSurchargeAmount,
+            receiptNumber: p.receiptNumber,
+          };
+        })
       : undefined,
   };
 }
@@ -546,7 +566,11 @@ export async function settleVisitBasket(
     // Payment row so the payment-method breakdown stays exact. A single-method
     // settlement is just one split entry. Empty/omitted only when nothing is
     // collected (a fully deferred/covered basket).
-    splits?: { method: string; amount: number }[];
+    // Each leg is a (method × currency × native amount). The USD value of a leg
+    // is NEVER taken from the caller — it is derived here from the admin-set rate.
+    splits?: { method: string; currency?: TenderCurrency; amount: number }[];
+    // Rates the settlement screen displayed. Advisory only — see detectStaleRates.
+    expectedRates?: Partial<Record<TenderCurrency, number>>;
     notes?: string;
     createdById?: string | null;
     actorName?: string | null;
@@ -608,29 +632,93 @@ export async function settleVisitBasket(
         throw new ConflictError("This debt does not belong to this client.");
       }
     }
-    const oldDebtUsd = debtsToCollect.reduce(
-      (s, d) => s + toUsd(d.amount, d.currency, d.usdToLbp > 0 ? d.usdToLbp : rate),
-      0,
+    // The still-OUTSTANDING part of each debt (principal minus anything already
+    // collected against it in an earlier partial payment) — never the raw
+    // principal, which would collect money the patient no longer owes.
+    const oldDebtUsd = round2(
+      debtsToCollect.reduce(
+        (s, d) =>
+          s +
+          Math.max(
+            0,
+            toUsd(d.amount, d.currency, d.usdToLbp > 0 ? d.usdToLbp : rate) - d.paidAmount,
+          ),
+        0,
+      ),
     );
 
     // The single combined amount actually collected now (USD), across every method.
     const combinedCollected = Math.round((todayCollected + oldDebtUsd) * 100) / 100;
 
-    // Normalize the split: fold duplicate methods, drop zero/negative portions.
-    const byMethod = new Map<string, number>();
-    for (const s of input.splits ?? []) {
-      const amt = Math.max(0, Math.round((s.amount ?? 0) * 100) / 100);
-      if (amt <= 0) continue;
-      byMethod.set(s.method, Math.round(((byMethod.get(s.method) ?? 0) + amt) * 100) / 100);
-    }
-    const splitTotal = Math.round([...byMethod.values()].reduce((s, a) => s + a, 0) * 100) / 100;
+    // Resolve the FX rates ONCE, here, inside the transaction — from Settings,
+    // never from the request. Every leg of this settlement is valued and frozen at
+    // the same instant, so a rate edited mid-checkout cannot value two legs of one
+    // bill differently, and a crafted request cannot supply its own rate.
+    const rates = await getSettings();
 
-    // HARD validation (authoritative — mirrors the debt-cap check): the split must
-    // sum EXACTLY to what's being collected. Blocks a settlement that doesn't add
+    // Normalize the split: fold duplicates, drop zero/negative portions.
+    //
+    // The fold key is method × CURRENCY, not method alone. "Cash / USD $100" and
+    // "Cash / EUR €200" are two economically distinct legs of one settlement;
+    // folding them on method would silently destroy one native amount and
+    // mis-state the drawer.
+    type Leg = { method: string; currency: TenderCurrency; native: number; fxRate: number; usd: number };
+    const byLeg = new Map<string, Leg>();
+    for (const s of input.splits ?? []) {
+      const currency: TenderCurrency = s.currency ?? "USD";
+      const native = Math.max(0, round2(s.amount ?? 0));
+      if (!(native > 0)) continue;
+      // Throws (409) on an unusable rate — a leg that cannot be valued must not
+      // be recorded, rather than silently valued 1:1 with the dollar.
+      const fxRate = fxRateFor(currency, rates);
+      const key = `${s.method}|${currency}`;
+      const prev = byLeg.get(key);
+      const merged = prev ? round2(prev.native + native) : native;
+      byLeg.set(key, {
+        method: s.method,
+        currency,
+        native: merged,
+        fxRate,
+        // Converted ONCE, from the merged native total, so folding two entries of
+        // the same leg cannot round twice.
+        usd: tenderToUsd(merged, currency, fxRate),
+      });
+    }
+    const legs = [...byLeg.values()];
+
+    // STALE-RATE GATE. If the admin edited a rate between this screen being
+    // prepared and submitted, reject the whole settlement with a message naming
+    // the real cause. Re-pricing silently would be worse than useless: the desk
+    // would collect the foreign amount it was shown while the system booked a
+    // different USD value, and the patient would walk away short. Checked before
+    // any money is recorded, and only for currencies this settlement actually
+    // uses — an LBP rate change must not block a USD+EUR payment.
+    const stale = detectStaleRates(legs, input.expectedRates, rates);
+    if (stale.length > 0) throw new StaleFxRateError(describeStaleRates(stale), rates, stale);
+
+    const splitTotal = round2(legs.reduce((sum, l) => sum + l.usd, 0));
+
+    // HARD validation (authoritative — mirrors the debt-cap check): the legs must
+    // sum, in USD, to what's being collected. Blocks a settlement that doesn't add
     // up, so recorded income can never drift from the money actually taken.
-    if (Math.abs(splitTotal - combinedCollected) > 0.005) {
+    //
+    // The tolerance is the app's original half-cent for a USD-only settlement —
+    // unchanged, so no cent-level underpayment can slip through on the path
+    // virtually every settlement takes — plus half a cent per CONVERTED leg, which
+    // is exactly the rounding one conversion can introduce and no more. It is not
+    // widened because LBP amounts are large; only the number of conversions matters.
+    const tolerance = settlementToleranceUsd(legs);
+    const drift = round2(splitTotal - combinedCollected);
+    if (Math.abs(drift) > tolerance) {
+      // Name the direction and the exact gap. "Must add up" alone left the desk
+      // to work out whether they were over or under, and by how much — with
+      // foreign legs on screen that is real mental arithmetic at the counter.
+      const anyForeign = legs.some((l) => l.currency !== "USD");
+      const equivalent = anyForeign ? " USD equivalent" : "";
       throw new ConflictError(
-        `The payment split (${splitTotal.toFixed(2)}) must add up to the amount being collected (${combinedCollected.toFixed(2)}).`,
+        drift > 0
+          ? `That collects $${splitTotal.toFixed(2)}${equivalent} against $${combinedCollected.toFixed(2)} due — $${Math.abs(drift).toFixed(2)} too much. The clinic records no credit balances, so reduce a payment amount.`
+          : `That collects $${splitTotal.toFixed(2)}${equivalent} against $${combinedCollected.toFixed(2)} due — $${Math.abs(drift).toFixed(2)} short. Increase a payment amount, or record the remainder as a debt.`,
       );
     }
 
@@ -646,23 +734,25 @@ export async function settleVisitBasket(
     const baseMotif = todayCollected > 0
       ? `Visit charges — ${baseLabel}${withBalance}`
       : `Previous balance settled`;
-    const multi = byMethod.size > 1;
+    const multi = legs.length > 1;
 
     let paymentId: string | null = null;
     let primaryReceipt: string | null = null;
-    for (const [method, amount] of byMethod) {
-      const motif = multi ? `${baseMotif} (${PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method})` : baseMotif;
+    for (const leg of legs) {
+      const methodLabel = PAYMENT_METHOD_LABELS[leg.method as PaymentMethod] ?? leg.method;
+      const motif = multi
+        ? `${baseMotif} (${methodLabel}${leg.currency === "USD" ? "" : ` · ${leg.currency}`})`
+        : baseMotif;
       const payment = await createPayment(
         {
           clientId: row.clientId,
           motif,
-          // The pre-surcharge portion the secretary entered (splits sum to the
-          // basket total); createPayment adds the clinic's card fee on top when
-          // method is "card", so the recorded income matches what's collected.
-          amountPaid: amount,
-          // Split amounts are USD (basketTotals + debt values normalize to USD).
-          currency: "USD",
-          method,
+          // The pre-surcharge portion the secretary entered, in the leg's OWN
+          // currency; createPayment adds the clinic's card fee on top when method
+          // is "card" (natively, one rounding) and freezes this leg's FX rate.
+          amountPaid: leg.native,
+          currency: leg.currency,
+          method: leg.method,
           notes: input.notes,
           createdById: input.createdById ?? null,
           actorName: input.actorName,
@@ -743,8 +833,12 @@ export async function settleVisitBasket(
       await createClientDebtTx(tx, {
         clientId: row.clientId,
         consultationId: row.consultationId,
+        // `debtAmount` is a USD figure — it is capped against `view.total`, which
+        // basketTotals computes in USD. Stamping it with the BASKET's currency (as
+        // this did) would file a $200 deferred balance as "200 LBP" (~$0.002) on
+        // any LBP-priced basket. Obligations are USD, full stop.
         amount: debtAmount,
-        currency: asCurrency(row.currency),
+        currency: "USD",
         usdToLbp: row.usdToLbp,
         reason: input.debtReason?.trim() || "Balance still owed at settlement",
         source: "secretary_override",
@@ -762,7 +856,7 @@ export async function settleVisitBasket(
     // deferrable part.
     for (const debtId of clearDebtIds) {
       await clearClientDebtTx(tx, debtId, {
-        method: byMethod.keys().next().value ?? "cash",
+        method: legs[0]?.method ?? "cash",
         clearedByName: input.actorName,
         createdById: input.createdById ?? null,
         expectedClientId: row.clientId,

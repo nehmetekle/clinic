@@ -10,6 +10,7 @@ import type {
   User as PUser,
 } from "@prisma/client";
 import { clinicDay } from "@/lib/config";
+import { isTenderCurrency, type TenderCurrency } from "@/lib/money";
 import type {
   AppointmentStatus,
   AuditEntry,
@@ -43,7 +44,30 @@ function iso(date: Date | null | undefined): string | undefined {
 // These columns are stored as strings; the app layer owns the allowed values.
 const asRole = (v: string) => v as Role;
 export const asPaymentMethod = (v: string) => v as PaymentMethod;
-export const asCurrency = (v: string): Currency => (v === "LBP" ? "LBP" : "USD");
+/**
+ * The denomination of an OBLIGATION (a price, a basket line, a debt). Only USD
+ * and LBP are valid here — a bill is never denominated in a tender-only currency.
+ * An unrecognised value throws rather than being reported as USD: silently
+ * relabelling a currency is how a report starts lying about what it is summing.
+ * The DB CHECK on ClientDebt.currency makes this unreachable for debts.
+ */
+export const asCurrency = (v: string): Currency => {
+  if (v === "USD" || v === "LBP") return v;
+  throw new Error(
+    `Unsupported obligation currency "${v}" — the clinic bills in USD (LBP on legacy rows).`,
+  );
+};
+
+/**
+ * The currency money was TENDERED in (payments only). Fail-closed for the same
+ * reason: this previously mapped anything that wasn't "LBP" to "USD", so a EUR
+ * payment would have been reported to every client, dashboard and drill-down as
+ * dollars. Backed by the `Payment_currency_supported` CHECK constraint.
+ */
+export const asTenderCurrency = (v: string): TenderCurrency => {
+  if (isTenderCurrency(v)) return v;
+  throw new Error(`Unsupported tender currency "${v}" on a payment — it cannot be valued.`);
+};
 export const asAppointmentStatus = (v: string) => v as AppointmentStatus;
 export const asVisitType = (v: string) => v as VisitType;
 

@@ -128,6 +128,7 @@ export function AdminDashboard() {
         title="Total income by method"
         periodLabel={rangeLabel(range.from, range.to)}
         byMethod={finance.incomeByMethod}
+        byTender={finance.incomeByTender}
       />
 
       <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">

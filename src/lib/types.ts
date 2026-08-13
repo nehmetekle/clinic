@@ -1,7 +1,16 @@
 import type { FoodListLanguage } from "./food-list";
+import type { TenderCurrency } from "./money";
 
 export type Role = "secretary" | "dietitian" | "admin";
 
+/**
+ * The denomination of an OBLIGATION — a catalog price, a basket line, a visit
+ * discount, a client debt, a session plan, an expense. Deliberately NOT widened
+ * to EUR: the clinic bills and is owed in USD (LBP survives for legacy pricing),
+ * and turning a bill into a foreign-currency obligation is explicitly out of
+ * scope. Money the patient hands over is a different axis — see `TenderCurrency`
+ * in `lib/money.ts`.
+ */
 export type Currency = "USD" | "LBP";
 
 // Single source of truth for payment methods: the option list every method
@@ -377,10 +386,23 @@ export interface Payment {
   // Amount actually received. There is no paid-vs-total split; any remainder a
   // client owes lives in ClientDebt, not on the payment.
   amountPaid: number;
-  currency: Currency;
-  // Exchange rate (1 USD = ? LBP) snapshotted when the payment was logged. Reports
-  // convert this record with this rate, never today's — so history never shifts.
+  // The currency the money was physically TENDERED in. A payment may be taken in
+  // USD, EUR or LBP whatever the obligation it settles — the obligation itself
+  // stays USD (see `Currency`).
+  currency: TenderCurrency;
+  // Exchange rate (1 USD = ? LBP) snapshotted when the payment was logged. Kept
+  // for every payment (and the only rate legacy rows carry); superseded by
+  // `fxRate` for valuing this row.
   usdToLbp: number;
+  // Units of THIS payment's `currency` per 1 USD, frozen at the moment it was
+  // recorded. `amountPaid / fxRate` is its USD value, forever — reports use this,
+  // never today's Settings, so changing a rate never re-prices history. Null only
+  // on rows written before multi-currency tender existed (USD or LBP, where
+  // `usdToLbp` means exactly the same thing).
+  fxRate?: number;
+  // `amountPaid / fxRate` — the USD the clinic accounts for. Precomputed by the
+  // server so no client ever has to (or gets to) do FX maths on money.
+  amountUsd: number;
   // Portion of `amountPaid` that is the card-payment surcharge fee (0 for every
   // non-card payment). The original, pre-surcharge amount is amountPaid - this.
   cardSurchargeAmount: number;
@@ -459,8 +481,14 @@ export interface VisitBasket {
   // Whish $200, each with its own receipt. `amount` is the basket-attributable
   // portion (excludes any card surcharge, so the entries sum to `total` above);
   // `cardSurchargeAmount` is the fee on top (0 for every non-card entry).
+  // `amount` is the USD-equivalent portion; `nativeAmount`/`currency`/`fxRate`
+  // record what was physically handed over, so a mixed-currency settlement stays
+  // auditable back to the notes on the counter.
   paymentSplits?: {
     method: PaymentMethod;
+    currency: TenderCurrency;
+    nativeAmount: number;
+    fxRate: number;
     amount: number;
     cardSurchargeAmount: number;
     receiptNumber: string;
@@ -741,15 +769,49 @@ export type ClientDebtStatus = "outstanding" | "cleared" | "voided";
 // unpaid/partial remainder deferred while the rest of the basket was collected)
 export type ClientDebtSource = "secretary_override";
 
+/**
+ * One entry of the append-only exchange-rate history (Pricing → rate history).
+ * Every field is server-derived; the client renders it and can never write it.
+ */
+export interface FxRateChangeEntry {
+  id: string;
+  rateKey: "usdToLbp" | "usdToEur";
+  currency: TenderCurrency;
+  /** Absent only for the first recorded change of a rate that was still unset. */
+  oldValue?: number;
+  newValue: number;
+  /** The change tripped the suspicious-delta guard and an admin confirmed it anyway. */
+  suspiciousOverride: boolean;
+  changedByName: string;
+  changedAt: string;
+}
+
+export interface TenderBreakdownEntry {
+  method: string;
+  currency: TenderCurrency;
+  /** USD-equivalent, each payment at its own frozen rate. */
+  usd: number;
+  /** Sum of the NATIVE amounts — never normalised away, so the drawer can be counted. */
+  native: number;
+}
+
 export interface ClientDebt {
   id: string;
   clientId: string;
   clientName: string;
   consultationId?: string;
   visitNumber?: number; // the visit this came from, for display
+  // The PRINCIPAL owed, always in `currency`. Never re-priced: a $400 debt is
+  // $400 whatever currency it is later paid in.
   amount: number;
   currency: Currency;
   usdToLbp: number; // exchange-rate snapshot (see Payment.usdToLbp)
+  // USD already applied to this debt (0 until a partial payment lands). Money
+  // tendered in EUR/LBP is converted at its own frozen rate before it lands here,
+  // so the debt itself never carries FX exposure.
+  paidAmount: number;
+  // `amount` (in USD) minus `paidAmount` — what is still owed. Server-computed.
+  outstandingAmount: number;
   reason: string;
   source: ClientDebtSource;
   status: ClientDebtStatus;
@@ -880,6 +942,14 @@ export interface DashboardSummary {
     // key is the blank/"Other" bucket), so a retired method keeps its own label.
     incomeByMethod: Record<string, number>;
     paymentsTodayByMethod: Record<string, number>;
+    // The same money split by method AND tender currency, for cash-drawer /
+    // account reconciliation: "Cash USD" and "Cash EUR" are the same method but
+    // different physical piles. `usd` is the accounting value (frozen rate);
+    // `native` is what is actually in the drawer. Keyed `method|currency`. A
+    // USD-only clinic day produces exactly one entry per method, so this never
+    // adds noise where there is none.
+    incomeByTender: TenderBreakdownEntry[];
+    paymentsTodayByTender: TenderBreakdownEntry[];
   };
   packagesSold: number;
   mostPopularPackage: string;

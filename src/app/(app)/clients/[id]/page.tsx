@@ -16,7 +16,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/ui/StatCard";
-import { FormRow, Select, Textarea } from "@/components/ui/Field";
+import { FormRow, MoneyInput, Select, Textarea } from "@/components/ui/Field";
 import {
   isReschedulable,
   RescheduleAppointmentModal,
@@ -39,6 +39,7 @@ import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import {
+  JESSY_METHOD,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_VALUES,
   VISIT_TYPE_LABELS,
@@ -56,7 +57,20 @@ import {
   formatMoney,
   formatTime,
   initials,
+  parseNumberInput,
 } from "@/lib/utils";
+import { CLINIC } from "@/lib/config";
+import {
+  TENDER_CURRENCY_LABELS,
+  TENDER_CURRENCY_VALUES,
+  formatFxRate,
+  formatTender,
+  formatUsd,
+  fxRateFor,
+  tenderToUsd,
+  usdToTender,
+  type TenderCurrency,
+} from "@/lib/money";
 
 // A future, still-scheduled appointment can be cancelled from the profile.
 // Same-day no-shows are handled on the Queue; this is for upcoming bookings the
@@ -80,6 +94,12 @@ export default function ClientProfilePage() {
   // Collect (clear) / write off (void) a tracked debt.
   const [debtAction, setDebtAction] = useState<{ debt: ClientDebt; mode: "clear" | "void" } | null>(null);
   const [debtMethod, setDebtMethod] = useState<PaymentMethod>("cash");
+  // The debt is a USD obligation; this is only the currency it is TENDERED in.
+  const [debtCurrency, setDebtCurrency] = useState<TenderCurrency>("USD");
+  // Native amount handed over. Blank = collect the whole outstanding balance (the
+  // original behaviour). Foreign tender rarely lands on the exact balance, so a
+  // shortfall is recorded as a PARTIAL payment rather than being refused.
+  const [debtTenderAmount, setDebtTenderAmount] = useState("");
   // Why the debt is being written off — mandatory for a void (mirrors the server).
   const [debtVoidReason, setDebtVoidReason] = useState("");
   const [debtSaving, setDebtSaving] = useState(false);
@@ -187,7 +207,15 @@ export default function ClientProfilePage() {
     setDebtSaving(true);
     try {
       if (debtAction.mode === "clear") {
-        await api.clearClientDebt(debtAction.debt.id, { method: debtMethod });
+        const native = parseNumberInput(debtTenderAmount);
+        await api.clearClientDebt(debtAction.debt.id, {
+          method: debtMethod,
+          // Omitted when the desk didn't override the amount/currency, so the
+          // server takes its original "clear the full balance in USD" path.
+          ...(debtCurrency !== "USD" || native > 0
+            ? { tender: [{ method: debtMethod, currency: debtCurrency, amount: native }] }
+            : {}),
+        });
         toast("Debt collected — payment recorded");
       } else {
         await api.voidClientDebt(debtAction.debt.id, { reason });
@@ -712,25 +740,41 @@ export default function ClientProfilePage() {
               <div className="space-y-6">
                 <Card>
                   <Table>
-                    <THead><TR><TH>Receipt</TH><TH>Motif</TH><TH>Amount</TH><TH>Method</TH><TH>Date</TH></TR></THead>
+                    <THead><TR><TH>Receipt</TH><TH>Motif</TH><TH>Amount</TH><TH>Method</TH><TH>Date</TH><TH></TH></TR></THead>
                     <TBody>
                       {pays.map((p) => (
                         <TR key={p.id}>
                           <TD className="font-mono text-xs">{p.receiptNumber}</TD>
                           <TD>{p.motif}</TD>
                           <TD className="font-medium">
-                            {formatMoney(p.amountPaid, p.currency)}
+                            {formatTender(p.amountPaid, p.currency)}
                             {p.cardSurchargeAmount > 0 && (
                               <span className="ml-1 text-xs font-normal text-slate-400">
-                                (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                                (incl. {formatTender(p.cardSurchargeAmount, p.currency)} card fee)
+                              </span>
+                            )}
+                            {p.currency !== "USD" && (
+                              <span className="block text-xs font-normal text-slate-400">
+                                ≈ {formatUsd(p.amountUsd)}
+                                {p.fxRate !== undefined && ` · ${formatFxRate(p.currency, p.fxRate)}`}
                               </span>
                             )}
                           </TD>
                           <TD className="capitalize text-slate-500">{p.method.replace("_", " ")}</TD>
                           <TD className="text-slate-500">{formatDate(p.date)}</TD>
+                          <TD className="text-right">
+                            <a
+                              href={api.receiptPrintUrl(p.id)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm font-medium text-brand-700 hover:underline"
+                            >
+                              Print
+                            </a>
+                          </TD>
                         </TR>
                       ))}
-                      {pays.length === 0 && <TR><TD colSpan={5} className="py-6 text-center text-slate-400">No payments.</TD></TR>}
+                      {pays.length === 0 && <TR><TD colSpan={6} className="py-6 text-center text-slate-400">No payments.</TD></TR>}
                     </TBody>
                   </Table>
                 </Card>
@@ -753,10 +797,25 @@ export default function ClientProfilePage() {
                             <TD className="text-slate-500">{formatDate(d.createdAt)}</TD>
                             <TD className="text-slate-500">{d.visitNumber ? `#${d.visitNumber}` : "—"}</TD>
                             <TD>{d.reason}</TD>
-                            <TD className="font-medium">{formatMoney(d.amount, d.currency)}</TD>
+                            <TD className="font-medium">
+                              {formatMoney(d.amount, d.currency)}
+                              {/* A part-paid debt shows what is still owed — the
+                                  principal alone would overstate it. */}
+                              {d.status === "outstanding" && d.paidAmount > 0 && (
+                                <span className="block text-xs font-normal text-slate-400">
+                                  {formatUsd(d.outstandingAmount)} still owed
+                                </span>
+                              )}
+                            </TD>
                             <TD>
-                              <Badge tone={d.status === "outstanding" ? "amber" : d.status === "cleared" ? "green" : "gray"}>
-                                {d.status === "outstanding" ? "Outstanding" : d.status === "cleared" ? "Collected" : "Written off"}
+                              <Badge tone={d.status === "outstanding" ? (d.paidAmount > 0 ? "blue" : "amber") : d.status === "cleared" ? "green" : "gray"}>
+                                {d.status === "outstanding"
+                                  ? d.paidAmount > 0
+                                    ? "Part-paid"
+                                    : "Outstanding"
+                                  : d.status === "cleared"
+                                    ? "Collected"
+                                    : "Written off"}
                               </Badge>
                             </TD>
                             <TD className="text-right">
@@ -767,6 +826,8 @@ export default function ClientProfilePage() {
                                     variant="outline"
                                     onClick={() => {
                                       setDebtMethod("cash");
+                                      setDebtCurrency("USD");
+                                      setDebtTenderAmount("");
                                       setDebtAction({ debt: d, mode: "clear" });
                                     }}
                                   >
@@ -867,39 +928,141 @@ export default function ClientProfilePage() {
             <p>
               {debtAction.mode === "clear" ? (
                 <>
-                  Collect <span className="font-semibold text-slate-800">{formatMoney(debtAction.debt.amount, debtAction.debt.currency)}</span>{" "}
-                  for “{debtAction.debt.reason}”. This records a payment and clears the debt.
+                  Collect <span className="font-semibold text-slate-800">{formatUsd(debtAction.debt.outstandingAmount)}</span>{" "}
+                  for “{debtAction.debt.reason}”.
+                  {debtAction.debt.paidAmount > 0 && (
+                    <>
+                      {" "}
+                      <span className="text-slate-500">
+                        ({formatUsd(debtAction.debt.paidAmount)} of {formatUsd(debtAction.debt.amount)} already collected.)
+                      </span>
+                    </>
+                  )}{" "}
+                  The debt is owed in USD — it can be paid in any currency below.
                 </>
               ) : (
                 <>
-                  Write off <span className="font-semibold text-slate-800">{formatMoney(debtAction.debt.amount, debtAction.debt.currency)}</span>{" "}
+                  Write off <span className="font-semibold text-slate-800">{formatUsd(debtAction.debt.outstandingAmount)}</span>{" "}
                   for “{debtAction.debt.reason}”. No payment is recorded — the debt is forgiven and closed.
                 </>
               )}
             </p>
-            {debtAction.mode === "clear" && (
-              <FormRow label="Payment method">
-                <Select value={debtMethod} onChange={(e) => setDebtMethod(e.target.value as PaymentMethod)}>
-                  {PAYMENT_METHOD_VALUES.map((m) => (
-                    <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
-                  ))}
-                </Select>
-                {(() => {
-                  const rate = settings.data?.cardSurchargePercent ?? 0;
-                  const fee = cardSurchargeAmount(debtAction.debt.amount, debtMethod, rate);
-                  return fee > 0 ? (
-                    <div className="mt-1.5 flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
-                      <span className="font-medium">Card fee {rate}%</span>
-                      <span>+{formatMoney(fee, debtAction.debt.currency)}</span>
+            {debtAction.mode === "clear" && (() => {
+              const outstanding = debtAction.debt.outstandingAmount;
+              const rates = {
+                usdToLbp: settings.data?.usdToLbp ?? CLINIC.defaultUsdToLbp,
+                usdToEur: settings.data?.usdToEur ?? CLINIC.defaultUsdToEur,
+              };
+              let fxRate: number | null;
+              try {
+                fxRate = fxRateFor(debtCurrency, rates);
+              } catch {
+                fxRate = null;
+              }
+              // Blank amount = collect the whole balance, expressed in the chosen
+              // currency, so the desk is told exactly what to take.
+              const typed = parseNumberInput(debtTenderAmount);
+              const native =
+                typed > 0
+                  ? typed
+                  : fxRate === null
+                    ? 0
+                    : usdToTender(outstanding, debtCurrency, fxRate);
+              const appliedUsd = fxRate === null ? 0 : tenderToUsd(native, debtCurrency, fxRate);
+              const remainingUsd = Math.max(0, Math.round((outstanding - appliedUsd) * 100) / 100);
+              const overpaying = appliedUsd - outstanding > 0.01;
+              const surchargePct = settings.data?.cardSurchargePercent ?? 0;
+              const fee = cardSurchargeAmount(native, debtMethod, surchargePct);
+              return (
+                <>
+                  <div className="flex gap-2">
+                    <FormRow label="Payment method" className="flex-1">
+                      <Select
+                        value={debtMethod}
+                        onChange={(e) => {
+                          const method = e.target.value as PaymentMethod;
+                          setDebtMethod(method);
+                          // Jessy's ledger is USD-only; the server refuses anything else.
+                          if (method === JESSY_METHOD) setDebtCurrency("USD");
+                        }}
+                      >
+                        {PAYMENT_METHOD_VALUES.map((m) => (
+                          <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
+                        ))}
+                      </Select>
+                    </FormRow>
+                    <FormRow label="Currency" className="w-32">
+                      <Select
+                        value={debtCurrency}
+                        disabled={debtMethod === JESSY_METHOD}
+                        onChange={(e) => setDebtCurrency(e.target.value as TenderCurrency)}
+                      >
+                        {(debtMethod === JESSY_METHOD
+                          ? (["USD"] as const)
+                          : TENDER_CURRENCY_VALUES
+                        ).map((c) => (
+                          <option key={c} value={c}>{TENDER_CURRENCY_LABELS[c]}</option>
+                        ))}
+                      </Select>
+                    </FormRow>
+                  </div>
+                  <FormRow label={`Amount collected (${debtCurrency})`}>
+                    <MoneyInput
+                      value={debtTenderAmount}
+                      onValueChange={setDebtTenderAmount}
+                      placeholder={fxRate === null ? "0" : String(native)}
+                    />
+                    <p className="mt-1 text-xs text-slate-400">
+                      Leave blank to collect the whole balance. A smaller amount is recorded as a
+                      part-payment and the debt stays open.
+                    </p>
+                  </FormRow>
+                  {fxRate === null ? (
+                    <p className="text-xs font-medium text-rose-600">
+                      No usable {debtCurrency} rate — set one in Pricing before collecting.
+                    </p>
+                  ) : (
+                    <div className="space-y-1 rounded-md bg-slate-50 px-3 py-2 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Collecting</span>
+                        <span className="font-medium text-slate-700">
+                          {formatTender(native, debtCurrency)}
+                          {debtCurrency !== "USD" && (
+                            <span className="text-slate-400"> · {formatFxRate(debtCurrency, fxRate)}</span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">USD equivalent</span>
+                        <span className="font-medium text-slate-700">{formatUsd(appliedUsd)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Debt remaining after</span>
+                        <span className={`font-semibold ${remainingUsd > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                          {formatUsd(remainingUsd)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {overpaying && (
+                    <p className="text-xs font-medium text-rose-600">
+                      That is more than the {formatUsd(outstanding)} outstanding — the clinic records no
+                      credit balances, so reduce the amount.
+                    </p>
+                  )}
+                  {fee > 0 && (
+                    <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                      <span className="font-medium">Card fee {surchargePct}%</span>
+                      <span>+{formatTender(fee, debtCurrency)}</span>
                       <span className="text-amber-400">→</span>
                       <span className="font-semibold">
-                        {formatMoney(debtAction.debt.amount + fee, debtAction.debt.currency)} charged
+                        {formatTender(native + fee, debtCurrency)} charged
                       </span>
                     </div>
-                  ) : null;
-                })()}
-              </FormRow>
-            )}
+                  )}
+                </>
+              );
+            })()}
             {debtAction.mode === "void" && (
               <FormRow label="Reason for writing off">
                 <Textarea

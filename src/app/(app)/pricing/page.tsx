@@ -9,9 +9,15 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { FormRow, Input, MoneyInput, Select } from "@/components/ui/Field";
 import { useApi } from "@/lib/use-api";
-import { api } from "@/lib/api";
+import { api, SuspiciousRateError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { formatMoney, parseNumberInput } from "@/lib/utils";
+import { formatMoney, formatDate, parseNumberInput } from "@/lib/utils";
+import {
+  FX_RATE_LABELS,
+  describeSuspicion,
+  formatFxRate,
+  type FxSuspicion,
+} from "@/lib/money";
 import type { Currency, Package, Product, ServicePrice, StaffUser } from "@/lib/types";
 
 /**
@@ -994,9 +1000,18 @@ function StockAdjustModal({
 function ExchangeRateCard() {
   const { toast } = useToast();
   const settings = useApi(() => api.getSettings());
+  const history = useApi(() => api.listFxRateChanges());
   const [rate, setRate] = useState("");
   const [eurRate, setEurRate] = useState("");
   const [saving, setSaving] = useState(false);
+  // Set when the server refused a change as suspicious. Holds the jumps it
+  // detected AND the exact values that were submitted — confirming re-sends those
+  // same values, so editing the field afterwards invalidates the confirmation
+  // (the server checks this too; this just keeps the UI honest).
+  const [pending, setPending] = useState<
+    { suspicions: FxSuspicion[]; usdToLbp: number; usdToEur: number } | null
+  >(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     if (settings.data) {
@@ -1005,7 +1020,7 @@ function ExchangeRateCard() {
     }
   }, [settings.data]);
 
-  async function saveRate() {
+  async function submit(confirm: boolean) {
     const usdToLbp = parseNumberInput(rate);
     const usdToEur = parseNumberInput(eurRate);
     if (!(usdToLbp > 0) || !(usdToEur > 0)) {
@@ -1014,32 +1029,135 @@ function ExchangeRateCard() {
     }
     setSaving(true);
     try {
-      await api.updateSettings({ usdToLbp, usdToEur });
-      toast("Exchange rates updated");
+      await api.updateSettings({
+        usdToLbp,
+        usdToEur,
+        // Only ever sent as part of an explicit confirm, and always carrying the
+        // values actually being saved — never a bare "ignore the warning" flag.
+        ...(confirm ? { confirmSuspicious: { usdToLbp, usdToEur } } : {}),
+      });
+      setPending(null);
+      toast(confirm ? "Exchange rates updated (change confirmed)" : "Exchange rates updated");
       settings.refetch();
+      history.refetch();
     } catch (e) {
-      toast((e as Error).message);
+      if (e instanceof SuspiciousRateError) {
+        // Nothing was saved. Show exactly what would change and make the admin
+        // say yes to it deliberately.
+        setPending({ suspicions: e.suspicions, usdToLbp, usdToEur });
+      } else {
+        toast((e as Error).message);
+      }
     } finally {
       setSaving(false);
     }
   }
 
+  // Editing a field after being warned retires the warning — the next submit is a
+  // fresh, unconfirmed one.
+  function edit(setter: (v: string) => void) {
+    return (v: string) => {
+      setPending(null);
+      setter(v);
+    };
+  }
+
+  const rows = history.data ?? [];
+
   return (
-    <Card>
-      <CardHeader title="Exchange rates" subtitle="Used to convert totals (USD → LBP) and as a USD → EUR reference." />
-      <CardBody className="grid gap-4">
-        <FormRow label="1 USD = ? LBP">
-          <MoneyInput value={rate} onValueChange={setRate} placeholder="89500" />
-        </FormRow>
-        <FormRow label="1 USD = ? EUR">
-          <MoneyInput value={eurRate} onValueChange={setEurRate} placeholder="0.92" />
-        </FormRow>
-        <div className="flex justify-end">
-          <Button onClick={saveRate} disabled={saving || settings.loading}>
-            {saving ? "Saving…" : "Save rates"}
+    <>
+      <Card>
+        <CardHeader
+          title="Exchange rates"
+          subtitle="Used to convert every LBP and EUR payment to the USD the clinic accounts in."
+          action={
+            <Button variant="outline" size="sm" onClick={() => setHistoryOpen(true)}>
+              Change history
+            </Button>
+          }
+        />
+        <CardBody className="grid gap-4">
+          <FormRow label="1 USD = ? LBP">
+            <MoneyInput value={rate} onValueChange={edit(setRate)} placeholder="89500" />
+          </FormRow>
+          <FormRow label="1 USD = ? EUR">
+            <MoneyInput value={eurRate} onValueChange={edit(setEurRate)} placeholder="0.92" />
+          </FormRow>
+          <p className="text-xs text-slate-400">
+            Changing a rate affects payments taken from now on. Payments already recorded keep the
+            rate frozen on them and are never re-valued.
+          </p>
+          {pending && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+              <p className="text-sm font-semibold text-amber-900">This looks like a typo</p>
+              <ul className="mt-1 space-y-1 text-xs text-amber-800">
+                {pending.suspicions.map((sx) => (
+                  <li key={sx.rateKey}>{describeSuspicion(sx)}</li>
+                ))}
+              </ul>
+              <div className="mt-3 flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setPending(null)} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={() => submit(true)} disabled={saving}>
+                  {saving ? "Saving…" : "Yes, save this rate"}
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button onClick={() => submit(false)} disabled={saving || settings.loading || Boolean(pending)}>
+              {saving ? "Saving…" : "Save rates"}
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
+
+      <Modal
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        title="Exchange rate history"
+        footer={
+          <Button variant="outline" onClick={() => setHistoryOpen(false)}>
+            Close
           </Button>
-        </div>
-      </CardBody>
-    </Card>
+        }
+      >
+        <p className="mb-3 text-sm text-slate-500">
+          Every change to a rate, newest first. This record is append-only — it cannot be edited or
+          deleted from anywhere in the app.
+        </p>
+        {rows.length === 0 ? (
+          <p className="py-6 text-center text-sm text-slate-400">No rate changes recorded yet.</p>
+        ) : (
+          <ul className="space-y-1">
+            {rows.map((r) => (
+              <li key={r.id} className="rounded-lg border border-slate-100 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-slate-800">{FX_RATE_LABELS[r.rateKey]}</span>
+                  <span className="text-slate-700">
+                    {r.oldValue === undefined ? (
+                      <span className="text-slate-400">(unset)</span>
+                    ) : (
+                      formatFxRate(r.currency, r.oldValue)
+                    )}
+                    <span className="mx-1 text-slate-300">→</span>
+                    <span className="font-semibold">{formatFxRate(r.currency, r.newValue)}</span>
+                  </span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+                  <span>{r.changedByName}</span>
+                  <span>·</span>
+                  <span>{formatDate(r.changedAt)}</span>
+                  {r.suspiciousOverride && (
+                    <Badge tone="amber">Unusual change — confirmed by admin</Badge>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
+    </>
   );
 }

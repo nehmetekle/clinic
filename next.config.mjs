@@ -46,6 +46,10 @@ const nextConfig = {
       "./src/server/pdf/fonts/**",
       "./src/server/pdf/assets/**",
     ],
+    // The receipt renderer reads the wordmark from disk at request time, so it
+    // must be traced into the serverless bundle too — otherwise this route 500s
+    // in production only, exactly like the Food List route would.
+    "/api/receipts/[paymentId]": ["./src/server/pdf/assets/**"],
   },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];

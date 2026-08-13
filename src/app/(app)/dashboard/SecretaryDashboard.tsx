@@ -21,6 +21,7 @@ import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
 import { formatMoney, formatTime } from "@/lib/utils";
+import { formatTender, formatUsd } from "@/lib/money";
 
 export function SecretaryDashboard() {
   const router = useRouter();
@@ -65,6 +66,7 @@ export function SecretaryDashboard() {
         title="Payments today by method"
         periodLabel="today"
         byMethod={data.finance.paymentsTodayByMethod}
+        byTender={data.finance.paymentsTodayByTender}
       />
 
       <div className="mt-6">
@@ -133,10 +135,15 @@ export function SecretaryDashboard() {
                   <TD>{p.clientName ?? "—"}</TD>
                   <TD className="text-slate-500">{p.motif}</TD>
                   <TD className="font-medium">
-                    {formatMoney(p.amountPaid, p.currency)}
+                    {formatTender(p.amountPaid, p.currency)}
                     {p.cardSurchargeAmount > 0 && (
                       <span className="ml-1 text-xs font-normal text-slate-400">
-                        (incl. {formatMoney(p.cardSurchargeAmount, p.currency)} card fee)
+                        (incl. {formatTender(p.cardSurchargeAmount, p.currency)} card fee)
+                      </span>
+                    )}
+                    {p.currency !== "USD" && (
+                      <span className="block text-xs font-normal text-slate-400">
+                        ≈ {formatUsd(p.amountUsd)}
                       </span>
                     )}
                   </TD>

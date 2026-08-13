@@ -8,8 +8,6 @@ import { resolveReferralFee } from "./referrers";
 import { consultationInclude, toConsultation } from "./consultations";
 import { paymentInclude, toPayment } from "./payments";
 import { listSessionPlans } from "./sessionPlans";
-import { getUsdToLbp } from "./settings";
-import { toUsdFrozen } from "@/lib/config";
 import type { Client, ClientDetail, Role } from "@/lib/types";
 
 /**
@@ -195,7 +193,7 @@ export async function getClientDetail(
   // definition in the appointments repository for the rationale.
   await expirePastScheduledAppointments();
 
-  const [appointments, consultations, payments, sessionPlans, debts, currentRate] =
+  const [appointments, consultations, payments, sessionPlans, debts] =
     await Promise.all([
       db.appointment.findMany({
         where: { clientId: id },
@@ -219,16 +217,18 @@ export async function getClientDetail(
       listSessionPlans(id),
       // Tracked debts (owed but not collected) — separate from the payment balance.
       listClientDebts(id),
-      getUsdToLbp(),
     ]);
 
   // Outstanding tracked debts in USD (frozen-rate summed). Tracked debts are the
   // single source of truth for what a patient owes — recorded explicitly when a
   // visit closes unpaid or the secretary logs an override at settlement. There is
   // no payment-based "charged minus paid" balance.
+  // `outstandingAmount` is the principal minus anything already collected against
+  // it (partial settlement), computed server-side in the debt serializer at the
+  // debt's own frozen rate.
   const debtTotal = debts
     .filter((d) => d.status === "outstanding")
-    .reduce((sum, d) => sum + toUsdFrozen(d.amount, d.currency, d.usdToLbp, currentRate), 0);
+    .reduce((sum, d) => sum + d.outstandingAmount, 0);
 
   const mapped = toClient(client);
   // Non-clinical roles (secretary) get contact + visit/package + payment data,

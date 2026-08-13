@@ -1,3 +1,5 @@
+import { FxError } from "./money";
+
 /**
  * Clinic-wide configuration. In production these settings would come from the DB.
  */
@@ -154,9 +156,33 @@ export function isWeekendIso(iso: string | null | undefined): boolean {
   return day === 0 || day === 6;
 }
 
-/** Converts an amount to USD using the given rate (1 USD = rate LBP). */
+/**
+ * Converts an OBLIGATION amount to USD (1 USD = `usdToLbp` LBP).
+ *
+ * Obligations — basket lines, discounts, debts, session plans, expenses, catalog
+ * prices — are denominated in USD or LBP only. This is deliberately NOT the
+ * conversion used for money the patient hands over: tender may also be EUR and
+ * goes through `tenderToUsd` in `lib/money.ts`, which carries its own frozen rate.
+ *
+ * Fails CLOSED. It previously returned `amount` unchanged for anything that
+ * wasn't "LBP", which silently valued an unknown currency 1:1 with the dollar —
+ * a revenue misstatement waiting for the first non-USD/LBP row. An unrecognised
+ * currency, or an unusable rate, now throws rather than guessing.
+ */
 export function toUsd(amount: number, currency: string, usdToLbp: number): number {
-  return currency === "LBP" ? amount / usdToLbp : amount;
+  if (currency === "USD") return amount;
+  if (currency === "LBP") {
+    if (!Number.isFinite(usdToLbp) || usdToLbp <= 0) {
+      throw new FxError(
+        `The LBP exchange rate is not usable (${String(usdToLbp)}); an LBP amount cannot be valued.`,
+      );
+    }
+    return amount / usdToLbp;
+  }
+  throw new FxError(
+    `${String(currency)} is not a valid currency for an amount the clinic bills or owes ` +
+      `(obligations are USD or LBP). Money tendered in another currency is recorded on the payment.`,
+  );
 }
 
 /**
