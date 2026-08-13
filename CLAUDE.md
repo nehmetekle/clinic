@@ -187,6 +187,45 @@ The editor's live basket preview mirrors the server's billing kernel line for li
 previews and the amount charged can't drift. Regression coverage:
 [tests/race/t13-billing-rules.ts](tests/race/t13-billing-rules.ts) (`npm run test:race`).
 
+## Machine visits (machine-only attendance)
+A patient who comes in **only** to use prepaid machine sessions is recorded as a
+`MachineVisit` + `MachineVisitItem` — a real visit in history that is **not** a
+consultation. No visit number, no measurements/notes/goals, no Food List, no
+consultation fee, no close flow. Logged from the client profile (**Treatments**
+tab — renamed from "Bundles" — either a row's "Log visit" or the card's "Log
+machine visit") or from the queue board ("Machine visit" on a checked-in/with-doctor
+card, which carries the appointment id along).
+- **Permission**: `canLogMachineVisit` (`src/server/auth.ts`) = **dietitian +
+  admin**. Deciding a consultation isn't needed is the clinical side's call. The
+  secretary still settles whatever basket it raises through the normal checkout.
+- **Billing is consumption-driven, never a purchase**: prepaid credit covers today
+  first; only `max(0, sessions − credit)` is billed, at the plan's own frozen
+  `unitPrice`, onto an ordinary pending `VisitBasket` (`machineVisitId`, no
+  consultation fee line). Consumption is capped at `sessionsNeeded − sessionsUsed`,
+  so a machine visit can never enlarge a plan. Bundles are prepaid in full and
+  never bill; over-consuming one is refused, not clamped.
+- **Void, don't edit** — the row stays in history with actor/time/reason, sessions
+  come back exactly, its pending basket is deleted. A **settled** machine visit
+  can't be voided (there is no refund path in this app, by design).
+- **Appointments**: an explicit id from the queue is completed (after an ownership
+  check); with no id, only a single unambiguous live appointment is auto-completed.
+  **Consultations now follow the same rule** via `Consultation.appointmentId` —
+  closing a visit completes the booking it was started from and no other (it used
+  to complete every live appointment the patient had).
+- **Reporting**: counts as attendance and machine usage, never as a consultation —
+  `counts.machineVisits` and a separate `machineVisits` column in staff activity
+  sit alongside (never inside) the consultation figures. "Machine utilization" on
+  Reports shows sessions per machine with the machine-visit vs consultation split;
+  consultation sessions count from **closed** visits only (open drafts still
+  consume balances — it's a reporting rule, not an accounting one).
+- **Session counters are now one implementation** for both paths:
+  `src/server/repositories/sessionCounters.ts` — guarded single-statement SQL
+  updates (no read-then-write), no silent clamping, plus CHECK constraints on the
+  counters. `updateConsultation`/`deleteConsultation` also take the visit's row
+  lock, which fixed a real pre-existing double-count on concurrent draft saves.
+- Tests: `tests/race/t19-machine-visits.ts`. Full detail in
+  [docs/known-issues.md](docs/known-issues.md) §17.
+
 ## Rescheduling an appointment
 `PATCH /api/appointments/[id]/reschedule` moves a booking in place (date/time/
 doctor/visit type; status stays `scheduled`), kept separate from the status

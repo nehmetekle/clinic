@@ -15,6 +15,13 @@ import {
 import { reconcileVisitBloodSampleTx } from "./bloodSamples";
 import { userIdByEmail } from "./staff";
 import { activeMachineKey } from "./sessionPlans";
+import {
+  consumeClientPackageTx,
+  consumeSessionPlanTx,
+  releaseClientPackageTx,
+  releaseSessionPlanTx,
+  statusForUsage,
+} from "./sessionCounters";
 import type {
   Consultation,
   ConsultationBloodTestCharge,
@@ -138,6 +145,9 @@ export function toConsultation(c: ConsultationRow): Consultation {
   return {
     id: c.id,
     clientId: c.clientId,
+    // The doctor who owns this visit. Drives the "only my own unclosed visits"
+    // rule in the UI; the server enforces it independently (assertVisitOwnership).
+    dietitianId: c.dietitianId ?? undefined,
     // A closed visit reads its frozen name; an open draft reads the live one, so
     // a mid-visit correction to a staff member's name still shows up. Closed
     // visits from before the snapshot column existed fall back to the relation.
@@ -207,7 +217,13 @@ export function toConsultation(c: ConsultationRow): Consultation {
 }
 
 export async function listConsultations(
-  filter: { clientId?: string; status?: ConsultationStatus; date?: string } = {},
+  filter: {
+    clientId?: string;
+    status?: ConsultationStatus;
+    date?: string;
+    /** Restrict to one doctor's own visits (plus unowned ones). */
+    dietitianId?: string;
+  } = {},
 ): Promise<ConsultationListItem[]> {
   // Server-side filtering keeps callers (the queue especially) from pulling every
   // consultation ever recorded — they ask only for the status/day they render.
@@ -218,6 +234,11 @@ export async function listConsultations(
   // `date` string the client compares against (even for a visit recorded just
   // after clinic-midnight, whose UTC day differs).
   if (filter.date) where.date = clinicDayRange(filter.date);
+  // A doctor scoping to "mine" also keeps unowned visits — nobody else can claim
+  // those, and hiding them from everyone would strand them open forever.
+  if (filter.dietitianId) {
+    where.OR = [{ dietitianId: filter.dietitianId }, { dietitianId: null }];
+  }
   const rows = await db.consultation.findMany({
     where,
     include,
@@ -230,6 +251,8 @@ export async function listConsultations(
 }
 
 export type ConsultationInput = {
+  /** The appointment this visit fulfils, when it was started from the queue. */
+  appointmentId?: string | null;
   clientId: string;
   dietitianId?: string | null;
   weightKg?: number;
@@ -282,13 +305,6 @@ export type ConsultationInput = {
   };
 };
 
-/** Keeps active↔completed in step with usage; preserves other statuses. */
-function statusForUsage(current: string, used: number, total: number): string {
-  if (used >= total) return "completed";
-  if (current === "completed") return "active"; // reactivate when a reversal frees a session
-  return current;
-}
-
 /**
  * Applies (`sign=+1`) or reverses (`sign=-1`) a consultation's usage effect on the
  * session plans and packages it draws from, reading the persisted rows as the
@@ -296,12 +312,23 @@ function statusForUsage(current: string, used: number, total: number): string {
  * re-applies (+1), so usage is always the true total and never double-counts.
  * `sessionsUsed` (clinical) is what moves here; `sessionsPaid` is money-driven and
  * advances only at settlement.
+ *
+ * The counter arithmetic itself lives in repositories/sessionCounters.ts, shared
+ * with machine visits: every move is a single guarded SQL statement, so two
+ * saves landing together can no longer lose one another's consumption, and a
+ * bundle that is short refuses the save instead of silently recording fewer
+ * sessions than the dietitian entered.
  */
 async function applyConsultationUsage(
   tx: Prisma.TransactionClient,
   consultationId: string,
   sign: 1 | -1,
 ): Promise<void> {
+  const consultation = await tx.consultation.findUnique({
+    where: { id: consultationId },
+    select: { clientId: true },
+  });
+  if (!consultation) return;
   const treatments = await tx.consultationTreatment.findMany({ where: { consultationId } });
 
   const planDelta = new Map<string, number>();
@@ -316,26 +343,50 @@ async function applyConsultationUsage(
   }
 
   for (const [planId, amt] of planDelta) {
-    const plan = await tx.sessionPlan.findUnique({ where: { id: planId } });
-    if (!plan) continue;
-    const newUsed = Math.max(0, plan.sessionsUsed + sign * amt);
-    const status = statusForUsage(plan.status, newUsed, plan.sessionsNeeded);
-    await tx.sessionPlan.update({
-      where: { id: planId },
-      // Keep the uniqueness key in step with the status — a plan that completes
-      // frees its machine for a new plan, and a reversal re-claims it.
-      data: { sessionsUsed: newUsed, status, activeMachineKey: activeMachineKey(status, plan.machine) },
-    });
+    if (sign === 1) {
+      // No `sessionsNeeded` ceiling here: the consultation editor is where that
+      // number is set, and recording more sessions delivered than currently
+      // ordered has always been allowed on this path.
+      await consumeSessionPlanTx(tx, {
+        planId,
+        clientId: consultation.clientId,
+        sessions: amt,
+        ceiling: false,
+      });
+    } else {
+      await releaseSessionPlanTx(tx, planId, amt);
+    }
   }
   for (const [pkgId, amt] of pkgDelta) {
-    const cp = await tx.clientPackage.findUnique({ where: { id: pkgId } });
-    if (!cp) continue;
-    const newUsed = Math.max(0, Math.min(cp.totalSessions, cp.usedSessions + sign * amt));
-    await tx.clientPackage.update({
-      where: { id: pkgId },
-      data: { usedSessions: newUsed, status: statusForUsage(cp.status, newUsed, cp.totalSessions) },
-    });
+    if (sign === 1) {
+      await consumeClientPackageTx(tx, {
+        packageId: pkgId,
+        clientId: consultation.clientId,
+        sessions: amt,
+      });
+    } else {
+      await releaseClientPackageTx(tx, pkgId, amt);
+    }
   }
+}
+
+/** Appointment states a patient can be in while physically at the clinic. */
+const LIVE_APPOINTMENT_STATUSES = ["checked_in", "with_dietitian"];
+
+/**
+ * Takes the visit's own row lock for the rest of the transaction.
+ *
+ * A rebuild (`updateConsultation`) reverses this visit's usage from its persisted
+ * treatment rows and then re-applies it from the new ones. The counter writes are
+ * individually atomic, but the READ of those treatment rows is not: two saves of
+ * the same draft (two tabs, a double-submit) could both read the pre-edit rows,
+ * each reverse the same session once and each apply their own — leaving the plan
+ * over-consumed. Serializing on the consultation makes the whole reverse/re-apply
+ * one indivisible edit; the second save then re-reads the rows the first
+ * committed, which is exactly what the reversal arithmetic assumes.
+ */
+async function lockConsultationTx(tx: Prisma.TransactionClient, id: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "Consultation" WHERE "id" = ${id} FOR UPDATE`;
 }
 
 /**
@@ -360,7 +411,13 @@ async function reconcileSessionPlanNeedsTx(
       select: { sessionsNeeded: true },
     });
     const fromTreatments = rows.reduce((m, r) => Math.max(m, r.sessionsNeeded), 0);
-    const needed = Math.max(1, plan.sessionsPaid, fromTreatments);
+    // Floors: money already collected keeps its credit, and sessions already
+    // DELIVERED can't be un-needed either — a machine visit consumes against this
+    // plan without ever raising `sessionsNeeded`, so trimming below `sessionsUsed`
+    // would leave the plan owing fewer sessions than the patient has had. This
+    // consultation's own usage was released moments ago (applyConsultationUsage
+    // runs first), so what's left here belongs to other visits.
+    const needed = Math.max(1, plan.sessionsPaid, plan.sessionsUsed, fromTreatments);
     if (needed === plan.sessionsNeeded) continue;
     const status = statusForUsage(plan.status, plan.sessionsUsed, needed);
     await tx.sessionPlan.update({
@@ -1002,36 +1059,69 @@ async function assertBasketSettledTx(
 }
 
 /**
- * Closing a visit finalizes it clinically, so the client's in-clinic appointment
- * is done: flip their live appointment to `completed` so it leaves the board for
- * everyone. The real signal is "the dietitian closed this visit," not which exact
- * queue button was pressed first — so we complete the appointment whether it was
- * sitting at `with_dietitian` OR still at `checked_in` (the secretary never clicked
- * "Send to dietitian", but the dietitian saw the client and closed the visit
- * anyway). Both are "physically present now" states, of which a client realistically
- * has exactly one, so matching by client + live status stays unambiguous even
- * though it isn't date-scoped.
+ * Completes the appointment this visit was fulfilling — that one, and nothing
+ * else.
  *
- * Deliberately NOT broadened to `scheduled`: that match isn't date-scoped, so
- * completing on `scheduled` would risk retiring a client's FUTURE booking when an
- * unrelated walk-in visit closes today. Terminal states (`completed`/`no_show`/
- * `cancelled`) are left alone — closing a visit shouldn't revive them.
+ * `appointmentId` is the link captured when the visit was started from the queue.
+ * When it is present we act on exactly that booking: a patient with two
+ * appointments on the board (a re-book, a second treatment slot) must not have
+ * both closed out by one visit, which is what the old client-wide `updateMany`
+ * did.
  *
- * Matched by client + live status, not by date — a consultation is dated
- * `new Date()` while the appointment carries its scheduled day, so the two dates
- * need not coincide. A walk-in with no such appointment is a clean no-op. Runs in
- * the caller's transaction so the appointment and close commit together.
+ * With no link (a walk-in, or a visit started outside the queue flow) we keep the
+ * common case working — a single live appointment is completed — but stop at
+ * ambiguity: two or more candidates and none is completed, because guessing is
+ * how the wrong booking gets closed. Runs in the caller's transaction so the
+ * appointment and the close commit together.
  */
 async function completeLinkedAppointmentTx(
   tx: Prisma.TransactionClient,
   clientId: string,
+  appointmentId: string | null,
 ): Promise<void> {
+  if (appointmentId) {
+    // Scoped to this client as well as this id: belt-and-braces against a link
+    // that was somehow written for another patient's booking.
+    await tx.appointment.updateMany({
+      where: { id: appointmentId, clientId, status: { in: LIVE_APPOINTMENT_STATUSES } },
+      // Stamp when it finished so the queue's "Done" list can key on the close time
+      // (today), not the appointment's originally-scheduled date.
+      data: { status: "completed", completedAt: new Date() },
+    });
+    return;
+  }
+
+  const live = await tx.appointment.findMany({
+    where: { clientId, status: { in: LIVE_APPOINTMENT_STATUSES } },
+    select: { id: true },
+  });
+  if (live.length !== 1) return;
   await tx.appointment.updateMany({
-    where: { clientId, status: { in: ["checked_in", "with_dietitian"] } },
-    // Stamp when it finished so the queue's "Done" list can key on the close time
-    // (today), not the appointment's originally-scheduled date.
+    where: { id: live[0].id, status: { in: LIVE_APPOINTMENT_STATUSES } },
     data: { status: "completed", completedAt: new Date() },
   });
+}
+
+/**
+ * Validates an appointment link supplied with a visit: it must exist and belong
+ * to this patient. An id that arrives from a browser is never trusted to be the
+ * patient's own.
+ */
+async function resolveVisitAppointmentTx(
+  tx: Prisma.TransactionClient,
+  clientId: string,
+  appointmentId: string | null | undefined,
+): Promise<string | null> {
+  if (!appointmentId) return null;
+  const appt = await tx.appointment.findUnique({
+    where: { id: appointmentId },
+    select: { id: true, clientId: true },
+  });
+  if (!appt) throw new NotFoundError("Appointment not found");
+  if (appt.clientId !== clientId) {
+    throw new ForbiddenError("That appointment belongs to another patient.");
+  }
+  return appt.id;
 }
 
 /**
@@ -1113,12 +1203,29 @@ export async function createConsultation(
     // so every path (the "Start consultation" button, a stale link, a
     // double-submit) continues the same draft rather than forking it. The UI
     // shows a notice when it lands on a visit it didn't create.
+    const linkedAppointmentId = await resolveVisitAppointmentTx(
+      tx,
+      input.clientId,
+      input.appointmentId,
+    );
     const existingOpen = await tx.consultation.findFirst({
       where: { clientId: input.clientId, status: "open" },
       orderBy: { visitNumber: "desc" },
-      select: { id: true },
+      select: { id: true, appointmentId: true },
     });
-    if (existingOpen) return { id: existingOpen.id, closeBlocked: false };
+    if (existingOpen) {
+      // Continuing a draft that was started without an appointment (from the
+      // profile, say) but is now being worked from the queue: adopt the link so
+      // the close still completes the right booking. An existing link is never
+      // overwritten.
+      if (linkedAppointmentId && !existingOpen.appointmentId) {
+        await tx.consultation.update({
+          where: { id: existingOpen.id },
+          data: { appointmentId: linkedAppointmentId },
+        });
+      }
+      return { id: existingOpen.id, closeBlocked: false };
+    }
     // Freeze the visit dietitian's configured consultation fee onto this visit at
     // creation. A snapshot (like treatment/product prices): if the admin later
     // changes the dietitian's fee, this visit keeps the amount that applied today.
@@ -1136,6 +1243,7 @@ export async function createConsultation(
         date: new Date(),
         visitNumber: priorVisits + 1,
         status: "open",
+        appointmentId: linkedAppointmentId,
         consultationFee: frozenFee,
         consultationFeeWaived: input.waiveConsultationFee ?? false,
       },
@@ -1161,7 +1269,7 @@ export async function createConsultation(
         data: { status: "closed", closedAt: new Date() },
       });
       await freezeVisitHistoryNamesTx(tx, created.id);
-      await completeLinkedAppointmentTx(tx, input.clientId);
+      await completeLinkedAppointmentTx(tx, input.clientId, linkedAppointmentId);
       await retirePaidBasketsTx(tx, created.id);
     }
     return { id: created.id, closeBlocked: false };
@@ -1183,16 +1291,26 @@ export async function createConsultation(
 export async function updateConsultation(
   id: string,
   input: ConsultationInput,
-  opts: { actorName?: string | null; actorEmail?: string | null } = {},
+  opts: {
+    actorName?: string | null;
+    actorEmail?: string | null;
+    actorRole?: string | null;
+  } = {},
 ): Promise<Consultation> {
   await db.$transaction(async (tx) => {
+    await lockConsultationTx(tx, id);
     const existing = await tx.consultation.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Consultation not found");
+    await assertVisitOwnership(existing.dietitianId, opts, "edit");
     if (existing.clientId !== input.clientId) {
       throw new ConflictError("Consultation does not belong to this client.");
     }
     if (existing.status === "closed") {
       throw new ConflictError("This visit is closed and can no longer be edited.");
+    }
+    if (input.appointmentId && !existing.appointmentId) {
+      const linked = await resolveVisitAppointmentTx(tx, input.clientId, input.appointmentId);
+      await tx.consultation.update({ where: { id }, data: { appointmentId: linked } });
     }
     await applyConsultationUsage(tx, id, -1); // reverse prior effect
     // Capture the frozen product snapshots (by catalog id) BEFORE clearing the
@@ -1231,11 +1349,16 @@ export async function updateConsultation(
  */
 export async function closeConsultation(
   id: string,
-  opts: { actorName?: string | null; actorEmail?: string | null } = {},
+  opts: {
+    actorName?: string | null;
+    actorEmail?: string | null;
+    actorRole?: string | null;
+  } = {},
 ): Promise<Consultation> {
   await db.$transaction(async (tx) => {
     const existing = await tx.consultation.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Consultation not found");
+    await assertVisitOwnership(existing.dietitianId, opts, "close");
     if (existing.status === "closed") throw new ConflictError("This visit is already closed.");
 
     // A visit can't be finalized while its basket is still awaiting settlement —
@@ -1259,10 +1382,31 @@ export async function closeConsultation(
     await freezeVisitHistoryNamesTx(tx, id);
     await logVisitDiscountTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
     await logConsultationFeeWaiveTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
-    await completeLinkedAppointmentTx(tx, existing.clientId);
+    await completeLinkedAppointmentTx(tx, existing.clientId, existing.appointmentId);
     await retirePaidBasketsTx(tx, id);
   });
   return getConsultationById(id);
+}
+
+/**
+ * A dietitian may only work on their own visit; an admin may work on any. A visit
+ * with no doctor attached (legacy rows, or one started without picking a doctor)
+ * is unowned and stays open to any clinical user — otherwise nobody could ever
+ * close it. The caller (route) already gates to clinical roles.
+ */
+async function assertVisitOwnership(
+  existingDietitianId: string | null,
+  opts: { actorEmail?: string | null; actorRole?: string | null },
+  action: string,
+): Promise<void> {
+  if (opts.actorRole !== "dietitian") return;
+  if (existingDietitianId === null) return;
+  const actorId = await userIdByEmail(opts.actorEmail ?? undefined);
+  if (!actorId || existingDietitianId !== actorId) {
+    throw new ForbiddenError(
+      `This visit belongs to another doctor — only they or an admin can ${action} it.`,
+    );
+  }
 }
 
 /**
@@ -1286,6 +1430,9 @@ export async function deleteConsultation(
   } = {},
 ): Promise<void> {
   await db.$transaction(async (tx) => {
+    // Same serialization as an edit: a delete reverses usage read from the visit's
+    // rows, so it must not interleave with a save that is rewriting them.
+    await lockConsultationTx(tx, id);
     const existing = await tx.consultation.findUnique({
       where: { id },
       include: { treatments: true, client: { select: { firstName: true, lastName: true } } },
@@ -1297,12 +1444,7 @@ export async function deleteConsultation(
 
     // Ownership: a dietitian may delete only their own visit; an admin may delete
     // any. (The route restricts to clinical roles; this enforces the owner rule.)
-    if (opts.actorRole === "dietitian") {
-      const actorId = await userIdByEmail(opts.actorEmail ?? undefined);
-      if (!actorId || existing.dietitianId !== actorId) {
-        throw new ForbiddenError("You can only delete your own consultation.");
-      }
-    }
+    await assertVisitOwnership(existing.dietitianId, opts, "delete");
 
     // Money guard: never delete a visit that already collected money or recorded a
     // debt — that history must be preserved.
@@ -1355,6 +1497,11 @@ export async function deleteConsultation(
     for (const planId of planIds) {
       const stillReferenced = await tx.consultationTreatment.count({ where: { sessionPlanId: planId } });
       if (stillReferenced > 0) continue;
+      // A machine visit may have consumed against this plan without ever touching
+      // a consultation. That's a real attendance record pointing at the plan (the
+      // FK is RESTRICT), so the plan outlives the visit that created it.
+      const usedByMachineVisit = await tx.machineVisitItem.count({ where: { sessionPlanId: planId } });
+      if (usedByMachineVisit > 0) continue;
       const plan = await tx.sessionPlan.findUnique({ where: { id: planId } });
       if (plan && plan.sessionsPaid === 0) {
         await tx.sessionPlan.delete({ where: { id: planId } });

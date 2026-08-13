@@ -28,6 +28,7 @@ import type {
   Role,
   ServicePrice,
   SessionPlan,
+  MachineVisit,
   StaffUser,
   VisitBasket,
   VisitBasketStatus,
@@ -45,6 +46,8 @@ import type {
   CreateReferrerInput,
   CreateServicePriceInput,
   CreateSessionPlanInput,
+  CreateMachineVisitInput,
+  VoidMachineVisitInput,
   CreateStaffInput,
   UpdateStaffInput,
   MedicalHistoryInput,
@@ -261,11 +264,14 @@ export const api = {
     clientId?: string;
     status?: ConsultationStatus;
     date?: string;
+    /** "mine" restricts a doctor to their own visits (admins see everything). */
+    scope?: "mine";
   }) => {
     const params = new URLSearchParams();
     if (filter?.clientId) params.set("clientId", filter.clientId);
     if (filter?.status) params.set("status", filter.status);
     if (filter?.date) params.set("date", filter.date);
+    if (filter?.scope) params.set("scope", filter.scope);
     const qs = params.toString();
     return getJson<ConsultationListItem[]>(`/api/consultations${qs ? `?${qs}` : ""}`);
   },
@@ -375,6 +381,20 @@ export const api = {
   // read via the client-detail payload; this creates a new one during a visit.
   createSessionPlan: (body: CreateSessionPlanInput) =>
     postJson<SessionPlan>("/api/session-plans", body),
+
+  // Machine visits — prepaid machine sessions used without a consultation.
+  listMachineVisits: (filter?: { clientId?: string; from?: string; to?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.clientId) params.set("clientId", filter.clientId);
+    if (filter?.from) params.set("from", filter.from);
+    if (filter?.to) params.set("to", filter.to);
+    const q = params.toString();
+    return getJson<MachineVisit[]>(`/api/machine-visits${q ? `?${q}` : ""}`);
+  },
+  createMachineVisit: (body: CreateMachineVisitInput) =>
+    postJson<MachineVisit>("/api/machine-visits", body),
+  voidMachineVisit: (id: string, body: VoidMachineVisitInput) =>
+    postJson<MachineVisit>(`/api/machine-visits/${id}/void`, body),
 
   listAudit: () => getJson<AuditEntry[]>("/api/audit"),
   // `range` scopes the flow figures (income, expenses, net profit) to [from, to];

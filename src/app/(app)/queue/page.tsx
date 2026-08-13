@@ -16,6 +16,7 @@ import {
   UserCheck,
   UserX,
   Wallet,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -25,6 +26,7 @@ import { Input } from "@/components/ui/Field";
 import { AppointmentBadge, Badge } from "@/components/ui/Badge";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { VisitBasketSettlementModal } from "@/components/VisitBasketSettlementModal";
+import { LogMachineVisitModal } from "@/components/LogMachineVisitModal";
 import {
   isReschedulable,
   RescheduleAppointmentModal,
@@ -201,6 +203,9 @@ export default function QueuePage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   // A patient who rings ahead to move their slot, without leaving the board.
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
+  // The in-clinic patient a machine-only visit is being logged for. Carrying the
+  // appointment means completion lands on THAT booking, never a guess.
+  const [machineVisitFor, setMachineVisitFor] = useState<Appointment | null>(null);
   useEffect(() => {
     if (!data) return;
     if (isToday) {
@@ -438,6 +443,12 @@ export default function QueuePage() {
                       const showAdvance = isToday && isSecretary && !!NEXT_LABEL[a.status];
                       const showConsult =
                         isToday && a.status === "with_dietitian" && user?.role !== "secretary";
+                      // The doctor's other option once the patient is in front of
+                      // them: no consultation today, just the machine they came for.
+                      const showMachineVisit =
+                        isToday &&
+                        (a.status === "checked_in" || a.status === "with_dietitian") &&
+                        (user?.role === "dietitian" || user?.role === "admin");
                       // A visit the dietitian already saved (open) — "Consult" becomes
                       // "Continue" and reopens it directly instead of routing to the profile.
                       const openConsult = showConsult
@@ -450,7 +461,8 @@ export default function QueuePage() {
                       const showReschedule = isSecretary && isReschedulable(a);
                       // Nothing to render an action row for — the name is the
                       // link to the profile, so a read-only card has no buttons.
-                      const hasRowActions = showAdvance || showConsult || showReschedule || showLeftMenu;
+                      const hasRowActions =
+                        showAdvance || showConsult || showMachineVisit || showReschedule || showLeftMenu;
                       return (
                         <div
                           key={a.id}
@@ -555,15 +567,31 @@ export default function QueuePage() {
                                   variant="outline"
                                   className="flex-1"
                                   onClick={() =>
+                                    // Carry the appointment along either way: the
+                                    // visit records which booking it is fulfilling,
+                                    // so closing it completes that one and no other.
                                     router.push(
                                       openConsult
-                                        ? `/consultations/new?client=${a.clientId}&consultation=${openConsult.id}`
-                                        : `/clients/${a.clientId}`,
+                                        ? `/consultations/new?client=${a.clientId}&consultation=${openConsult.id}&appt=${a.id}`
+                                        : `/clients/${a.clientId}?appt=${a.id}`,
                                     )
                                   }
                                 >
                                   <Stethoscope className="h-3.5 w-3.5" />{" "}
                                   {openConsult ? "Continue" : "Consult"}
+                                </Button>
+                              )}
+                              {showMachineVisit && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="flex-1"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setMachineVisitFor(a);
+                                  }}
+                                >
+                                  <Zap className="h-3.5 w-3.5" /> Machine visit
                                 </Button>
                               )}
                               {showReschedule && (
@@ -773,6 +801,22 @@ export default function QueuePage() {
         onClose={() => setRescheduleTarget(null)}
         onRescheduled={refetch}
       />
+
+      {machineVisitFor && (
+        <LogMachineVisitModal
+          open
+          clientId={machineVisitFor.clientId}
+          clientName={machineVisitFor.clientName}
+          appointmentId={machineVisitFor.id}
+          onClose={() => setMachineVisitFor(null)}
+          onLogged={() => {
+            // The appointment is completed server-side; refresh the board and the
+            // settlement lane (a not-fully-prepaid visit just raised a basket).
+            refetch();
+            refetchBaskets();
+          }}
+        />
+      )}
 
       <p className="mt-4 text-xs text-slate-400">
         {isToday

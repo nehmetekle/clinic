@@ -411,6 +411,9 @@ function ConsultationEditor() {
   // When present, we're continuing an existing in-progress consultation (edit mode)
   // rather than starting a new one; saving updates it and adds only the new delta.
   const editId = params.get("consultation") ?? "";
+  // The appointment this visit is fulfilling, when the doctor came in from the
+  // queue. Sent with the save so closing completes that booking only.
+  const appointmentId = params.get("appt") || undefined;
   const [prefilled, setPrefilled] = useState(false);
 
   const { data, loading, error, refetch } = useApi(() => api.getClient(clientId), [clientId]);
@@ -1242,6 +1245,7 @@ function ConsultationEditor() {
       const payload = {
         clientId,
         dietitianId: me?.id ?? null,
+        appointmentId,
         close,
         weightKg: num(form.weight),
         heightCm: num(height),

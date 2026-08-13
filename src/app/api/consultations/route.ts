@@ -17,7 +17,15 @@ export async function GET(req: Request) {
     const statusParam = params.get("status");
     const status = statusParam === "open" || statusParam === "closed" ? statusParam : undefined;
     const date = params.get("date") ?? undefined;
-    return json(await listConsultations({ clientId, status, date }));
+    // `scope=mine` narrows the list to the caller's own visits. Only meaningful
+    // for a dietitian — an admin oversees every doctor's visits, so the flag is
+    // ignored for them.
+    const actor = await actingUser(req);
+    const dietitianId =
+      params.get("scope") === "mine" && actor.role === "dietitian" && actor.id
+        ? actor.id
+        : undefined;
+    return json(await listConsultations({ clientId, status, date, dietitianId }));
   } catch (e) {
     return handleError(e);
   }

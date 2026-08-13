@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, CalendarPlus, CalendarSearch } from "lucide-react";
+import { AlertTriangle, CalendarClock, CalendarPlus, CalendarSearch, ChevronDown } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -20,12 +20,13 @@ import { useSession } from "@/lib/session";
 import { todayIso } from "@/lib/config";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
 import type { Appointment } from "@/lib/types";
-import { bmiCategory, formatDate, formatTime } from "@/lib/utils";
+import { bmiCategory, cn, formatDate, formatTime } from "@/lib/utils";
 
 export default function AppointmentsPage() {
   const router = useRouter();
   const { user } = useSession();
   const isClinical = user?.role === "dietitian" || user?.role === "admin";
+  const isDietitian = user?.role === "dietitian";
   // Dietitians can't book appointments — booking is a secretary/admin action.
   const canBook = user?.role !== "dietitian";
   // Deliberately a *positive* role test rather than reusing `canBook`'s "not a
@@ -34,11 +35,22 @@ export default function AppointmentsPage() {
   // `canManageAppointments` on the server exactly.
   const canManageAppointments = user?.role === "secretary" || user?.role === "admin";
   const { data, loading, error, refetch } = useApi(() => api.listAppointments());
-  const consultations = useApi(() => api.listConsultations());
+  // A doctor only ever works on their own visits, so ask the server for just
+  // those (admins/secretary are unaffected — the flag is ignored server-side for
+  // them, and the secretary gets nothing from this endpoint at all).
+  // Keyed on the role: `user` resolves a tick after mount, so without the dep the
+  // first (unscoped) request would be the one whose data sticks.
+  const consultations = useApi(
+    () => api.listConsultations(isDietitian ? { scope: "mine" } : undefined),
+    [isDietitian],
+  );
 
   const [selectedDate, setSelectedDate] = useState(todayIso());
   // Moving a booking to another slot — front desk only, same right as booking.
   const [rescheduleTarget, setRescheduleTarget] = useState<Appointment | null>(null);
+  // The unclosed-visits list starts collapsed — the count in the header is the
+  // signal; the rows are only needed once someone acts on it.
+  const [openVisitsExpanded, setOpenVisitsExpanded] = useState(false);
 
   const appointments = data ?? [];
   const allVisits = consultations.data ?? [];
@@ -47,6 +59,13 @@ export default function AppointmentsPage() {
     .filter((a) => a.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
   const dayVisits = allVisits.filter((c) => c.date === selectedDate);
+  // Every visit still open, regardless of the date being viewed: a draft left
+  // unclosed on an earlier day is exactly the one nobody goes looking for, so
+  // it is surfaced here rather than only inside its own day's table. Oldest
+  // first — the longest-open one is the most urgent.
+  const openVisits = allVisits
+    .filter((c) => c.status === "open")
+    .sort((a, b) => a.date.localeCompare(b.date) || a.visitNumber - b.visitNumber);
 
   return (
     <div>
@@ -89,6 +108,51 @@ export default function AppointmentsPage() {
         <ErrorState message={error} />
       ) : (
         <div className="space-y-6">
+          {isClinical && openVisits.length > 0 && (
+            <Card>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-5 py-3 text-left"
+                aria-expanded={openVisitsExpanded}
+                onClick={() => setOpenVisitsExpanded((v) => !v)}
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+                <p className="text-sm font-semibold text-slate-800">
+                  {openVisits.length} consultation{openVisits.length !== 1 ? "s" : ""} not closed
+                </p>
+                <ChevronDown
+                  className={cn(
+                    "ml-auto h-4 w-4 text-slate-400 transition-transform",
+                    openVisitsExpanded && "rotate-180",
+                  )}
+                />
+              </button>
+              {openVisitsExpanded && (
+              <ul className="divide-y divide-slate-100 border-t border-slate-100">
+                {openVisits.map((c) => (
+                  <li key={c.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-800">{c.clientName}</p>
+                      <p className="text-xs text-slate-400">
+                        Visit #{c.visitNumber} · {formatDate(c.date)} · {c.dietitianName}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        router.push(`/consultations/new?client=${c.clientId}&consultation=${c.id}`)
+                      }
+                    >
+                      Continue
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              )}
+            </Card>
+          )}
+
           <Card>
             <CardHeader
               title={`Patients on ${formatDate(selectedDate)}`}

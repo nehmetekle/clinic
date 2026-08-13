@@ -25,6 +25,9 @@ export async function resetDb() {
   await db.auditLog.deleteMany({});
   await db.consultationFile.deleteMany({});
   await resetJessyLedger();
+  // Machine visits reference session plans/bundles with RESTRICT foreign keys, so
+  // they must go before the client cascade would try to remove those rows.
+  await db.machineVisit.deleteMany({});
   await db.consultation.deleteMany({});
   await db.client.deleteMany({});
   await db.user.deleteMany({});

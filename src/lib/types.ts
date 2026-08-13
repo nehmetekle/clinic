@@ -227,6 +227,50 @@ export interface SessionPlan {
   createdAt: string;
 }
 
+// ---- Machine visits ----
+// A patient who came in only to use prepaid machine sessions. Not a consultation:
+// it carries no clinical data and never mints a visit number. Merged with
+// consultations only for display (client history, attendance figures).
+export type MachineVisitStatus = "recorded" | "voided";
+
+export interface MachineVisitItem {
+  id: string;
+  machine: string;
+  sessions: number;
+  // Sessions of this line that prepaid credit did NOT cover and that were billed
+  // on this visit's basket. 0 whenever the patient was fully prepaid.
+  billedSessions: number;
+  unitPrice: number;
+  currency: Currency;
+  sessionPlanId?: string;
+  clientPackageId?: string;
+}
+
+export interface MachineVisit {
+  id: string;
+  clientId: string;
+  clientName: string;
+  date: string;
+  note?: string;
+  status: MachineVisitStatus;
+  recordedByName: string;
+  appointmentId?: string;
+  items: MachineVisitItem[];
+  sessionsTotal: number;
+  amountDue: number; // 0 when everything was prepaid
+  pendingBasketId?: string;
+  voidedAt?: string;
+  voidedByName?: string;
+  voidReason?: string;
+}
+
+export interface MachineUtilizationRow {
+  machine: string;
+  sessions: number;
+  machineVisits: number;
+  consultationSessions: number;
+}
+
 // ---- Visit services ----
 // Blood tests are admin-managed in the ServicePrice catalog (kind "blood_test"),
 // exactly like treatment types — there is no hardcoded list. "Other" is the
@@ -305,6 +349,9 @@ export type ConsultationStatus = "open" | "closed";
 export interface Consultation {
   id: string;
   clientId: string;
+  // The doctor who owns this visit. An unclosed visit may only be edited/closed
+  // by them or an admin — enforced server-side, mirrored in the UI.
+  dietitianId?: string;
   dietitianName: string;
   date: string;
   visitNumber: number;
@@ -917,6 +964,9 @@ export interface DashboardSummary {
     newToday: number;
     newThisMonth: number;
     consultations: number;
+    // Machine-only visits recorded (voided ones excluded). Never folded into
+    // `consultations` — a machine visit is attendance, not a consultation.
+    machineVisits: number;
   };
   finance: {
     totalIncome: number; // payments dated within the selected period (all-time if none)
@@ -956,7 +1006,7 @@ export interface DashboardSummary {
   todaysAppointments: Appointment[];
   recentPayments: Payment[];
   recentConsultations: RecentConsultation[];
-  staffActivity: { name: string; role: Role; consults: number }[];
+  staffActivity: { name: string; role: Role; consults: number; machineVisits: number }[];
   incomeExpenseSeries: { month: string; income: number; expenses: number }[];
   packageRevenue: { name: string; revenue: number }[];
   appointmentBreakdown: { name: string; value: number; color: string }[];
@@ -982,4 +1032,9 @@ export interface DashboardSummary {
     total: number;
     patients: { id: string; name: string; fee: number }[];
   }[];
+  // Machine usage over the selected period: sessions delivered per machine and
+  // how many machine-only visits delivered them. `consultationSessions` is the
+  // part that came through a consultation instead, so the row reads as total
+  // utilization with the machine-visit share visible inside it.
+  machineUtilization: MachineUtilizationRow[];
 }

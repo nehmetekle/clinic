@@ -1,22 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   CalendarClock,
   CalendarPlus,
   CalendarX,
   ChevronLeft,
-  CreditCard,
   Pencil,
   Phone,
+  Sparkles,
   Stethoscope,
 } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatCard } from "@/components/ui/StatCard";
-import { FormRow, MoneyInput, Select, Textarea } from "@/components/ui/Field";
+import { FormRow, Input, Label, MoneyInput, Select, Textarea } from "@/components/ui/Field";
 import {
   isReschedulable,
   RescheduleAppointmentModal,
@@ -33,6 +33,8 @@ import { WeightTrendChart } from "@/components/charts/Charts";
 import { MedicalHistoryTab } from "./MedicalHistoryTab";
 import { BloodTestsTab } from "./BloodTestsTab";
 import { FilesTab } from "./FilesTab";
+import { MachineVisitCard } from "./MachineVisitCard";
+import { LogMachineVisitModal } from "@/components/LogMachineVisitModal";
 import { VisitSummaryModal } from "./VisitSummaryModal";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
@@ -46,6 +48,7 @@ import {
   type Appointment,
   type Client,
   type ClientDebt,
+  type MachineVisit,
   type PaymentMethod,
 } from "@/lib/types";
 import {
@@ -83,6 +86,11 @@ const isCancellable = isReschedulable;
 export default function ClientProfilePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  // Set when the profile was opened from the queue for a specific booking; passed
+  // on to the consultation editor so the visit records which appointment it is
+  // fulfilling (see completeLinkedAppointmentTx).
+  const searchParams = useSearchParams();
+  const apptParam = searchParams.get("appt") ? `&appt=${searchParams.get("appt")}` : "";
   const { user } = useSession();
   const { toast } = useToast();
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -109,6 +117,17 @@ export default function ClientProfilePage() {
   // The closed visit whose read-only summary is open. Held by id (not by object)
   // so a refetch can't leave the modal showing a stale copy of the visit.
   const [summaryVisitId, setSummaryVisitId] = useState<string | null>(null);
+  // Machine-only visits (prepaid sessions used without a consultation). Merged
+  // into the visit history below; kept as its own fetch so logging one refreshes
+  // the list without reloading the whole profile.
+  const machineVisits = useApi(() => api.listMachineVisits({ clientId: params.id }), [params.id]);
+  // The "Log machine visit" dialog, and which treatment row opened it (ticked on
+  // open so the common one-machine case is a two-click flow).
+  const [machineVisitOpen, setMachineVisitOpen] = useState(false);
+  const [machineVisitPreselect, setMachineVisitPreselect] = useState<string | undefined>();
+  const [voidTarget, setVoidTarget] = useState<MachineVisit | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidSaving, setVoidSaving] = useState(false);
   const { data, loading, error, refetch } = useApi(() => api.getClient(params.id), [params.id]);
   const staff = useApi(() => api.listStaff());
   const settings = useApi(() => api.getSettings());
@@ -141,6 +160,34 @@ export default function ClientProfilePage() {
   // demographics/contact are front-desk data, clinical notes are the dietitian's.
   const canEditDetails = user?.role === "secretary" || user?.role === "admin";
   const canEditClinical = isDietitian;
+  // Logging a machine-only visit is the clinical side's call (server: canLogMachineVisit).
+  const canLogMachineVisit = user?.role === "dietitian" || user?.role === "admin";
+  const machineVisitList = machineVisits.data ?? [];
+  // One history stream: consultations and machine visits by date, newest first.
+  // Merged for DISPLAY only — consultation numbering is untouched.
+  const visitTimeline: (
+    | { kind: "consultation"; date: string; consultation: (typeof consults)[number] }
+    | { kind: "machine"; date: string; visit: MachineVisit }
+  )[] = [
+    ...consults.map((c) => ({ kind: "consultation" as const, date: c.date, consultation: c })),
+    ...machineVisitList.map((v) => ({ kind: "machine" as const, date: v.date, visit: v })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  async function voidMachineVisit() {
+    if (!voidTarget) return;
+    setVoidSaving(true);
+    try {
+      await api.voidMachineVisit(voidTarget.id, { reason: voidReason.trim() || undefined });
+      setVoidTarget(null);
+      setVoidReason("");
+      machineVisits.refetch();
+      refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setVoidSaving(false);
+    }
+  }
   // Headline package = the patient's most recent active bundle (if any).
   const cp =
     client.packages.find((p) => p.status === "active") ?? client.packages[0];
@@ -149,12 +196,26 @@ export default function ClientProfilePage() {
   // A visit already in progress for this client. The primary CTA continues it
   // rather than starting a second one (which would duplicate the visit); a
   // never-closed draft from an earlier day is caught here too.
-  const openDraft = consults.find((c) => c.status === "open");
+  // Only a draft this user may actually work on: a dietitian can edit/close their
+  // own visit (or an unowned one), never another doctor's — the server enforces
+  // the same rule, so offering "Continue" on someone else's would only 403.
+  const openDraft = consults.find(
+    (c) =>
+      c.status === "open" &&
+      (user?.role === "admin" || !c.dietitianId || c.dietitianId === user?.id),
+  );
 
   // Machine treatment balances with sessions left (for the Overview summary).
   const machinePackages = client.packages.filter(
     (p) => p.status === "active" && p.machine && p.totalSessions - p.usedSessions > 0,
   );
+  // Pay-as-you-go plans with prepaid-but-unused sessions. Bundle sessions left
+  // and plan credit are both "already paid for" from the patient's point of
+  // view, so the Overview headline adds them up.
+  const creditPlans = sessionPlans.filter((p) => p.status === "active" && p.credit > 0);
+  const prepaidSessions =
+    machinePackages.reduce((n, p) => n + (p.totalSessions - p.usedSessions), 0) +
+    creditPlans.reduce((n, p) => n + p.credit, 0);
   // Visits where blood collection was ordered, latest last.
   const bloodConsults = consults.filter((c) => c.bloodCollection);
   const latestBlood = bloodConsults[bloodConsults.length - 1];
@@ -165,10 +226,10 @@ export default function ClientProfilePage() {
     // Medical history and clinical notes are the doctor's/admin's — the
     // secretary doesn't get these tabs at all (not just a locked message).
     ...(isDietitian ? ["Medical History"] : []),
-    "Bundles",
+    "Treatments",
     "Appointments",
     "Blood Tests",
-    ...(isDietitian ? ["Consultations", "Measurements", "Progress"] : []),
+    ...(isDietitian ? ["Visits", "Measurements", "Progress"] : []),
     ...(canHandleMoney ? ["Payments"] : []),
     ...(isDietitian ? ["Notes"] : []),
     // Files is open to the secretary too — she hands the generated Food List PDF
@@ -297,9 +358,18 @@ export default function ClientProfilePage() {
             <Button variant="outline" size="sm" onClick={() => setScheduleOpen(true)}>
               <CalendarPlus className="h-4 w-4" /> Schedule
             </Button>
-            {canHandleMoney && (
-              <Button variant="outline" size="sm" onClick={() => router.push("/payments")}>
-                <CreditCard className="h-4 w-4" /> Payment
+            {canLogMachineVisit && (
+              <Button
+                size="sm"
+                // Deliberately not the brand colour: this sits beside "Continue
+                // consultation" and must not read as the same action.
+                className="bg-indigo-600 text-white shadow-sm hover:bg-indigo-700"
+                onClick={() => {
+                  setMachineVisitPreselect(undefined);
+                  setMachineVisitOpen(true);
+                }}
+              >
+                <Sparkles className="h-4 w-4" /> Log machine visit
               </Button>
             )}
             {isDietitian && (
@@ -308,8 +378,8 @@ export default function ClientProfilePage() {
                 onClick={() =>
                   router.push(
                     openDraft
-                      ? `/consultations/new?client=${client.id}&consultation=${openDraft.id}`
-                      : `/consultations/new?client=${client.id}`,
+                      ? `/consultations/new?client=${client.id}&consultation=${openDraft.id}${apptParam}`
+                      : `/consultations/new?client=${client.id}${apptParam}`,
                   )
                 }
               >
@@ -327,8 +397,15 @@ export default function ClientProfilePage() {
             {active === "Overview" && (
               <div className="grid gap-4 lg:grid-cols-3">
                 <Card><CardBody>
-                  <p className="text-xs uppercase text-slate-400">Active bundle</p>
-                  <p className="mt-1 font-semibold text-slate-800">{cp?.packageName ?? "—"}</p>
+                  <p className="text-xs uppercase text-slate-400">
+                    {cp ? "Active bundle" : "Prepaid sessions"}
+                  </p>
+                  <p className="mt-1 font-semibold text-slate-800">
+                    {cp?.packageName ??
+                      (prepaidSessions > 0
+                        ? `${prepaidSessions} session${prepaidSessions !== 1 ? "s" : ""} prepaid`
+                        : "—")}
+                  </p>
                   {cp && (
                     <p className="mt-1 text-sm text-slate-500">
                       <span className="font-medium text-slate-700">{cp.usedSessions} done</span>
@@ -336,6 +413,16 @@ export default function ClientProfilePage() {
                       <span className="font-medium text-emerald-600">{cp.totalSessions - cp.usedSessions} left</span>
                       <span className="text-slate-400"> of {cp.totalSessions}</span>
                     </p>
+                  )}
+                  {creditPlans.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                      {creditPlans.map((p) => (
+                        <li key={p.id} className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-slate-700">{p.machine ?? "General"}</span>
+                          <span className="font-medium text-emerald-600">{p.credit} prepaid</span>
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </CardBody></Card>
                 {isDietitian && (
@@ -479,13 +566,26 @@ export default function ClientProfilePage() {
               <MedicalHistoryTab clientId={client.id} />
             )}
 
-            {active === "Bundles" && (
+            {active === "Treatments" && (
               <div className="space-y-6">
+                {canLogMachineVisit && (
+                  <div className="flex justify-end">
+                    <Button
+                      onClick={() => {
+                        setMachineVisitPreselect(undefined);
+                        setMachineVisitOpen(true);
+                      }}
+                    >
+                      Log machine visit
+                    </Button>
+                  </div>
+                )}
                 <Card>
                   <CardHeader title="Bundles" subtitle="Prepaid treatment bundles and session usage" />
                   <Table>
                     <THead><TR>
                       <TH>Bundle</TH><TH>Treatment</TH><TH>Price</TH><TH>Sessions</TH><TH>Start</TH><TH>Status</TH>
+                      {canLogMachineVisit && <TH> </TH>}
                     </TR></THead>
                     <TBody>
                       {client.packages.map((p) => (
@@ -496,10 +596,26 @@ export default function ClientProfilePage() {
                           <TD>{p.usedSessions}/{p.totalSessions}</TD>
                           <TD className="text-slate-500">{formatDate(p.startDate)}</TD>
                           <TD><Badge tone={p.status === "active" ? "green" : "gray"}>{p.status}</Badge></TD>
+                          {canLogMachineVisit && (
+                            <TD>
+                              {p.status === "active" && p.totalSessions - p.usedSessions > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setMachineVisitPreselect(`pkg:${p.id}`);
+                                    setMachineVisitOpen(true);
+                                  }}
+                                >
+                                  Log visit
+                                </Button>
+                              )}
+                            </TD>
+                          )}
                         </TR>
                       ))}
                       {client.packages.length === 0 && (
-                        <TR><TD colSpan={6} className="py-6 text-center text-slate-400">No bundles.</TD></TR>
+                        <TR><TD colSpan={canLogMachineVisit ? 7 : 6} className="py-6 text-center text-slate-400">No bundles.</TD></TR>
                       )}
                     </TBody>
                   </Table>
@@ -516,6 +632,7 @@ export default function ClientProfilePage() {
                     <Table>
                       <THead><TR>
                         <TH>Treatment</TH><TH>Unit price</TH><TH>Needed</TH><TH>Used</TH><TH>Paid</TH><TH>Credit</TH><TH>Left to attend</TH><TH>Status</TH>
+                        {canLogMachineVisit && <TH> </TH>}
                       </TR></THead>
                       <TBody>
                         {sessionPlans.map((p) => (
@@ -532,6 +649,22 @@ export default function ClientProfilePage() {
                             </TD>
                             <TD>{p.sessionsLeftToAttend}</TD>
                             <TD><Badge tone={p.status === "active" ? "green" : p.status === "completed" ? "gray" : "red"}>{p.status}</Badge></TD>
+                            {canLogMachineVisit && (
+                              <TD>
+                                {p.status === "active" && p.sessionsLeftToAttend > 0 && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setMachineVisitPreselect(`plan:${p.id}`);
+                                      setMachineVisitOpen(true);
+                                    }}
+                                  >
+                                    Log visit
+                                  </Button>
+                                )}
+                              </TD>
+                            )}
                           </TR>
                         ))}
                       </TBody>
@@ -577,10 +710,24 @@ export default function ClientProfilePage() {
 
             {active === "Blood Tests" && <BloodTestsTab clientId={client.id} />}
 
-            {active === "Consultations" && isDietitian && (
+            {active === "Visits" && isDietitian && (
               <div className="space-y-3">
-                {consults.length === 0 && <p className="text-sm text-slate-400">No consultations yet.</p>}
-                {[...consults].reverse().map((c) => {
+                {visitTimeline.length === 0 && <p className="text-sm text-slate-400">No visits yet.</p>}
+                {visitTimeline.map((entry) => {
+                  if (entry.kind === "machine") {
+                    return (
+                      <MachineVisitCard
+                        key={entry.visit.id}
+                        visit={entry.visit}
+                        canVoid={canLogMachineVisit}
+                        onVoid={(v) => {
+                          setVoidReason("");
+                          setVoidTarget(v);
+                        }}
+                      />
+                    );
+                  }
+                  const c = entry.consultation;
                   // Only a closed visit is a finalized record worth opening as a
                   // read-only summary; an in-progress draft keeps "Continue" as
                   // its one action and stays inert as a card.
@@ -614,7 +761,7 @@ export default function ClientProfilePage() {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => router.push(`/consultations/new?client=${client.id}&consultation=${c.id}`)}
+                              onClick={() => router.push(`/consultations/new?client=${client.id}&consultation=${c.id}${apptParam}`)}
                             >
                               Continue
                             </Button>
@@ -1126,6 +1273,51 @@ export default function ClientProfilePage() {
           }}
         />
       )}
+
+      {canLogMachineVisit && (
+        <LogMachineVisitModal
+          open={machineVisitOpen}
+          clientId={client.id}
+          clientName={`${client.firstName} ${client.lastName}`}
+          preselectKey={machineVisitPreselect}
+          onClose={() => setMachineVisitOpen(false)}
+          onLogged={() => {
+            machineVisits.refetch();
+            refetch();
+          }}
+        />
+      )}
+
+      <Modal
+        open={!!voidTarget}
+        onClose={() => setVoidTarget(null)}
+        title="Void machine visit"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setVoidTarget(null)} disabled={voidSaving}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={voidMachineVisit} disabled={voidSaving}>
+              {voidSaving ? "Voiding…" : "Void"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">
+            {voidTarget?.items.map((i) => `${i.machine} ×${i.sessions}`).join(", ")}
+          </p>
+          <div>
+            <Label htmlFor="void-reason">Reason (optional)</Label>
+            <Input
+              id="void-reason"
+              value={voidReason}
+              maxLength={300}
+              onChange={(e) => setVoidReason(e.target.value)}
+            />
+          </div>
+        </div>
+      </Modal>
 
       {isDietitian && (
         <VisitSummaryModal

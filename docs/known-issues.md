@@ -1109,3 +1109,130 @@ wanted as a signal of exactness (receipts, FX equivalents).
 `tests/race/t17-fx-governance-and-receipts.ts` (81 assertions) and
 `tests/race/t18-adversarial-financial.ts` (80 assertions, driven through the real
 route handlers with real session cookies).
+
+---
+
+## 17. Machine visits — attendance without a consultation
+
+A patient who comes in only to use prepaid machine sessions is recorded as a
+**machine visit** (`MachineVisit` + `MachineVisitItem`), not a consultation. The
+point is front-desk speed: the doctor sees the patient, decides no consultation is
+needed, logs the machines used, and the appointment closes out — no visit number,
+no measurements, no notes, no consultation fee, no close/basket state machine.
+
+### Why it isn't a `Consultation` with a flag
+
+Everything that makes a consultation a consultation would have had to be
+suppressed by that flag: `visitNumber`, the frozen consultation fee, the
+basket/close sequence, `canViewClinical` gating, the Food List catch-up, the
+delete guards — and `counts.consultations` on the dashboard would have silently
+grown by every machine visit. It is also the first per-visit **consumption event**
+in the app: before this, `SessionPlan.sessionsUsed` was a bare counter whose only
+history was the consultation treatment rows behind it.
+
+### Billing: consumption-driven, not purchase-driven
+
+This is the one place machine-visit economics differ from the consultation
+editor's, and the difference is deliberate:
+
+- A **consultation** is where a plan is bought. It bills the plan's whole unpaid
+  balance (`sessionsNeeded − sessionsPaid`) because `sessionsNeeded` is set right
+  there — 13 needed × $10 with 1 used today = $130 today.
+- A **machine visit** never buys anything. It bills only what today's consumption
+  could not take from prepaid credit: `max(0, sessions − (sessionsPaid −
+  sessionsUsed))`, at the plan's own frozen `unitPrice`. Consumption is capped at
+  `sessionsNeeded − sessionsUsed`, so logging a visit can never enlarge a plan.
+
+The **price is identical** either way, and the two can't double-charge each other:
+what a machine visit bills is collected at settlement into `sessionsPaid`, which
+is exactly what the consultation path subtracts from `sessionsNeeded` to find its
+own billable quantity. `tests/race/t19-machine-visits.ts` asserts the round trip
+(machine visit bills 2 of 3 unpaid → a later consultation bills the remaining 1).
+
+Bundles (`ClientPackage`) are prepaid in full at a fixed price and therefore never
+bill on a machine visit; consuming more than the bundle has left is refused.
+
+### Appointment linkage — explicit beats inferred
+
+`completeLinkedAppointmentTx` (the consultation path) completes **every** live
+appointment the client has, matched by client and status. Machine visits do not
+reuse it:
+
+- Launched from the queue, the appointment id travels with the request and **that**
+  row is completed — after checking it belongs to the patient (an id from a
+  browser is never trusted).
+- Launched from the client profile with no id, the visit auto-completes only when
+  the patient has **exactly one** appointment in `checked_in`/`with_dietitian`.
+  Two candidates or none leaves the visit unlinked rather than guessing.
+- An explicit appointment that is cancelled/no-show is refused; one already
+  completed is linked without being touched.
+
+**The consultation path now works the same way** (`Consultation.appointmentId`,
+added in `20260813190000_consultation_appointment_link`). It used to complete
+*every* live appointment the patient had, so a patient booked twice in a day had
+both closed out by one visit. A visit started from the queue records the booking
+it is fulfilling (the id travels queue → profile → editor as `?appt=`) and closing
+completes only that one. With no link the common case is preserved — a single live
+appointment is completed — and two or more candidates complete none rather than
+guess. A link for another patient's booking is refused.
+
+One consequence worth knowing: an unlinked visit for a patient with two live
+appointments now leaves both on the board for the front desk to resolve, where it
+previously (wrongly) cleared both.
+
+### Void, not edit
+
+A mistake is voided, never rewritten: the row stays in history with who voided it,
+when, and why; the sessions are given back exactly; the pending basket it raised is
+deleted. **A machine visit whose basket has been settled cannot be voided** — the
+app has no refund or payment-reversal concept anywhere and this doesn't introduce
+one. A dietitian may void their own visit, an admin anyone's.
+
+### Session counters are now one implementation
+
+`repositories/sessionCounters.ts` is the only place `SessionPlan.sessionsUsed`,
+`SessionPlan.sessionsPaid` and `ClientPackage.usedSessions` move, for both
+consultations and machine visits. Every move is a single guarded SQL statement
+computed by the database from the row's own value under its lock. This replaced a
+read-then-write pair that could lose a consumption when two saves landed together,
+and a `Math.min(totalSessions, …)` clamp that silently recorded fewer sessions
+than were asked for (asking for 3 against a bundle with 1 left now fails).
+
+`updateConsultation`/`deleteConsultation` additionally take the visit's row lock
+(`SELECT … FOR UPDATE`) for the whole transaction. The counter writes were already
+atomic, but the *read* of the treatment rows a rebuild reverses was not: two saves
+of the same draft both read the pre-edit rows and left the plan over-consumed.
+That was a real pre-existing bug, reproduced and now covered in t19.
+
+### Constraints that are hand-written SQL (don't lose them in a squash)
+
+In `20260813180000_machine_visits`: exactly-one-source and positive-sessions on
+`MachineVisitItem`, `billedSessions ≤ sessions`, the status/void-attribution pair
+on `MachineVisit`, non-negative counters on `SessionPlan`, and
+`usedSessions ≤ totalSessions` on `ClientPackage`.
+
+**`SessionPlan.sessionsUsed ≤ sessionsNeeded` is deliberately NOT a constraint.**
+The consultation editor accepts more sessions delivered than the plan currently
+calls for (`sessionsNeeded` is purchase intent, not a ceiling), so asserting it
+would reject saves the app has always allowed. The machine-visit path enforces the
+ceiling itself, in application code.
+
+### Known limits
+
+- **Voiding does not re-open the appointment it completed.** The patient did
+  attend; un-completing a booking hours later would fight the queue's own state
+  machine. Re-book if the completion was wrong.
+- **The secretary can't see machine visits in the client's history** — the Visits
+  tab is clinical-gated as before. She sees the basket, the payment and the
+  receipt, which is what the front desk acts on.
+- **Machine utilization counts consultation sessions from CLOSED visits only.**
+  An open draft's counts change with every save and can be removed entirely, so
+  reporting them would let the figure move without anything happening in the
+  clinic. This is a reporting rule only — an open draft still consumes the plan's
+  balance as it always did, and plans stay usable by later consultations and
+  machine visits until their sessions run out. Machine visits are reported the
+  moment they are logged (they have no draft state).
+- **`MachineVisitItem` → plan/bundle FKs are `RESTRICT`.** Deleting a patient row
+  directly in the database now fails while machine visits reference their plans.
+  No application path deletes a client; `deleteConsultation` checks for
+  machine-visit usage before dropping a plan an abandoned visit created.

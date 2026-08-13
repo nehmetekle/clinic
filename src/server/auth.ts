@@ -86,6 +86,18 @@ export async function canManageJessy(req: Request): Promise<boolean> {
   return (await actingRole(req)) === "admin";
 }
 
+/** Logging a machine-only visit — a patient who came in just to use prepaid
+ * machine sessions. It is the clinical side that decides a consultation isn't
+ * needed today, so this is the doctor's call (and the admin's). It is NOT
+ * `canViewClinical` reused: that gate is about READING clinical data, this one is
+ * about recording attendance and consuming a prepaid balance, and the two are
+ * free to diverge later. The secretary is deliberately excluded for now — she
+ * still settles whatever basket the visit raises through the normal checkout. */
+export async function canLogMachineVisit(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "dietitian" || role === "admin";
+}
+
 /** Lab-sample logistics (sending samples to the lab, logging results back) is a
  * front-desk task — the secretary owns it, the admin can step in. */
 export async function canTrackSamples(req: Request): Promise<boolean> {

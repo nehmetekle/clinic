@@ -201,6 +201,10 @@ export const rescheduleAppointmentSchema = createAppointmentSchema
 export const createConsultationSchema = z.object({
   clientId: z.string().min(1),
   dietitianId: z.string().nullish(),
+  // The appointment this visit fulfils, carried from the queue. Closing the visit
+  // completes this booking only — never every live appointment the patient has.
+  // Server-checked against the patient; an id for someone else is refused.
+  appointmentId: z.string().min(1).nullish(),
   // Finalize the visit in the same action (Close), vs. save it as an open draft.
   close: z.boolean().optional(),
   weightKg: z.coerce.number().positive().optional(),
@@ -676,6 +680,36 @@ export const createSessionPlanSchema = z.object({
   sessionsNeeded: z.coerce.number().int().min(1).max(1000),
 });
 
+// A machine visit records consumption only: which prepaid source, how many
+// sessions, an optional note. No price, no balance and no paid status is accepted
+// from the client — the server reads all three from the plan/bundle rows.
+export const createMachineVisitSchema = z.object({
+  clientId: z.string().min(1),
+  items: z
+    .array(
+      z
+        .object({
+          sessionPlanId: z.string().min(1).nullish(),
+          clientPackageId: z.string().min(1).nullish(),
+          sessions: z.coerce.number().int().min(1).max(100),
+        })
+        .refine(
+          (i) => Boolean(i.sessionPlanId) !== Boolean(i.clientPackageId),
+          "Each line must draw on exactly one treatment.",
+        ),
+    )
+    .min(1)
+    .max(20),
+  note: z.string().trim().max(500).optional(),
+  appointmentId: z.string().min(1).nullish(),
+  // Replay guard for a double-clicked Confirm or a retried request.
+  idempotencyKey: z.string().min(8).max(100).optional(),
+});
+
+export const voidMachineVisitSchema = z.object({
+  reason: z.string().trim().max(300).optional(),
+});
+
 export const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
@@ -767,3 +801,5 @@ export type CreateServicePriceInput = z.infer<typeof createServicePriceSchema>;
 export type UpdateClientDebtInput = z.infer<typeof updateClientDebtSchema>;
 export type RecordJessySettlementInput = z.infer<typeof recordJessySettlementSchema>;
 export type MedicalHistoryInput = z.infer<typeof medicalHistorySchema>;
+export type CreateMachineVisitInput = z.infer<typeof createMachineVisitSchema>;
+export type VoidMachineVisitInput = z.infer<typeof voidMachineVisitSchema>;

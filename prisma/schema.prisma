@@ -42,6 +42,8 @@ model User {
   pendingTwoFactors   PendingTwoFactor[]
   sessions            Session[]
   visitBaskets        VisitBasket[]
+  machineVisits       MachineVisit[]     @relation("MachineVisitRecordedBy")
+  voidedMachineVisits MachineVisit[]     @relation("MachineVisitVoidedBy")
 }
 
 model PendingTwoFactor {
@@ -111,30 +113,32 @@ model Client {
   payments            Payment[]
   sessionPlans        SessionPlan[]
   visitBaskets        VisitBasket[]
+  machineVisits       MachineVisit[]
 }
 
 model SessionPlan {
-  id               String                  @id @default(cuid())
-  clientId         String
-  machine          String?
-  unitPrice        Float
-  currency         String                  @default("USD")
-  usdToLbp         Float                   @default(0)
-  sessionsNeeded   Int
-  sessionsUsed     Int                     @default(0)
-  sessionsPaid     Int                     @default(0)
-  status           String                  @default("active")
+  id                String                  @id @default(cuid())
+  clientId          String
+  machine           String?
+  unitPrice         Float
+  currency          String                  @default("USD")
+  usdToLbp          Float                   @default(0)
+  sessionsNeeded    Int
+  sessionsUsed      Int                     @default(0)
+  sessionsPaid      Int                     @default(0)
+  status            String                  @default("active")
   // Mirror of `machine` that is only set while the plan is ACTIVE (null otherwise).
   // With the unique index below this is what enforces "one active session plan per
   // client per machine" in the DATABASE, not just in the UI: Postgres treats NULLs
   // as distinct, so any number of completed/cancelled plans may coexist. Always set
   // through `activeMachineKey()` in repositories/sessionPlans.ts — never by hand.
-  activeMachineKey String?
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
-  treatments       ConsultationTreatment[]
-  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  basketItems      VisitBasketItem[]
+  activeMachineKey  String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  treatments        ConsultationTreatment[]
+  client            Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  basketItems       VisitBasketItem[]
+  machineVisitItems MachineVisitItem[]
 
   @@unique([clientId, activeMachineKey])
 }
@@ -198,33 +202,34 @@ model Package {
 }
 
 model ClientPackage {
-  id            String                  @id @default(cuid())
-  clientId      String
-  packageId     String?
-  packageName   String
-  price         Float
-  cost          Float                   @default(0)
-  currency      String                  @default("USD")
-  totalSessions Int
-  usedSessions  Int                     @default(0)
-  machine       String?
-  startDate     DateTime                @default(now())
-  status        String                  @default("active")
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
-  client        Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  package       Package?                @relation(fields: [packageId], references: [id])
-  treatments    ConsultationTreatment[]
+  id                String                  @id @default(cuid())
+  clientId          String
+  packageId         String?
+  packageName       String
+  price             Float
+  cost              Float                   @default(0)
+  currency          String                  @default("USD")
+  totalSessions     Int
+  usedSessions      Int                     @default(0)
+  machine           String?
+  startDate         DateTime                @default(now())
+  status            String                  @default("active")
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  client            Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  package           Package?                @relation(fields: [packageId], references: [id])
+  treatments        ConsultationTreatment[]
+  machineVisitItems MachineVisitItem[]
 }
 
 model Appointment {
-  id                String    @id @default(cuid())
+  id                String         @id @default(cuid())
   clientId          String
   dietitianId       String?
   date              DateTime
   time              String
-  status            String    @default("scheduled")
-  visitType         String    @default("follow_up")
+  status            String         @default("scheduled")
+  visitType         String         @default("follow_up")
   notes             String?
   completedAt       DateTime?
   // WhatsApp reminder tracking — each set once its reminder is sent, so a patient
@@ -232,16 +237,25 @@ model Appointment {
   // ~24h before, and ~1–2h before.
   reminder24hSentAt DateTime?
   reminder2hSentAt  DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitian         User?     @relation(fields: [dietitianId], references: [id])
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  client            Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dietitian         User?          @relation(fields: [dietitianId], references: [id])
+  machineVisits     MachineVisit[]
+  consultations     Consultation[]
 }
 
 model Consultation {
   id                    String                  @id @default(cuid())
   clientId              String
   dietitianId           String?
+  /// The appointment this visit is fulfilling, when it was started from one.
+  /// Closing the visit completes THIS booking and no other — a patient with two
+  /// bookings on the board must not have both closed out by one visit. Null for a
+  /// walk-in or a visit started outside the queue flow; the close then falls back
+  /// to completing a single unambiguous live appointment (see
+  /// completeLinkedAppointmentTx).
+  appointmentId         String?
   date                  DateTime                @default(now())
   visitNumber           Int
   status                String                  @default("open")
@@ -280,12 +294,15 @@ model Consultation {
   debts                 ClientDebt[]
   client                Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dietitian             User?                   @relation(fields: [dietitianId], references: [id])
+  appointment           Appointment?            @relation(fields: [appointmentId], references: [id])
   files                 ConsultationFile[]
   foodList              ConsultationFoodList?
   jessyReceivables      JessyReceivable[]
   products              ConsultationProduct[]
   treatments            ConsultationTreatment[]
   visitBaskets          VisitBasket[]
+
+  @@index([appointmentId])
 }
 
 // The "Nutrient-Rich Foods List" the dietitian fills in during a visit — the web
@@ -552,8 +569,15 @@ model VisitBasket {
   dietitian          User?             @relation(fields: [dietitianId], references: [id])
   payment            Payment?          @relation("BasketPrimaryPayment", fields: [paymentId], references: [id])
   items              VisitBasketItem[]
+  // Set only on the basket a MACHINE VISIT raised for sessions its client had not
+  // prepaid. Mutually exclusive with `consultationId` in practice: a basket belongs
+  // to one visit event or the other, never both. Voiding an unsettled machine visit
+  // deletes this basket; a settled one blocks the void outright.
+  machineVisitId     String?
+  machineVisit       MachineVisit?     @relation(fields: [machineVisitId], references: [id])
 
   @@index([consultationId])
+  @@index([machineVisitId])
 }
 
 model VisitBasketItem {
@@ -664,6 +688,84 @@ model Expense {
   createdById  String?
   createdAt    DateTime @default(now())
   createdBy    User?    @relation(fields: [createdById], references: [id])
+}
+
+// ---- Machine visits ----
+// A client who came ONLY to use a prepaid machine treatment: a real attendance
+// record that is deliberately NOT a Consultation. It carries no clinical data
+// (no measurements, notes, assessment or consultation fee) and never mints a
+// visit number — `Consultation.visitNumber` stays consultation-specific. The two
+// are merged for display at the view-model layer, never in the database.
+//
+// The row is immutable once written: a mistake is VOIDED (status flips, counters
+// are restored, the row stays visible in history with who/when/why), never edited
+// or deleted, matching how the rest of the app treats a recorded event.
+model MachineVisit {
+  id             String             @id @default(cuid())
+  clientId       String
+  // Actor identity, derived server-side from the session — never sent by the
+  // client. The name is frozen (like Consultation.dietitianNameSnapshot) so a
+  // later rename or staff deletion can't rewrite history.
+  recordedById   String?
+  recordedByName String
+  date           DateTime           @default(now())
+  note           String?
+  status         String             @default("recorded")
+  // The appointment this visit closed out, when one was unambiguously identified
+  // (explicitly from the queue, or the single live appointment for the client
+  // today). Null for a walk-in or an ambiguous match — never guessed.
+  appointmentId  String?
+  // Replay guard: the client sends a key per confirm, so a double-clicked button,
+  // a retried POST or a browser replay resolves to the SAME visit instead of
+  // consuming the sessions twice. Unique, so the race is settled by the database.
+  idempotencyKey String?            @unique
+  voidedAt       DateTime?
+  voidedById     String?
+  voidedByName   String?
+  voidReason     String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  client         Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  recordedBy     User?              @relation("MachineVisitRecordedBy", fields: [recordedById], references: [id])
+  voidedBy       User?              @relation("MachineVisitVoidedBy", fields: [voidedById], references: [id])
+  appointment    Appointment?       @relation(fields: [appointmentId], references: [id])
+  items          MachineVisitItem[]
+  baskets        VisitBasket[]
+
+  @@index([clientId])
+  @@index([date])
+}
+
+// One machine's consumption inside a machine visit. Exactly one source per row —
+// a pay-as-you-go SessionPlan or a fixed-price ClientPackage — enforced by a CHECK
+// constraint in the migration (Prisma can't express it). `machine` is frozen at
+// the moment of use so the history stays readable if the catalog label or the
+// source row changes later.
+model MachineVisitItem {
+  id              String         @id @default(cuid())
+  machineVisitId  String
+  machine         String
+  sessions        Int
+  sessionPlanId   String?
+  clientPackageId String?
+  // Sessions of this line billed on the machine visit's basket (0 when prepaid
+  // credit covered them). Frozen: it is what the void reverses and what the
+  // reports read, never re-derived from today's plan state.
+  billedSessions  Int            @default(0)
+  unitPrice       Float          @default(0)
+  currency        String         @default("USD")
+  createdAt       DateTime       @default(now())
+  machineVisit    MachineVisit   @relation(fields: [machineVisitId], references: [id], onDelete: Cascade)
+  // Restrict, not the default SetNull: a consumption row must never be quietly
+  // orphaned from the balance it drew on. The one place a plan is deleted
+  // (deleteConsultation, for a plan an abandoned visit alone created) checks for
+  // machine-visit usage first and leaves the plan alone when it finds any.
+  sessionPlan     SessionPlan?   @relation(fields: [sessionPlanId], references: [id], onDelete: Restrict)
+  clientPackage   ClientPackage? @relation(fields: [clientPackageId], references: [id], onDelete: Restrict)
+
+  @@index([machineVisitId])
+  @@index([sessionPlanId])
+  @@index([clientPackageId])
 }
 
 model AuditLog {

@@ -134,6 +134,37 @@ export default function ReportsPage() {
           <CardBody><IncomeExpenseChart data={data.incomeExpenseSeries} /></CardBody>
         </Card>
         <Card>
+          <CardHeader
+            title="Machine utilization"
+            subtitle={`Sessions delivered ${rangeLabel(range.from, range.to)}`}
+          />
+          {data.machineUtilization.length === 0 ? (
+            <CardBody className="text-sm text-slate-400">No sessions in this period.</CardBody>
+          ) : (
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Machine</TH>
+                  <TH>Sessions</TH>
+                  <TH>Machine visits</TH>
+                  <TH>In consultations</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {data.machineUtilization.map((m) => (
+                  <TR key={m.machine}>
+                    <TD className="font-medium">{m.machine}</TD>
+                    <TD>{m.sessions}</TD>
+                    <TD>{m.machineVisits}</TD>
+                    <TD className="text-slate-500">{m.consultationSessions}</TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </Card>
+
+        <Card>
           <CardHeader title="Most profitable bundles" />
           <CardBody><RevenueBarChart data={data.packageRevenue} /></CardBody>
         </Card>

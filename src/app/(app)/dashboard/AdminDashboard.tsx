@@ -15,6 +15,7 @@ import {
   TrendingUp,
   Users,
   Wallet,
+  Zap,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
@@ -131,10 +132,11 @@ export function AdminDashboard() {
         byTender={finance.incomeByTender}
       />
 
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard label="Total clients" value={counts.totalClients} icon={Users} tone="blue" />
         <StatCard label="Active clients" value={counts.activeClients} tone="brand" />
         <StatCard label="Consultations" value={counts.consultations} icon={Activity} tone="slate" />
+        <StatCard label="Machine visits" value={counts.machineVisits} icon={Zap} tone="brand" />
         <StatCard label="New this month" value={counts.newThisMonth} tone="green" />
       </div>
 
@@ -175,6 +177,7 @@ export function AdminDashboard() {
                 <TH>Staff</TH>
                 <TH>Role</TH>
                 <TH>Consultations</TH>
+                <TH>Machine visits</TH>
               </TR>
             </THead>
             <TBody>
@@ -183,6 +186,7 @@ export function AdminDashboard() {
                   <TD className="font-medium">{s.name}</TD>
                   <TD className="capitalize text-slate-500">{s.role}</TD>
                   <TD>{s.consults}</TD>
+                  <TD>{s.machineVisits}</TD>
                 </TR>
               ))}
             </TBody>

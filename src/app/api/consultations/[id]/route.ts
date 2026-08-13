@@ -22,9 +22,14 @@ export async function PATCH(
     let result = await updateConsultation(id, input, {
       actorName: actor.name,
       actorEmail: actor.email,
+      actorRole: actor.role,
     });
     if (close) {
-      result = await closeConsultation(id, { actorName: actor.name, actorEmail: actor.email });
+      result = await closeConsultation(id, {
+        actorName: actor.name,
+        actorEmail: actor.email,
+        actorRole: actor.role,
+      });
       // The visit is now read-only, so this is the last chance to produce the
       // Food List PDF for a doctor who filled the form in but never pressed
       // "Generate PDF" (or who ticked more boxes after generating). Runs after

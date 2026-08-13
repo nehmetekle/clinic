@@ -20,6 +20,7 @@ import { auditMoney, writeAudit } from "./audit";
 import { clearClientDebtTx, createClientDebtTx } from "./clientDebts";
 import { createPayment } from "./payments";
 import { adjustProductStockTx } from "./products";
+import { creditSessionPlanPaidTx } from "./sessionCounters";
 import { getSettings, getUsdToLbp } from "./settings";
 import { userIdByEmail } from "./staff";
 import type {
@@ -820,10 +821,10 @@ export async function settleVisitBasket(
       const plan = await tx.sessionPlan.findUnique({ where: { id: planId } });
       // Only credit a plan that belongs to this basket's client.
       if (!plan || plan.clientId !== row.clientId) continue;
-      await tx.sessionPlan.update({
-        where: { id: planId },
-        data: { sessionsPaid: plan.sessionsPaid + qty },
-      });
+      // Atomic increment, not read-then-write: two baskets settling against the
+      // same plan at the same moment must both land, or one payment's sessions
+      // would be silently lost.
+      await creditSessionPlanPaidTx(tx, planId, qty);
     }
 
     // Secretary override: record the deferred (already subtracted from `collected`)

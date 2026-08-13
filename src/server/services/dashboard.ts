@@ -3,6 +3,7 @@ import { clinicDay, todayIso, toUsdFrozen } from "@/lib/config";
 import { listAppointments } from "../repositories/appointments";
 import { listClients } from "../repositories/clients";
 import { listConsultations } from "../repositories/consultations";
+import { listMachineVisits, machineUtilization } from "../repositories/machineVisits";
 import { listExpenses } from "../repositories/expenses";
 import { getJessyOutstanding } from "../repositories/jessy";
 import { listPayments } from "../repositories/payments";
@@ -49,7 +50,7 @@ export async function getDashboardSummaryForRole(
   const today = todayIso();
   const monthStart = `${today.slice(0, 7)}-01`;
 
-  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralClients, soldPackages, usdToLbp, jessyOutstanding] =
+  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralClients, soldPackages, usdToLbp, jessyOutstanding, allMachineVisits, machineUsage] =
     await Promise.all([
       listClients(),
       listPayments(),
@@ -79,6 +80,11 @@ export async function getDashboardSummaryForRole(
       // any income figure: the money it represents was already counted as income
       // when the patient paid through Jessy. See repositories/jessy.ts.
       getJessyOutstanding(),
+      // Machine-only visits: attendance and prepaid-session consumption that is
+      // deliberately NOT a consultation. Counted separately everywhere below —
+      // it must never move the consultation figures.
+      listMachineVisits({}),
+      machineUtilization({ from: opts.from, to: opts.to }),
     ]);
 
   // All financial figures below are aggregated in USD. Each record is converted
@@ -96,6 +102,10 @@ export async function getDashboardSummaryForRole(
   const inRange = (date: string) =>
     (!opts.from || date >= opts.from) && (!opts.to || date <= opts.to);
 
+  // Voided machine visits never happened — they are excluded from every figure
+  // here, exactly like the sessions they gave back.
+  const machineVisitsRecorded = allMachineVisits.filter((v) => v.status === "recorded");
+
   // Counts
   const counts = {
     totalClients: clients.length,
@@ -103,6 +113,9 @@ export async function getDashboardSummaryForRole(
     newToday: clients.filter((c) => c.registeredAt === today).length,
     newThisMonth: clients.filter((c) => c.registeredAt >= monthStart).length,
     consultations: consultations.length,
+    // Attendance that produced no consultation. A separate figure on purpose:
+    // adding it to `consultations` would report visits that never happened.
+    machineVisits: machineVisitsRecorded.length,
   };
 
   // Finance — income and expenses summed over the selected window.
@@ -239,6 +252,9 @@ export async function getDashboardSummaryForRole(
       name: s.fullName,
       role: s.role,
       consults: consultations.filter((c) => c.dietitianName === s.fullName).length,
+      // Kept out of `consults` so a doctor's consultation productivity stays a
+      // count of consultations.
+      machineVisits: machineVisitsRecorded.filter((v) => v.recordedByName === s.fullName).length,
     }));
 
   // Income vs expenses series — a fixed last-6-months trend (not affected by the
@@ -365,6 +381,7 @@ export async function getDashboardSummaryForRole(
     unpaidClients,
     referrerReport,
     referrerCostReport,
+    machineUtilization: machineUsage,
   };
 
   return redactForRole(summary, opts.role);
