@@ -138,7 +138,10 @@ export function toConsultation(c: ConsultationRow): Consultation {
   return {
     id: c.id,
     clientId: c.clientId,
-    dietitianName: c.dietitian?.fullName ?? "Unassigned",
+    // A closed visit reads its frozen name; an open draft reads the live one, so
+    // a mid-visit correction to a staff member's name still shows up. Closed
+    // visits from before the snapshot column existed fall back to the relation.
+    dietitianName: c.dietitianNameSnapshot ?? c.dietitian?.fullName ?? "Unassigned",
     date: dateOnly(c.date)!,
     visitNumber: c.visitNumber,
     status: c.status as Consultation["status"],
@@ -175,7 +178,7 @@ export function toConsultation(c: ConsultationRow): Consultation {
       price: t.price,
       currency: asCurrency(t.currency),
       clientPackageId: t.clientPackageId ?? undefined,
-      packageName: t.clientPackage?.packageName ?? undefined,
+      packageName: t.packageNameSnapshot ?? t.clientPackage?.packageName ?? undefined,
       sessionPlanId: t.sessionPlanId ?? undefined,
       notes: t.notes ?? undefined,
     })),
@@ -1052,6 +1055,48 @@ async function retirePaidBasketsTx(
 }
 
 /**
+ * Freezes the names this visit will display forever onto the visit itself, at the
+ * moment it closes.
+ *
+ * Both labels were previously resolved through a live relation on every read, so
+ * renaming a dietitian rewrote the doctor's name on all of their past visits, and
+ * a severed `ClientPackage` would have blanked a treatment's bundle label. A
+ * closed visit is a historical record; what it says happened must not change
+ * because a current record was edited afterwards.
+ *
+ * Called inside the close transaction on both close paths, after the status flip
+ * has been claimed, so it runs exactly once per visit. Open visits keep both
+ * columns NULL on purpose — a draft is still being written, and reading the live
+ * relation means a name corrected mid-visit is picked up straight away.
+ */
+async function freezeVisitHistoryNamesTx(
+  tx: Prisma.TransactionClient,
+  consultationId: string,
+): Promise<void> {
+  const visit = await tx.consultation.findUnique({
+    where: { id: consultationId },
+    select: {
+      dietitian: { select: { fullName: true } },
+      treatments: {
+        select: { id: true, clientPackage: { select: { packageName: true } } },
+      },
+    },
+  });
+  if (!visit) return;
+  await tx.consultation.update({
+    where: { id: consultationId },
+    data: { dietitianNameSnapshot: visit.dietitian?.fullName ?? null },
+  });
+  for (const treatment of visit.treatments) {
+    if (!treatment.clientPackage) continue;
+    await tx.consultationTreatment.update({
+      where: { id: treatment.id },
+      data: { packageNameSnapshot: treatment.clientPackage.packageName },
+    });
+  }
+}
+
+/**
  * Creates a consultation as an editable draft (open). The dietitian can keep
  * editing it (updateConsultation) and settle it in installments, until they
  * close it. `close: true` finalizes it in the same action.
@@ -1115,6 +1160,7 @@ export async function createConsultation(
         where: { id: created.id },
         data: { status: "closed", closedAt: new Date() },
       });
+      await freezeVisitHistoryNamesTx(tx, created.id);
       await completeLinkedAppointmentTx(tx, input.clientId);
       await retirePaidBasketsTx(tx, created.id);
     }
@@ -1210,6 +1256,7 @@ export async function closeConsultation(
     });
     if (claimed.count === 0) throw new ConflictError("This visit is already closed.");
 
+    await freezeVisitHistoryNamesTx(tx, id);
     await logVisitDiscountTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
     await logConsultationFeeWaiveTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
     await completeLinkedAppointmentTx(tx, existing.clientId);

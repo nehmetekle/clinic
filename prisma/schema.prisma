@@ -268,6 +268,11 @@ model Consultation {
   visitServiceTotals    String?
   consultationFee       Float?
   consultationFeeWaived Boolean                 @default(false)
+  /// The dietitian's name frozen at the moment the visit closed. A closed visit
+  /// is a historical record: renaming the staff member later must not rewrite it.
+  /// Null while the visit is open (read the live relation then) and on visits
+  /// closed before this column existed.
+  dietitianNameSnapshot String?
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
   bloodSample           BloodSample?
@@ -340,23 +345,28 @@ model ConsultationFile {
 }
 
 model ConsultationTreatment {
-  id              String         @id @default(cuid())
-  consultationId  String
-  machine         String
-  machineOther    String?
-  bodyParts       String         @default("[]")
-  sessionsNeeded  Int            @default(1)
-  sessionsUsed    Int            @default(0)
-  coveredSessions Int            @default(0)
-  price           Float          @default(0)
-  currency        String         @default("USD")
-  clientPackageId String?
-  sessionPlanId   String?
-  notes           String?
-  createdAt       DateTime       @default(now())
-  clientPackage   ClientPackage? @relation(fields: [clientPackageId], references: [id])
-  consultation    Consultation   @relation(fields: [consultationId], references: [id], onDelete: Cascade)
-  sessionPlan     SessionPlan?   @relation(fields: [sessionPlanId], references: [id])
+  id                  String         @id @default(cuid())
+  consultationId      String
+  machine             String
+  machineOther        String?
+  bodyParts           String         @default("[]")
+  sessionsNeeded      Int            @default(1)
+  sessionsUsed        Int            @default(0)
+  coveredSessions     Int            @default(0)
+  price               Float          @default(0)
+  currency            String         @default("USD")
+  clientPackageId     String?
+  sessionPlanId       String?
+  notes               String?
+  /// The bundle's name frozen at visit close, for the same reason as
+  /// Consultation.dietitianNameSnapshot. `ClientPackage.packageName` is already a
+  /// purchase-time snapshot, but it is reached through a nullable relation that a
+  /// deleted bundle would sever — this keeps the label on the visit itself.
+  packageNameSnapshot String?
+  createdAt           DateTime       @default(now())
+  clientPackage       ClientPackage? @relation(fields: [clientPackageId], references: [id])
+  consultation        Consultation   @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  sessionPlan         SessionPlan?   @relation(fields: [sessionPlanId], references: [id])
 }
 
 model ServicePrice {

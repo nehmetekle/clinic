@@ -33,6 +33,7 @@ import { WeightTrendChart } from "@/components/charts/Charts";
 import { MedicalHistoryTab } from "./MedicalHistoryTab";
 import { BloodTestsTab } from "./BloodTestsTab";
 import { FilesTab } from "./FilesTab";
+import { VisitSummaryModal } from "./VisitSummaryModal";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -85,6 +86,9 @@ export default function ClientProfilePage() {
   // Post-check-in correction of clinical notes (dietitian/admin); personal
   // details are edited on the check-in form itself (see the Personal tab).
   const [editNotesOpen, setEditNotesOpen] = useState(false);
+  // The closed visit whose read-only summary is open. Held by id (not by object)
+  // so a refetch can't leave the modal showing a stale copy of the visit.
+  const [summaryVisitId, setSummaryVisitId] = useState<string | null>(null);
   const { data, loading, error, refetch } = useApi(() => api.getClient(params.id), [params.id]);
   const staff = useApi(() => api.listStaff());
   const settings = useApi(() => api.getSettings());
@@ -548,17 +552,25 @@ export default function ClientProfilePage() {
             {active === "Consultations" && isDietitian && (
               <div className="space-y-3">
                 {consults.length === 0 && <p className="text-sm text-slate-400">No consultations yet.</p>}
-                {[...consults].reverse().map((c) => (
-                  <Card key={c.id}>
+                {[...consults].reverse().map((c) => {
+                  // Only a closed visit is a finalized record worth opening as a
+                  // read-only summary; an in-progress draft keeps "Continue" as
+                  // its one action and stays inert as a card.
+                  const isClosed = c.status === "closed";
+                  return (
+                  <Card
+                    key={c.id}
+                    onClick={isClosed ? () => setSummaryVisitId(c.id) : undefined}
+                  >
                     <CardBody>
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="flex items-center gap-2 font-medium text-slate-800">
                             Visit #{c.visitNumber} · {formatDate(c.date)}
-                            {c.status === "open" ? (
-                              <Badge tone="amber">In progress</Badge>
-                            ) : (
+                            {isClosed ? (
                               <Badge tone="gray">Closed</Badge>
+                            ) : (
+                              <Badge tone="amber">In progress</Badge>
                             )}
                           </p>
                           <p className="text-xs text-slate-500">{c.dietitianName}</p>
@@ -568,7 +580,9 @@ export default function ClientProfilePage() {
                             {c.weightKg && <span className="font-medium text-slate-700">{c.weightKg} kg</span>}
                             {c.bmi && <span className="ml-2 text-slate-400">BMI {c.bmi}</span>}
                           </div>
-                          {c.status === "open" && (
+                          {isClosed ? (
+                            <span className="text-xs text-slate-400">View summary</span>
+                          ) : (
                             <Button
                               size="sm"
                               variant="outline"
@@ -616,7 +630,8 @@ export default function ClientProfilePage() {
                       )}
                     </CardBody>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -946,6 +961,15 @@ export default function ClientProfilePage() {
             setEditNotesOpen(false);
             refetch();
           }}
+        />
+      )}
+
+      {isDietitian && (
+        <VisitSummaryModal
+          consultation={
+            consults.find((c) => c.id === summaryVisitId && c.status === "closed") ?? null
+          }
+          onClose={() => setSummaryVisitId(null)}
         />
       )}
     </div>
