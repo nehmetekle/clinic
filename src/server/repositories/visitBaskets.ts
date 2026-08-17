@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
 import { asCurrency } from "../serialize";
-import { basketLineUsd, basketTotals } from "@/lib/utils";
+import { basketTotals } from "@/lib/utils";
 import { CLINIC, toUsd } from "@/lib/config";
 import {
   StaleFxRateError,
@@ -427,13 +427,13 @@ export async function updateVisitBasket(
     );
   }
 
-  // Session-plan lines are paid UPFRONT, in full: the visit that buys a plan bills
-  // its whole unpaid balance, and a plan line can be neither part-paid (no debt
-  // deferral — see settleVisitBasket) nor retyped down to a smaller count at
-  // checkout, which would silently push the rest onto a future visit. Every plan
-  // line the dietitian sent must therefore come back byte-for-byte, and no plan
-  // line may be invented here. Enforced on the SERVER, not just locked in the
-  // settlement modal, so a direct PATCH can't bypass it.
+  // Session-plan lines are locked at checkout. Their settled quantity is what
+  // UNLOCKS sessions on the plan, so retyping one here would hand the patient a
+  // different number of sessions than was sold, and inventing one would unlock
+  // sessions nobody sold. The lines the dietitian (or the sale) sent must come
+  // back byte-for-byte. Enforced on the SERVER, not just locked in the settlement
+  // modal, so a direct PATCH can't bypass it. Deferring the money to a debt is
+  // still allowed — that settles the basket without changing what was sold.
   const planLineFingerprint = (
     rows: {
       sessionPlanId?: string | null;
@@ -577,8 +577,8 @@ export async function settleVisitBasket(
     actorName?: string | null;
     // Secretary override: the client couldn't cover everything today, so record
     // what's still owed as a tracked ClientDebt alongside the payment for what was
-    // actually collected. Session-plan shortfalls are already tracked on the plan,
-    // so the secretary should enter only the non-plan remainder here.
+    // actually collected. Deferring the whole basket is allowed — that settles it,
+    // and the sessions it bought unlock exactly as if it had been paid.
     debtAmount?: number;
     debtReason?: string;
     // The client's existing outstanding ClientDebt(s) the secretary chose to
@@ -596,22 +596,17 @@ export async function settleVisitBasket(
     const view = toVisitBasket(row);
 
     // Entering a debt REDUCES what's recorded as collected — it never adds on top
-    // of a full payment (which would double-count the same money as both income and
-    // owed). Session-plan charged lines are collected in full here (they advance the
-    // plan below) and are tracked by the plan's own sessionsPaid gap, not by a
-    // ClientDebt — so only the non-plan portion of today's total may be deferred.
-    // Cap the entered debt at that deferrable portion so the recorded income can
-    // never exceed what was actually paid, and a session can never be both "paid on
-    // the plan" and "owed as debt".
+    // of a full payment (which would double-count the same money as both income
+    // and owed). Every line is deferrable, session-plan lines included: a basket
+    // is settled either by payment or by moving the balance to a ClientDebt, and
+    // both settle it equally. That is the ONLY thing tracking the unpaid money —
+    // the plan itself carries no balance owed, so the same $40 can never sit on a
+    // plan and on a debt at once.
     const rate = row.usdToLbp > 0 ? row.usdToLbp : CLINIC.defaultUsdToLbp;
-    const planPortion = row.items
-      .filter((i) => i.sessionPlanId && !i.covered)
-      .reduce((s, i) => s + basketLineUsd(i, rate), 0);
-    const deferrable = Math.max(0, Math.round((view.total - planPortion) * 100) / 100);
     const debtAmount = Math.max(0, input.debtAmount ?? 0);
-    if (debtAmount > deferrable) {
+    if (debtAmount > view.total) {
       throw new ConflictError(
-        "The recorded debt can't exceed the non-session-plan balance owed on this basket.",
+        `The recorded debt can't exceed the $${view.total.toFixed(2)} owed on this basket.`,
       );
     }
 
@@ -806,11 +801,11 @@ export async function settleVisitBasket(
       }
     }
 
-    // Pay-as-you-go session plans (SEPARATE from Packages): the FINAL settled
-    // quantity of each charged session line advances that plan's sessionsPaid.
-    // `row.items` was read fresh at the top of this transaction, so it reflects
-    // any quantity edits the secretary saved before settling — and it commits in
-    // the same transaction as the payment, so counts and money can't drift apart.
+    // UNLOCK. The FINAL settled quantity of each charged session line advances
+    // that plan's sessionsPaid, which is what makes those sessions usable. This
+    // sits AFTER the conditional pending->paid flip above, so a double submit
+    // unlocks exactly once; and it commits in the same transaction as the payment
+    // (or the debt below), so a basket settled either way unlocks identically.
     const paidByPlan = new Map<string, number>();
     for (const item of row.items) {
       if (item.sessionPlanId && !item.covered) {

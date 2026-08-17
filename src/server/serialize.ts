@@ -100,8 +100,18 @@ export function toClientPackage(cp: PClientPackage): ClientPackage {
   };
 }
 
-export function toSessionPlan(p: PSessionPlan): SessionPlan {
-  const credit = Math.max(0, p.sessionsPaid - p.sessionsUsed);
+/**
+ * `pendingPurchase` — sessions of this plan sold on a basket that has NOT been
+ * settled yet (a front-desk top-up awaiting checkout). Passed in by the caller
+ * because it lives on VisitBasketItem, not on the plan row. It is what keeps the
+ * consultation editor's live price preview from re-selling sessions that are
+ * already on someone else's basket.
+ */
+export function toSessionPlan(p: PSessionPlan, pendingPurchase = 0): SessionPlan {
+  // Clamped at zero: the originating consultation may deliver a session before
+  // its basket is settled, so `used` can briefly exceed `paid`. Availability is
+  // never negative — it is simply nothing until the purchase settles.
+  const sessionsAvailable = Math.max(0, p.sessionsPaid - p.sessionsUsed);
   return {
     id: p.id,
     clientId: p.clientId,
@@ -113,9 +123,10 @@ export function toSessionPlan(p: PSessionPlan): SessionPlan {
     sessionsUsed: p.sessionsUsed,
     sessionsPaid: p.sessionsPaid,
     status: p.status as SessionPlan["status"],
-    credit,
+    sessionsAvailable,
     sessionsLeftToAttend: Math.max(0, p.sessionsNeeded - p.sessionsUsed),
-    sessionsToPayFor: Math.max(0, p.sessionsNeeded - p.sessionsPaid),
+    sessionsPendingPurchase: pendingPurchase,
+    sessionsToBuy: Math.max(0, p.sessionsNeeded - p.sessionsPaid - pendingPurchase),
     createdAt: dateOnly(p.createdAt)!,
   };
 }

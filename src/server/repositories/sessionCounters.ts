@@ -9,6 +9,10 @@ import { activeMachineKey } from "./sessionPlans";
  * a machine visit — route through here, so there is a single set of invariants
  * rather than two implementations that drift.
  *
+ * The model: sessions are BOUGHT (a basket line), the basket is SETTLED (paid now
+ * or deferred to a ClientDebt), and settling is what makes them usable.
+ *   available = sessionsPaid - sessionsUsed
+ *
  * Every write is a GUARDED SQL statement: the new value is computed by the
  * database from the row's own current value, under the row lock, in one
  * statement. The read-then-write pattern this replaces could lose a consumption
@@ -57,34 +61,49 @@ async function syncClientPackageStatusTx(
 }
 
 /**
+ * How far a consumption may draw on a plan.
+ *
+ * `available` — the strict rule: only sessions the patient has PURCHASED AND
+ * SETTLED may be consumed (`sessionsUsed + n <= sessionsPaid`). Machine visits
+ * use this, which is what makes them pure consumption: they can never bill, so
+ * they can never run past what was bought.
+ *
+ * `prescribed` — the one exception, for the consultation that prescribes the
+ * course. The visit that orders sessions may also deliver one before the patient
+ * reaches the front desk, so it draws against `sessionsNeeded` instead. That is
+ * safe because a consultation cannot CLOSE with an unsettled basket
+ * (assertBasketSettledTx), so every session a consultation consumes is settled
+ * by the time the visit is finalized.
+ */
+export type SessionPlanLimit = "available" | "prescribed";
+
+/**
  * Consumes `sessions` from a session plan, refusing when the plan cannot absorb
- * them. `ceiling: true` also caps consumption at what the plan says the patient
- * needs — the machine-visit rule, which keeps logging a visit from quietly
- * becoming a way to buy sessions nobody ordered. The consultation path passes
- * `ceiling: false`: its editor is where `sessionsNeeded` is set in the first
- * place, and it has always been allowed to record more delivered than ordered.
+ * them under `limit`. Never clamps: it records the full amount or nothing.
  */
 export async function consumeSessionPlanTx(
   tx: Prisma.TransactionClient,
-  input: { planId: string; clientId: string; sessions: number; ceiling: boolean },
+  input: { planId: string; clientId: string; sessions: number; limit: SessionPlanLimit },
 ): Promise<void> {
   const { planId, clientId, sessions } = input;
   if (sessions <= 0) return;
 
-  const affected = input.ceiling
-    ? await tx.$executeRaw`
-        UPDATE "SessionPlan"
-           SET "sessionsUsed" = "sessionsUsed" + ${sessions}, "updatedAt" = NOW()
-         WHERE "id" = ${planId}
-           AND "clientId" = ${clientId}
-           AND "status" <> 'cancelled'
-           AND "sessionsUsed" + ${sessions} <= "sessionsNeeded"`
-    : await tx.$executeRaw`
-        UPDATE "SessionPlan"
-           SET "sessionsUsed" = "sessionsUsed" + ${sessions}, "updatedAt" = NOW()
-         WHERE "id" = ${planId}
-           AND "clientId" = ${clientId}
-           AND "status" <> 'cancelled'`;
+  const affected =
+    input.limit === "available"
+      ? await tx.$executeRaw`
+          UPDATE "SessionPlan"
+             SET "sessionsUsed" = "sessionsUsed" + ${sessions}, "updatedAt" = NOW()
+           WHERE "id" = ${planId}
+             AND "clientId" = ${clientId}
+             AND "status" <> 'cancelled'
+             AND "sessionsUsed" + ${sessions} <= "sessionsPaid"`
+      : await tx.$executeRaw`
+          UPDATE "SessionPlan"
+             SET "sessionsUsed" = "sessionsUsed" + ${sessions}, "updatedAt" = NOW()
+           WHERE "id" = ${planId}
+             AND "clientId" = ${clientId}
+             AND "status" <> 'cancelled'
+             AND "sessionsUsed" + ${sessions} <= "sessionsNeeded"`;
 
   if (affected === 0) {
     // Nothing matched: say which of the guards it was, reading the row now that
@@ -94,6 +113,12 @@ export async function consumeSessionPlanTx(
       throw new NotFoundError("Treatment plan not found for this patient.");
     }
     if (plan.status === "cancelled") throw new ConflictError("This treatment plan is cancelled.");
+    if (input.limit === "available") {
+      const available = Math.max(0, plan.sessionsPaid - plan.sessionsUsed);
+      throw new ConflictError(
+        `${available} session${available === 1 ? "" : "s"} available — sell and settle more sessions first.`,
+      );
+    }
     const left = Math.max(0, plan.sessionsNeeded - plan.sessionsUsed);
     throw new ConflictError(
       `Only ${left} session${left === 1 ? "" : "s"} left on this plan.`,
@@ -168,8 +193,19 @@ export async function releaseClientPackageTx(
 }
 
 /**
- * Advances a plan's paid count at settlement — an atomic increment rather than a
- * read-then-write, so two baskets settling at once can't lose one side's payment.
+ * UNLOCKS sessions: a basket settled (paid outright, or deferred to a ClientDebt)
+ * raises the plan's purchased-and-settled count, which is what makes the sessions
+ * usable. One atomic statement rather than a read-then-write, so two baskets
+ * settling at once can't lose one side's purchase.
+ *
+ * `sessionsNeeded` is lifted alongside it so the prescribed course can never sit
+ * below what the patient has actually bought — that ordering is what the
+ * `sessionsPaid <= sessionsNeeded` CHECK asserts, and a top-up sale is allowed to
+ * push the course length up.
+ *
+ * Called exactly once per basket: settleVisitBasket only reaches it after the
+ * conditional `pending -> paid` flip has matched, so a double submit cannot
+ * unlock twice.
  */
 export async function creditSessionPlanPaidTx(
   tx: Prisma.TransactionClient,
@@ -177,8 +213,11 @@ export async function creditSessionPlanPaidTx(
   sessions: number,
 ): Promise<void> {
   if (sessions <= 0) return;
-  await tx.sessionPlan.update({
-    where: { id: planId },
-    data: { sessionsPaid: { increment: sessions } },
-  });
+  await tx.$executeRaw`
+    UPDATE "SessionPlan"
+       SET "sessionsPaid" = "sessionsPaid" + ${sessions},
+           "sessionsNeeded" = GREATEST("sessionsNeeded", "sessionsPaid" + ${sessions}),
+           "updatedAt" = NOW()
+     WHERE "id" = ${planId}`;
+  await syncSessionPlanStatusTx(tx, planId);
 }

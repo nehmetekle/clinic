@@ -35,6 +35,8 @@ import { BloodTestsTab } from "./BloodTestsTab";
 import { FilesTab } from "./FilesTab";
 import { MachineVisitCard } from "./MachineVisitCard";
 import { LogMachineVisitModal } from "@/components/LogMachineVisitModal";
+import { SellSessionsModal } from "@/components/SellSessionsModal";
+import { VisitBasketSettlementModal } from "@/components/VisitBasketSettlementModal";
 import { VisitSummaryModal } from "./VisitSummaryModal";
 import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
@@ -125,6 +127,19 @@ export default function ClientProfilePage() {
   // open so the common one-machine case is a two-click flow).
   const [machineVisitOpen, setMachineVisitOpen] = useState(false);
   const [machineVisitPreselect, setMachineVisitPreselect] = useState<string | undefined>();
+  // Front-desk session sale. It only raises a basket; the secretary settles it in
+  // the normal checkout, and that is what makes the sessions usable.
+  const [sellSessionsOpen, setSellSessionsOpen] = useState(false);
+  // The client's unsettled baskets, settleable from the Payments tab. The queue
+  // board's Payment lane only carries TODAY's baskets, so it cannot be the only
+  // way in: a sale made yesterday and not settled would otherwise be unreachable
+  // — the money uncollectable and the sessions never unlocked.
+  const pendingBaskets = useApi(
+    () => api.listVisitBaskets({ status: "pending", clientId: params.id }),
+    [params.id],
+  );
+  const productCatalog = useApi(() => api.listProducts());
+  const [openBasketId, setOpenBasketId] = useState<string | null>(null);
   const [voidTarget, setVoidTarget] = useState<MachineVisit | null>(null);
   const [voidReason, setVoidReason] = useState("");
   const [voidSaving, setVoidSaving] = useState(false);
@@ -209,13 +224,13 @@ export default function ClientProfilePage() {
   const machinePackages = client.packages.filter(
     (p) => p.status === "active" && p.machine && p.totalSessions - p.usedSessions > 0,
   );
-  // Pay-as-you-go plans with prepaid-but-unused sessions. Bundle sessions left
-  // and plan credit are both "already paid for" from the patient's point of
-  // view, so the Overview headline adds them up.
-  const creditPlans = sessionPlans.filter((p) => p.status === "active" && p.credit > 0);
+  // Plans with bought-and-settled sessions left. Bundle sessions left and plan
+  // availability are both "already paid for" from the patient's point of view, so
+  // the Overview headline adds them up.
+  const creditPlans = sessionPlans.filter((p) => p.status === "active" && p.sessionsAvailable > 0);
   const prepaidSessions =
     machinePackages.reduce((n, p) => n + (p.totalSessions - p.usedSessions), 0) +
-    creditPlans.reduce((n, p) => n + p.credit, 0);
+    creditPlans.reduce((n, p) => n + p.sessionsAvailable, 0);
   // Visits where blood collection was ordered, latest last.
   const bloodConsults = consults.filter((c) => c.bloodCollection);
   const latestBlood = bloodConsults[bloodConsults.length - 1];
@@ -419,7 +434,7 @@ export default function ClientProfilePage() {
                       {creditPlans.map((p) => (
                         <li key={p.id} className="flex items-center justify-between gap-2">
                           <span className="font-medium text-slate-700">{p.machine ?? "General"}</span>
-                          <span className="font-medium text-emerald-600">{p.credit} prepaid</span>
+                          <span className="font-medium text-emerald-600">{p.sessionsAvailable} available</span>
                         </li>
                       ))}
                     </ul>
@@ -568,20 +583,27 @@ export default function ClientProfilePage() {
 
             {active === "Treatments" && (
               <div className="space-y-6">
-                {canLogMachineVisit && (
-                  <div className="flex justify-end">
-                    <Button
-                      onClick={() => {
-                        setMachineVisitPreselect(undefined);
-                        setMachineVisitOpen(true);
-                      }}
-                    >
-                      Log machine visit
-                    </Button>
+                {(canHandleMoney || canLogMachineVisit) && (
+                  <div className="flex justify-end gap-2">
+                    {canHandleMoney && (
+                      <Button variant="outline" onClick={() => setSellSessionsOpen(true)}>
+                        Sell sessions
+                      </Button>
+                    )}
+                    {canLogMachineVisit && (
+                      <Button
+                        onClick={() => {
+                          setMachineVisitPreselect(undefined);
+                          setMachineVisitOpen(true);
+                        }}
+                      >
+                        Log machine visit
+                      </Button>
+                    )}
                   </div>
                 )}
                 <Card>
-                  <CardHeader title="Bundles" subtitle="Prepaid treatment bundles and session usage" />
+                  <CardHeader title="Bundles" subtitle="Fixed-price treatment bundles" />
                   <Table>
                     <THead><TR>
                       <TH>Bundle</TH><TH>Treatment</TH><TH>Price</TH><TH>Sessions</TH><TH>Start</TH><TH>Status</TH>
@@ -622,16 +644,13 @@ export default function ClientProfilePage() {
                 </Card>
 
                 <Card>
-                  <CardHeader
-                    title="Session plans"
-                    subtitle="Pay-as-you-go sessions — paid per visit, with prepaid credit carried forward"
-                  />
+                  <CardHeader title="Sessions" subtitle="Purchased per session" />
                   {sessionPlans.length === 0 ? (
-                    <CardBody className="text-sm text-slate-400">No session plans.</CardBody>
+                    <CardBody className="text-sm text-slate-400">No sessions.</CardBody>
                   ) : (
                     <Table>
                       <THead><TR>
-                        <TH>Treatment</TH><TH>Unit price</TH><TH>Needed</TH><TH>Used</TH><TH>Paid</TH><TH>Credit</TH><TH>Left to attend</TH><TH>Status</TH>
+                        <TH>Treatment</TH><TH>Unit price</TH><TH>Prescribed</TH><TH>Purchased</TH><TH>Used</TH><TH>Available</TH><TH>Status</TH>
                         {canLogMachineVisit && <TH> </TH>}
                       </TR></THead>
                       <TBody>
@@ -640,18 +659,17 @@ export default function ClientProfilePage() {
                             <TD className="font-medium">{p.machine ?? "General"}</TD>
                             <TD>{formatMoney(p.unitPrice, p.currency)}</TD>
                             <TD>{p.sessionsNeeded}</TD>
-                            <TD>{p.sessionsUsed}</TD>
                             <TD>{p.sessionsPaid}</TD>
+                            <TD>{p.sessionsUsed}</TD>
                             <TD>
-                              <span className={p.credit > 0 ? "font-medium text-emerald-600" : "text-slate-500"}>
-                                {p.credit}
+                              <span className={p.sessionsAvailable > 0 ? "font-medium text-emerald-600" : "text-slate-500"}>
+                                {p.sessionsAvailable}
                               </span>
                             </TD>
-                            <TD>{p.sessionsLeftToAttend}</TD>
                             <TD><Badge tone={p.status === "active" ? "green" : p.status === "completed" ? "gray" : "red"}>{p.status}</Badge></TD>
                             {canLogMachineVisit && (
                               <TD>
-                                {p.status === "active" && p.sessionsLeftToAttend > 0 && (
+                                {p.status === "active" && p.sessionsAvailable > 0 && (
                                   <Button
                                     size="sm"
                                     variant="outline"
@@ -885,6 +903,31 @@ export default function ClientProfilePage() {
 
             {active === "Payments" && canHandleMoney && (
               <div className="space-y-6">
+                {(pendingBaskets.data ?? []).length > 0 && (
+                  <Card>
+                    <CardHeader title="To settle" />
+                    <CardBody className="space-y-2">
+                      {(pendingBaskets.data ?? []).map((b) => (
+                        <div
+                          key={b.id}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-slate-800">
+                              {formatMoney(b.total, "USD")}
+                            </p>
+                            <p className="truncate text-xs text-slate-500">
+                              {b.items.filter((i) => !i.covered).map((i) => i.label).join(", ")}
+                            </p>
+                          </div>
+                          <Button size="sm" onClick={() => setOpenBasketId(b.id)}>
+                            Open &amp; settle
+                          </Button>
+                        </div>
+                      ))}
+                    </CardBody>
+                  </Card>
+                )}
                 <Card>
                   <Table>
                     <THead><TR><TH>Receipt</TH><TH>Motif</TH><TH>Amount</TH><TH>Method</TH><TH>Date</TH><TH></TH></TR></THead>
@@ -1287,6 +1330,40 @@ export default function ClientProfilePage() {
           }}
         />
       )}
+
+      {canHandleMoney && (
+        <SellSessionsModal
+          open={sellSessionsOpen}
+          clientId={client.id}
+          clientName={`${client.firstName} ${client.lastName}`}
+          onClose={() => setSellSessionsOpen(false)}
+          onSold={() => {
+            pendingBaskets.refetch();
+            refetch();
+          }}
+        />
+      )}
+
+      {canHandleMoney &&
+        (() => {
+          const basket = (pendingBaskets.data ?? []).find((b) => b.id === openBasketId);
+          if (!basket) return null;
+          return (
+            <VisitBasketSettlementModal
+              key={basket.id}
+              basket={basket}
+              products={productCatalog.data ?? []}
+              outstandingDebts={debts.filter((d) => d.status === "outstanding")}
+              canSettle={canHandleMoney}
+              onClose={() => setOpenBasketId(null)}
+              onChanged={() => {
+                setOpenBasketId(null);
+                pendingBaskets.refetch();
+                refetch();
+              }}
+            />
+          );
+        })()}
 
       <Modal
         open={!!voidTarget}

@@ -2,12 +2,14 @@
  * Machine-only visits: session accounting, billing, appointments, void, race
  * safety and authorization. Test DB only (see run.sh).
  *
- * Locks in the rules that make this feature safe to run at the front desk:
- * prepaid sessions are consumed but never re-billed, unprepaid ones raise an
- * ordinary basket at the plan's own frozen price, nothing about a consultation
- * (fee, visit number, clinical row) is created, over-consumption is refused
- * rather than clamped, a replayed confirm consumes once, two desks racing the
- * last session produce exactly one visit, and a settled visit can't be voided.
+ * Locks in the rules that make this feature safe to run at the front desk: a
+ * machine visit is PURE CONSUMPTION — it draws only on sessions that have been
+ * bought and settled, raises no basket and bills nothing; sessions that are
+ * unbought (or sold but unsettled) are REFUSED rather than billed; nothing about
+ * a consultation (fee, visit number, clinical row) is created; over-consumption
+ * is refused rather than clamped; a replayed confirm consumes once; two desks
+ * racing the last session produce exactly one visit; and a settled visit can't
+ * be voided.
  */
 import { db } from "@/server/db";
 import {
@@ -16,7 +18,7 @@ import {
   machineUtilization,
   voidMachineVisit,
 } from "@/server/repositories/machineVisits";
-import { createSessionPlan } from "@/server/repositories/sessionPlans";
+import { createSessionPlan, sellSessions } from "@/server/repositories/sessionPlans";
 import {
   closeConsultation,
   createConsultation,
@@ -208,68 +210,88 @@ async function main() {
   ok("bundle: never billed", mvBundle.amountDue === 0);
 
   // =====================================================================
-  // 4. Unprepaid usage raises an ordinary basket at the plan's own price
+  // 4. Unsettled sessions are REFUSED — a machine visit never bills
   // =====================================================================
   const client3 = await db.client.create({
     data: { firstName: "Un", lastName: "Paid", phone: "+96170123458" },
   });
   const plan3 = await createSessionPlan({ clientId: client3.id, machine: "RF Body", sessionsNeeded: 13 });
-  // 10 paid, 10 used -> no credit left, 3 sessions of headroom on the plan.
+  // 10 bought and settled, all 10 used -> nothing available, though the course
+  // still calls for 3 more sessions nobody has bought.
   await db.sessionPlan.update({
     where: { id: plan3.id },
     data: { sessionsPaid: 10, sessionsUsed: 10 },
   });
 
+  await expectFailure(
+    "no availability: the visit is refused, not billed",
+    () =>
+      createMachineVisit(
+        { clientId: client3.id, items: [{ sessionPlanId: plan3.id, sessions: 2 }] },
+        actor,
+      ),
+    /0 sessions available/i,
+  );
+  const p3Refused = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
+  ok("no availability: nothing consumed", p3Refused.sessionsUsed === 10, `used=${p3Refused.sessionsUsed}`);
+  ok("no availability: plan not enlarged", p3Refused.sessionsNeeded === 13, `needed=${p3Refused.sessionsNeeded}`);
+  ok("no availability: NO basket raised",
+     (await listVisitBaskets({ clientId: client3.id, status: "pending" })).length === 0);
+  ok("no availability: no machine visit recorded",
+     (await db.machineVisit.count({ where: { clientId: client3.id } })) === 0);
+  ok("no availability: no payment", (await db.payment.count({ where: { clientId: client3.id } })) === 0);
+
+  // The prescribed-but-unbought sessions are sold the normal way, and SETTLING
+  // that sale is what makes them usable.
+  const sale3 = await sellSessions(
+    { clientId: client3.id, machine: "RF Body", sessions: 2 },
+    { id: doc.id, name: doc.fullName },
+  );
+  ok("sale: pending basket raised at the plan's own price",
+     (await listVisitBaskets({ clientId: client3.id, status: "pending" }))[0]?.total === 20,
+     `total=${(await listVisitBaskets({ clientId: client3.id, status: "pending" }))[0]?.total}`);
+  await expectFailure(
+    "sold but UNSETTLED unlocks nothing",
+    () =>
+      createMachineVisit(
+        { clientId: client3.id, items: [{ sessionPlanId: plan3.id, sessions: 1 }] },
+        actor,
+      ),
+    /0 sessions available/i,
+  );
+
+  await settleVisitBasket(sale3.basketId, { splits: [{ method: "cash", amount: 20 }], actorName: "Sec" });
+  const p3Settled = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
+  ok("settlement unlocks: sessionsPaid 10 -> 12", p3Settled.sessionsPaid === 12, `paid=${p3Settled.sessionsPaid}`);
+  ok("settlement produced a real payment",
+     (await db.payment.count({ where: { clientId: client3.id } })) === 1);
+
   const mv3 = await createMachineVisit(
     { clientId: client3.id, items: [{ sessionPlanId: plan3.id, sessions: 2 }] },
     actor,
   );
-  const p3 = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
-  ok("unpaid: sessions 11 and 12 consumed", p3.sessionsUsed === 12, `used=${p3.sessionsUsed}`);
-  ok("unpaid: plan quantity NOT enlarged", p3.sessionsNeeded === 13, `needed=${p3.sessionsNeeded}`);
-  ok("unpaid: amount due = 2 x $10", mv3.amountDue === 20, `amountDue=${mv3.amountDue}`);
-
-  const mvBaskets = await listVisitBaskets({ clientId: client3.id, status: "pending" });
-  ok("unpaid: one pending basket raised", mvBaskets.length === 1);
-  ok("unpaid: basket total $20", mvBaskets[0]?.total === 20, `total=${mvBaskets[0]?.total}`);
-  ok("unpaid: basket has no consultation fee line",
-     !mvBaskets[0]?.items.some((i) => i.kind === "consultation_fee"));
-  ok("unpaid: basket is not linked to a consultation", !mvBaskets[0]?.consultationId);
-
-  await settleVisitBasket(mvBaskets[0].id, { splits: [{ method: "cash", amount: 20 }], actorName: "Sec" });
-  const p3Settled = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
-  ok("unpaid: settlement advances sessionsPaid 10 -> 12", p3Settled.sessionsPaid === 12,
-     `paid=${p3Settled.sessionsPaid}`);
-  ok("unpaid: settlement produced a real payment",
-     (await db.payment.count({ where: { clientId: client3.id } })) === 1);
-
-  // Financial parity: the same consumption through a consultation bills the same
-  // unit price. The plan now has 1 unpaid session left (13 needed, 12 paid).
-  const parityVisit = await createConsultation({
-    clientId: client3.id,
-    dietitianId: doc.id,
-    waiveConsultationFee: true,
-    treatments: [{ machine: "RF Body", sessionsNeeded: 13, sessionsUsed: 1, sessionPlanId: plan3.id }],
-  });
-  const parityBaskets = await listVisitBaskets({ clientId: client3.id, status: "pending" });
-  ok("parity: consultation bills the remaining unpaid session at the same $10",
-     parityBaskets[0]?.total === 10, `total=${parityBaskets[0]?.total}`);
-  ok("parity: no double charge for sessions the machine visit already paid",
-     parityBaskets[0]?.items.filter((i) => !i.covered).reduce((s, i) => s + i.quantity, 0) === 1);
-  await db.visitBasket.deleteMany({ where: { consultationId: parityVisit.id } });
+  const p3Used = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
+  ok("settled sessions are consumable", p3Used.sessionsUsed === 12, `used=${p3Used.sessionsUsed}`);
+  ok("consuming them bills nothing", mv3.amountDue === 0, `amountDue=${mv3.amountDue}`);
+  ok("consuming them raises no basket",
+     (await listVisitBaskets({ clientId: client3.id, status: "pending" })).length === 0);
 
   // =====================================================================
-  // 5. Consumption ceiling: a machine visit never buys new sessions
+  // 5. A machine visit can never draw past what is available
   // =====================================================================
   await expectFailure(
-    "ceiling: cannot consume past sessionsNeeded",
+    "cannot consume past what is available",
     () =>
       createMachineVisit(
         { clientId: client3.id, items: [{ sessionPlanId: plan3.id, sessions: 5 }] },
         actor,
       ),
-    /session/i,
+    /available/i,
   );
+  const p3Final = await db.sessionPlan.findUniqueOrThrow({ where: { id: plan3.id } });
+  ok("available never goes negative",
+     p3Final.sessionsPaid - p3Final.sessionsUsed >= 0,
+     `paid=${p3Final.sessionsPaid} used=${p3Final.sessionsUsed}`);
 
   // =====================================================================
   // 6. IDOR: another client's plan / another patient's appointment
@@ -480,7 +502,7 @@ async function main() {
     /already voided/i,
   );
 
-  // Void of an UNSETTLED billed visit also removes the basket it raised.
+  // A void never has a basket to clean up any more — it only gives sessions back.
   const unpaidClient = await db.client.create({
     data: { firstName: "Unsettled", lastName: "Void", phone: "+96170123461" },
   });
@@ -489,19 +511,21 @@ async function main() {
     machine: "RF Body",
     sessionsNeeded: 6,
   });
-  const billedVisit = await createMachineVisit(
+  await db.sessionPlan.update({ where: { id: unpaidPlan.id }, data: { sessionsPaid: 6 } });
+  const consumedVisit = await createMachineVisit(
     { clientId: unpaidClient.id, items: [{ sessionPlanId: unpaidPlan.id, sessions: 2 }] },
     actor,
   );
-  ok("void: unsettled visit raised a $20 basket", billedVisit.amountDue === 20,
-     `amountDue=${billedVisit.amountDue}`);
-  await voidMachineVisit(billedVisit.id, { reason: "Wrong patient" }, actor);
-  ok("void: its pending basket is gone",
-     (await db.visitBasket.count({ where: { machineVisitId: billedVisit.id } })) === 0);
+  ok("void: the visit charged nothing", consumedVisit.amountDue === 0, `amountDue=${consumedVisit.amountDue}`);
+  ok("void: no basket exists to clean up",
+     (await db.visitBasket.count({ where: { machineVisitId: consumedVisit.id } })) === 0);
+  await voidMachineVisit(consumedVisit.id, { reason: "Wrong patient" }, actor);
   ok("void: sessions restored",
      (await db.sessionPlan.findUniqueOrThrow({ where: { id: unpaidPlan.id } })).sessionsUsed === 0);
 
-  // Void of a SETTLED visit is refused — there is no refund path in this app.
+  // A settled basket still blocks a void. Current visits raise none, so this
+  // covers the HISTORIC rows that predate purchase and consumption being split:
+  // the guard has to keep holding for them (no refunds, ever).
   const settledClient = await db.client.create({
     data: { firstName: "Settled", lastName: "Void", phone: "+96170123462" },
   });
@@ -510,14 +534,21 @@ async function main() {
     machine: "RF Body",
     sessionsNeeded: 6,
   });
+  await db.sessionPlan.update({ where: { id: settledPlan.id }, data: { sessionsPaid: 6 } });
   const settledVisit = await createMachineVisit(
     { clientId: settledClient.id, items: [{ sessionPlanId: settledPlan.id, sessions: 1 }] },
     actor,
   );
-  const settledBaskets = await listVisitBaskets({ clientId: settledClient.id, status: "pending" });
-  await settleVisitBasket(settledBaskets[0].id, {
-    splits: [{ method: "cash", amount: 10 }],
-    actorName: "Sec",
+  // Stand in for a legacy machine-visit basket that was collected on.
+  await db.visitBasket.create({
+    data: {
+      clientId: settledClient.id,
+      machineVisitId: settledVisit.id,
+      status: "paid",
+      currency: "USD",
+      usdToLbp: 89000,
+      paidAt: new Date(),
+    },
   });
   await expectFailure(
     "void: a settled machine visit cannot be voided",

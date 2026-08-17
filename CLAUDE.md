@@ -135,38 +135,60 @@ Still open:
   [docs/known-issues.md](docs/known-issues.md) §12.
 - **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (double-booking, phone/email dedup, name-based stats, per-year receipt numbering, …).
 
-## Session plans, bundles & billing
-Two separate ways a patient pays for machine treatments. Both are billed on the
-visit that *buys* them, never per session consumed.
+## Sessions, bundles & billing — settle before use
+The rule, in the words the front desk uses:
 
-**Pay-as-you-go `SessionPlan`** — one plan per patient per machine, tracking
-`sessionsNeeded / sessionsUsed / sessionsPaid` (credit = `paid − used`).
-- **A visit bills the plan's whole unpaid balance** (`sessionsNeeded − sessionsPaid`)
-  at the machine's catalog per-session price. "Sessions used today" is
-  *consumption only* and never sets the amount charged: 13 needed × $10 with 1 used
-  today = **$130 today**, 13 purchased, 12 remaining. Later visits draw on that
-  credit and bill **nothing** until it runs out or `sessionsNeeded` is raised
-  (raising it from 13 to 20 bills the 7 new sessions on that visit).
+> **Purchase sessions → settle by payment or debt → sessions become usable →
+> machine visits only consume them.**
+
+**`SessionPlan`** — one plan per patient per machine.
+
+| column | meaning |
+| --- | --- |
+| `sessionsNeeded` | the **prescribed course length** (clinical intent). Bills nothing by itself. |
+| `sessionsPaid` | sessions **purchased AND settled** — the usable supply. |
+| `sessionsUsed` | sessions delivered. |
+| `available` | `sessionsPaid − sessionsUsed`, floored at 0. Derived. |
+
+- **Settling is the unlock.** A basket is settled either by being paid or by its
+  balance being moved to a `ClientDebt` — **both unlock identically**. A *pending*
+  basket unlocks nothing. `creditSessionPlanPaidTx` runs after the conditional
+  `pending → paid` flip, so a double submit unlocks exactly once.
+- **The unpaid money lives in exactly one place: the `ClientDebt`.** The plan
+  carries no balance owed. This is why session-plan lines may now be deferred to a
+  debt (the old "non-plan portion only" cap is gone) — there is nothing left to
+  double-count.
+- **Two purchase routes, never double-billed**: the consultation that prescribes
+  the course, and the standalone front-desk sale (`sellSessions`, Client →
+  Treatments → **Sell sessions**; settled from Client → Payments → **To settle**,
+  which is date-free — the queue's Payment lane only carries today's baskets).
+  Billable = `sessionsNeeded − sessionsPaid −
+  pendingOnOtherBaskets`; `pendingPurchasedSessionsTx` supplies that last term.
+  **Never write that exclusion as a Prisma `{ not: id }` filter** — it compiles to
+  SQL `<>`, which is NULL for a standalone sale basket and drops exactly the rows
+  it must find (a real double-billing bug; see docs/known-issues.md §18).
+- **A plan line still can't be retyped, repriced, dropped or invented at
+  checkout** — its settled quantity is what unlocks sessions. The settlement modal
+  locks the field *and* `updateVisitBasket` refuses the change, so a direct PATCH
+  can't bypass it. Deferring the money to a debt is fine; that changes what is
+  collected, not what was sold.
 - **One ACTIVE plan per client per machine, enforced by the database** —
   `SessionPlan.activeMachineKey` mirrors `machine` only while the plan is active
-  (null otherwise) under `@@unique([clientId, activeMachineKey])`, so completed and
-  cancelled plans coexist freely while a duplicate active one is impossible. Always
-  set it through `activeMachineKey()` in `repositories/sessionPlans.ts`, on every
-  write that creates a plan or changes its status. `createSessionPlan` **reuses**
-  the active plan (raising `sessionsNeeded`, never below `sessionsPaid`) instead of
-  creating a second one, so a treatment is never ambiguous about which plan it draws.
-- **Plans are paid upfront, in full.** A plan line can't be deferred as a
-  `ClientDebt` (only the non-plan portion of a basket may be), and it can't be
-  retyped, repriced, dropped, or invented at checkout: the settlement modal locks
-  the field *and* `updateVisitBasket` refuses any change to a plan line, so a
-  direct PATCH can't bypass it either.
-- `sessionsUsed` moves when the visit is saved (`applyConsultationUsage`);
-  `sessionsPaid` moves only at settlement, in the same transaction as the payment.
+  (null otherwise) under `@@unique([clientId, activeMachineKey])`. Always set it
+  through `activeMachineKey()` in `repositories/sessionPlans.ts`. Both
+  `createSessionPlan` and `sellSessions` **reuse** the active plan.
+- **The one exception — the originating consultation.** The visit that prescribes
+  a course may also deliver from it before the patient reaches the desk
+  (`limit: "prescribed"`, drawing against `sessionsNeeded`). Safe because
+  `assertBasketSettledTx` won't let a visit close with an unsettled basket. Machine
+  visits get `limit: "available"` and no exception.
 - **`sessionsNeeded` is reconciled on every edit/delete** —
-  `reconcileSessionPlanNeedsTx` re-derives it from the treatment rows that still
-  reference the plan, floored at `sessionsPaid`. A visit that raised a plan to 20
-  and is then edited-down or deleted leaves no phantom balance to bill next time;
-  money already collected always keeps its credit.
+  `reconcileSessionPlanNeedsTx`, floored by `sessionPlanNeedsFloorTx` (bought +
+  pending + delivered), so a prescribed course can never drop below what was sold
+  or delivered.
+- CHECK: `sessionsPaid <= sessionsNeeded AND sessionsUsed <= sessionsNeeded`
+  (`20260813200000_sessions_settle_before_use`) — hand-written SQL Prisma can't
+  introspect, don't lose it in a squash.
 
 **Bundles (`Package` → `ClientPackage`)** are unchanged and independent: a fixed
 quantity at a **fixed price**, never `sessions × per-session rate`. Applying a
@@ -178,14 +200,16 @@ per-session catalog price. Bundles can be started on the visit's first save only
 **No refunds.** Money, once collected, is never reversed: a visit with a settled
 basket cannot be deleted (and there is no refund/void flow anywhere — don't build
 one). Deleting is only for a mistaken visit that has collected nothing; it reverses
-that visit's usage, restores the credit it consumed, trims any unpaid purchase
-quantity it added, and drops a plan it alone created.
+that visit's usage, restores the sessions it consumed, trims any unsold course
+length it added, and drops a plan it alone created.
 
 The editor's live basket preview mirrors the server's billing kernel line for line
 (`treatmentBillable` in `consultations/new/page.tsx` ↔ `sessionBillable` +
 `allocateCoverage` in `repositories/consultations.ts`), so the price the dietitian
 previews and the amount charged can't drift. Regression coverage:
-[tests/race/t13-billing-rules.ts](tests/race/t13-billing-rules.ts) (`npm run test:race`).
+[tests/race/t13-billing-rules.ts](tests/race/t13-billing-rules.ts) and
+[tests/race/t21-sessions-settle-before-use.ts](tests/race/t21-sessions-settle-before-use.ts)
+(`npm run test:race`). Full detail in [docs/known-issues.md](docs/known-issues.md) §18.
 
 ## Machine visits (machine-only attendance)
 A patient who comes in **only** to use prepaid machine sessions is recorded as a
@@ -196,17 +220,16 @@ tab — renamed from "Bundles" — either a row's "Log visit" or the card's "Log
 machine visit") or from the queue board ("Machine visit" on a checked-in/with-doctor
 card, which carries the appointment id along).
 - **Permission**: `canLogMachineVisit` (`src/server/auth.ts`) = **dietitian +
-  admin**. Deciding a consultation isn't needed is the clinical side's call. The
-  secretary still settles whatever basket it raises through the normal checkout.
-- **Billing is consumption-driven, never a purchase**: prepaid credit covers today
-  first; only `max(0, sessions − credit)` is billed, at the plan's own frozen
-  `unitPrice`, onto an ordinary pending `VisitBasket` (`machineVisitId`, no
-  consultation fee line). Consumption is capped at `sessionsNeeded − sessionsUsed`,
-  so a machine visit can never enlarge a plan. Bundles are prepaid in full and
-  never bill; over-consuming one is refused, not clamped.
-- **Void, don't edit** — the row stays in history with actor/time/reason, sessions
-  come back exactly, its pending basket is deleted. A **settled** machine visit
-  can't be voided (there is no refund path in this app, by design).
+  admin**. Deciding a consultation isn't needed is the clinical side's call.
+  Selling the sessions is the front desk's — `canSellSessions` (secretary + admin).
+- **It never bills.** A machine visit consumes `available` sessions and raises no
+  basket, no charge and no debt. Short of availability it is **refused** ("N
+  sessions available — sell and settle more sessions first"), never billed. Bundles
+  work the same way; over-consuming one is refused, not clamped.
+- **Void, don't edit** — the row stays in history with actor/time/reason and
+  sessions come back exactly. A **settled** machine visit can't be voided (there is
+  no refund path in this app, by design); that guard now only ever fires on
+  historic rows, since current visits raise no basket at all.
 - **Appointments**: an explicit id from the queue is completed (after an ownership
   check); with no id, only a single unambiguous live appointment is auto-completed.
   **Consultations now follow the same rule** via `Consultation.appointmentId` —
@@ -224,7 +247,7 @@ card, which carries the appointment id along).
   counters. `updateConsultation`/`deleteConsultation` also take the visit's row
   lock, which fixed a real pre-existing double-count on concurrent draft saves.
 - Tests: `tests/race/t19-machine-visits.ts`. Full detail in
-  [docs/known-issues.md](docs/known-issues.md) §17.
+  [docs/known-issues.md](docs/known-issues.md) §17 and §18.
 
 ## Rescheduling an appointment
 `PATCH /api/appointments/[id]/reschedule` moves a booking in place (date/time/

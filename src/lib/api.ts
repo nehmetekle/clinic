@@ -46,6 +46,7 @@ import type {
   CreateReferrerInput,
   CreateServicePriceInput,
   CreateSessionPlanInput,
+  SellSessionsInput,
   CreateMachineVisitInput,
   VoidMachineVisitInput,
   CreateStaffInput,
@@ -312,8 +313,13 @@ export const api = {
   recordJessySettlement: (body: RecordJessySettlementInput) =>
     postJson<JessySummary>("/api/jessy/settlements", body),
 
-  listVisitBaskets: (status?: VisitBasketStatus) =>
-    getJson<VisitBasket[]>(`/api/visit-baskets${status ? `?status=${status}` : ""}`),
+  listVisitBaskets: (filter?: { status?: VisitBasketStatus; clientId?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.status) params.set("status", filter.status);
+    if (filter?.clientId) params.set("clientId", filter.clientId);
+    const q = params.toString();
+    return getJson<VisitBasket[]>(`/api/visit-baskets${q ? `?${q}` : ""}`);
+  },
   updateVisitBasket: (id: string, body: UpdateVisitBasketInput) =>
     patchJson<VisitBasket>(`/api/visit-baskets/${id}`, body),
   settleVisitBasket: (id: string, body: SettleVisitBasketInput) =>
@@ -381,6 +387,10 @@ export const api = {
   // read via the client-detail payload; this creates a new one during a visit.
   createSessionPlan: (body: CreateSessionPlanInput) =>
     postJson<SessionPlan>("/api/session-plans", body),
+  // Sells sessions at the front desk, with no consultation. Returns the plan and
+  // the pending basket to settle — settling it is what unlocks the sessions.
+  sellSessions: (body: SellSessionsInput) =>
+    postJson<{ plan: SessionPlan; basketId: string }>("/api/session-plans/sell", body),
 
   // Machine visits — prepaid machine sessions used without a consultation.
   listMachineVisits: (filter?: { clientId?: string; from?: string; to?: string }) => {

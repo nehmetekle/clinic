@@ -202,10 +202,10 @@ export interface ClientPackage {
 
 export type SessionPlanStatus = "active" | "completed" | "cancelled";
 
-// Pay-as-you-go session tracking for a client NOT on a fixed-price package.
-// SEPARATE system from ClientPackage. `sessionsUsed` counts sessions delivered;
-// `sessionsPaid` counts sessions paid for (only advances at settlement). The
-// derived fields below are computed server-side from those raw counts.
+// Per-session treatment tracking for a client NOT on a fixed-price bundle.
+// SEPARATE system from ClientPackage, same prepaid principle: sessions are bought
+// as basket lines, and settling that basket (paid now or moved to a ClientDebt)
+// is what makes them usable.
 export interface SessionPlan {
   id: string;
   clientId: string;
@@ -213,32 +213,39 @@ export interface SessionPlan {
   unitPrice: number;
   currency: Currency;
   usdToLbp: number;
+  // The PRESCRIBED course length — clinical intent, bills nothing by itself.
   sessionsNeeded: number;
+  // Sessions delivered.
   sessionsUsed: number;
+  // Sessions PURCHASED AND SETTLED — the supply everything draws on.
   sessionsPaid: number;
   status: SessionPlanStatus;
-  // Derived (never stored): prepaid-but-unused sessions available to auto-cover
-  // future visits.
-  credit: number; // max(0, sessionsPaid - sessionsUsed)
+  // Derived: sessions bought, settled and not yet used. A machine visit may
+  // consume only these.
+  sessionsAvailable: number; // max(0, sessionsPaid - sessionsUsed)
   // Derived: how many more times the client physically needs to come in.
   sessionsLeftToAttend: number; // max(0, sessionsNeeded - sessionsUsed)
-  // Derived: sessions still owing payment.
-  sessionsToPayFor: number; // max(0, sessionsNeeded - sessionsPaid)
+  // Derived: sessions already SOLD on a basket that has not been settled yet.
+  // Bought but not usable — settling that basket is what unlocks them.
+  sessionsPendingPurchase: number;
+  // Derived: prescribed sessions nobody has sold yet (a sale still to be made).
+  sessionsToBuy: number; // max(0, sessionsNeeded - sessionsPaid - sessionsPendingPurchase)
   createdAt: string;
 }
 
 // ---- Machine visits ----
-// A patient who came in only to use prepaid machine sessions. Not a consultation:
-// it carries no clinical data and never mints a visit number. Merged with
-// consultations only for display (client history, attendance figures).
+// A patient who came in only to use sessions they already own. Not a
+// consultation: no clinical data, no visit number. Not a sale either: it consumes
+// available sessions and never charges. Merged with consultations only for
+// display (client history, attendance figures).
 export type MachineVisitStatus = "recorded" | "voided";
 
 export interface MachineVisitItem {
   id: string;
   machine: string;
   sessions: number;
-  // Sessions of this line that prepaid credit did NOT cover and that were billed
-  // on this visit's basket. 0 whenever the patient was fully prepaid.
+  // Historic only — always 0 now that a machine visit is pure consumption. On
+  // older rows: sessions this line billed because credit didn't cover them.
   billedSessions: number;
   unitPrice: number;
   currency: Currency;
@@ -257,7 +264,10 @@ export interface MachineVisit {
   appointmentId?: string;
   items: MachineVisitItem[];
   sessionsTotal: number;
-  amountDue: number; // 0 when everything was prepaid
+  // A machine visit only consumes sessions the patient already owns, so it never
+  // charges: both of these are 0/absent on every visit recorded since, and
+  // non-zero only on historic rows that predate settle-before-use.
+  amountDue: number;
   pendingBasketId?: string;
   voidedAt?: string;
   voidedByName?: string;

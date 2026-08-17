@@ -1130,27 +1130,12 @@ grown by every machine visit. It is also the first per-visit **consumption event
 in the app: before this, `SessionPlan.sessionsUsed` was a bare counter whose only
 history was the consultation treatment rows behind it.
 
-### Billing: consumption-driven, not purchase-driven
+### Billing: none at all (superseded — see §18)
 
-This is the one place machine-visit economics differ from the consultation
-editor's, and the difference is deliberate:
-
-- A **consultation** is where a plan is bought. It bills the plan's whole unpaid
-  balance (`sessionsNeeded − sessionsPaid`) because `sessionsNeeded` is set right
-  there — 13 needed × $10 with 1 used today = $130 today.
-- A **machine visit** never buys anything. It bills only what today's consumption
-  could not take from prepaid credit: `max(0, sessions − (sessionsPaid −
-  sessionsUsed))`, at the plan's own frozen `unitPrice`. Consumption is capped at
-  `sessionsNeeded − sessionsUsed`, so logging a visit can never enlarge a plan.
-
-The **price is identical** either way, and the two can't double-charge each other:
-what a machine visit bills is collected at settlement into `sessionsPaid`, which
-is exactly what the consultation path subtracts from `sessionsNeeded` to find its
-own billable quantity. `tests/race/t19-machine-visits.ts` asserts the round trip
-(machine visit bills 2 of 3 unpaid → a later consultation bills the remaining 1).
-
-Bundles (`ClientPackage`) are prepaid in full at a fixed price and therefore never
-bill on a machine visit; consuming more than the bundle has left is refused.
+A machine visit used to top up whatever prepaid credit didn't cover, raising its
+own basket. **It no longer bills anything.** It consumes `sessionsPaid −
+sessionsUsed` and refuses when that is short. See §18 for the model that replaced
+this and why.
 
 ### Appointment linkage — explicit beats inferred
 
@@ -1236,3 +1221,124 @@ ceiling itself, in application code.
   directly in the database now fails while machine visits reference their plans.
   No application path deletes a client; `deleteConsultation` checks for
   machine-visit usage before dropping a plan an abandoned visit created.
+
+
+## 18. Sessions are settle-before-use
+
+The employee-facing rule is one line:
+
+> Purchase sessions → settle by payment or debt → sessions become usable →
+> machine visits only consume them.
+
+### What the counters mean now
+
+| column | meaning |
+| --- | --- |
+| `sessionsNeeded` | the **prescribed course length** — clinical intent ("this patient needs 13 sessions of Cryolipolysis"). It bills nothing by itself. |
+| `sessionsPaid` | sessions **purchased AND settled**. This is the usable supply. |
+| `sessionsUsed` | sessions delivered. |
+| `available` | `sessionsPaid − sessionsUsed`, floored at 0. Derived, never stored. |
+
+`sessionsPaid` was deliberately **not** renamed even though "settled" is now a
+better word than "paid": every existing row's value is already correct under the
+new reading, it is the column three financial paths write, and a rename would
+have churned the schema for nothing.
+
+### What replaced the old model
+
+Before, a plan was a running account with an overdraft: `sessionsUsed` could
+exceed `sessionsPaid`, and the unpaid gap lived **on the plan**. That is why
+`settleVisitBasket` used to refuse a debt covering a session-plan line — the same
+money would then have been tracked twice (once as the plan's gap, once as a
+`ClientDebt`). Machine visits papered over the gap by billing the difference.
+
+Now a purchase is a discrete event:
+
+1. Sessions are sold as a basket line — from the consultation that prescribes the
+   course, or from the standalone front-desk sale (`sellSessions`).
+2. The basket is settled: **paid now, or the balance moved to a `ClientDebt`.**
+   Both settle it, and both unlock identically.
+3. `creditSessionPlanPaidTx` raises `sessionsPaid`. That is the unlock.
+
+The unpaid money is therefore tracked in exactly one place — the `ClientDebt` —
+and the plan carries no balance owed. Removing the debt cap was safe *because*
+of that, not in spite of it.
+
+### The one exception: the originating consultation
+
+The visit that **prescribes** a course may also deliver from it before the patient
+reaches the front desk (`limit: "prescribed"` in `consumeSessionPlanTx`, drawing
+against `sessionsNeeded`). This is safe because `assertBasketSettledTx` refuses to
+close a visit with an unsettled basket — every session a consultation delivers is
+bought and settled by the time the visit is finalized. It is also why the CHECK
+constraint asserts `sessionsUsed <= sessionsNeeded` and **not**
+`sessionsUsed <= sessionsPaid`: `available` is briefly 0 (clamped, never negative)
+between delivery and checkout.
+
+Machine visits get `limit: "available"` and no exception.
+
+### Not billing twice across two purchase routes
+
+A front-desk top-up sale that is still pending is invisible to `sessionsPaid`, so
+a consultation opened before it settles would have re-sold the same sessions.
+`pendingPurchasedSessionsTx` is what prevents that: the billable quantity is
+`sessionsNeeded − sessionsPaid − pendingOnOtherBaskets`.
+
+**Do not express that exclusion as a Prisma `consultationId: { not: id }`
+filter.** It compiles to SQL `<>`, which is NULL for a standalone sale basket
+(`consultationId IS NULL`) and silently drops exactly the rows the function
+exists to find. This was a real double-billing bug caught by
+`t21-sessions-settle-before-use.ts`; the exclusion is applied in JS for that
+reason.
+
+### Debt forgiveness keeps the sessions
+
+`voidClientDebt` touches no counter. Forgiving what a patient owes is the
+clinic's choice; it does not repossess sessions they were sold. There is
+correspondingly no path that unlocks twice — the unlock happens once, after the
+conditional `pending → paid` flip, and a second settle attempt throws.
+
+### Constraints that are hand-written SQL (don't lose them in a squash)
+
+`20260813200000_sessions_settle_before_use`:
+
+```sql
+ALTER TABLE "SessionPlan"
+  ADD CONSTRAINT "SessionPlan_bought_within_prescribed"
+  CHECK ("sessionsPaid" <= "sessionsNeeded" AND "sessionsUsed" <= "sessionsNeeded");
+```
+
+Every write that lowers `sessionsNeeded` goes through `sessionPlanNeedsFloorTx`
+(floor = bought + pending + delivered) and every write that raises `sessionsPaid`
+lifts `sessionsNeeded` with it, so the CHECK is a backstop rather than a
+constraint the application fights.
+
+### Known limits
+
+- **A mistaken standalone sale cannot be undone.** There is no "delete a pending
+  basket" flow anywhere in this app, so a sale typed as 40 instead of 4 leaves a
+  pending basket and a raised `sessionsNeeded`. Nothing is collected and nothing
+  is unlocked (settlement is what unlocks), so it is a tidiness problem, not a
+  financial one — but a cancel-sale flow is the obvious next addition.
+- **A sale basket must be settleable away from the queue board.** The queue's
+  Payment lane is scoped to `isToday`, so a sale made yesterday and not settled
+  would be invisible there — the money uncollectable and the sessions never
+  unlocked. The client profile's **Payments → To settle** card is the date-free
+  way in; it is not a nicety. A sale basket carries `dietitianId: null` and no
+  `consultationId` for the same reason: it belongs to no visit and no doctor.
+- **Historic plans may sit with `sessionsUsed > sessionsPaid`.** Those predate the
+  split and are left as they are; the migration only lifts `sessionsNeeded` to the
+  floor so the CHECK can be applied. Such a plan simply has 0 available until more
+  sessions are sold and settled.
+- **`MachineVisitItem.billedSessions` / `MachineVisit.amountDue` are historic
+  fields.** Always 0 on anything recorded since; kept because the money on older
+  rows was really collected.
+
+### Tests
+
+`tests/race/t21-sessions-settle-before-use.ts` covers the whole rule: paid
+unlocks, debt unlocks identically, pending unlocks nothing, double settle unlocks
+once (including two racing settles), forgiveness keeps sessions, the originating
+consultation exception, the standalone sale, no double billing across both
+purchase routes, and the CHECK constraints. `t19-machine-visits.ts` covers the
+refusal path; `t13-billing-rules.ts` is unchanged and still passes.

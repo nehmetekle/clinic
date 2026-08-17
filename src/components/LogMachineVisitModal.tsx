@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Field";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { formatMoney } from "@/lib/utils";
 import type { ClientDetail, MachineVisit } from "@/lib/types";
 
 /**
  * Logs a machine-only visit — the fast path for a patient who came in just to use
- * prepaid sessions. Deliberately the whole workflow: pick machines, set counts,
- * confirm. No consultation is opened and nothing clinical is asked for.
+ * sessions they already own. Deliberately the whole workflow: pick machines, set
+ * counts, confirm. No consultation is opened, nothing clinical is asked for, and
+ * nothing is charged: only settled sessions can be spent here, so the entry is
+ * capped at what is available and a patient with none is sent back to the desk.
  *
  * Used from the client profile (Treatments tab) and the queue board, which is why
  * it takes ids rather than reading a page's state.
@@ -21,26 +22,19 @@ import type { ClientDetail, MachineVisit } from "@/lib/types";
 type Source = {
   key: string;
   machine: string;
-  /** Sessions this source can still deliver — the hard cap on today's entry. */
-  left: number;
-  /** Prepaid sessions; anything beyond this is billed on confirm. */
-  credit: number;
-  unitPrice: number;
-  currency: "USD" | "LBP";
+  /** Sessions bought, settled and unused — the hard cap on today's entry. */
+  available: number;
   sessionPlanId?: string;
   clientPackageId?: string;
 };
 
 function sourcesFrom(detail: ClientDetail): Source[] {
   const plans: Source[] = detail.sessionPlans
-    .filter((p) => p.status === "active" && p.sessionsLeftToAttend > 0)
+    .filter((p) => p.status === "active" && p.sessionsAvailable > 0)
     .map((p) => ({
       key: `plan:${p.id}`,
       machine: p.machine ?? "Treatment",
-      left: p.sessionsLeftToAttend,
-      credit: p.credit,
-      unitPrice: p.unitPrice,
-      currency: p.currency,
+      available: p.sessionsAvailable,
       sessionPlanId: p.id,
     }));
   const bundles: Source[] = detail.client.packages
@@ -48,10 +42,8 @@ function sourcesFrom(detail: ClientDetail): Source[] {
     .map((p) => ({
       key: `pkg:${p.id}`,
       machine: p.machine ?? p.packageName,
-      left: p.totalSessions - p.usedSessions,
-      credit: p.totalSessions - p.usedSessions, // a bundle is prepaid in full
-      unitPrice: 0,
-      currency: p.currency,
+      // A bundle is prepaid in full, so its whole remaining balance is available.
+      available: p.totalSessions - p.usedSessions,
       clientPackageId: p.id,
     }));
   return [...plans, ...bundles];
@@ -101,10 +93,6 @@ export function LogMachineVisitModal({
 
   const sources = useMemo(() => (detail ? sourcesFrom(detail) : []), [detail]);
   const selected = sources.filter((s) => (counts[s.key] ?? 0) > 0);
-  const amountDue = selected.reduce(
-    (sum, s) => sum + Math.max(0, (counts[s.key] ?? 0) - s.credit) * s.unitPrice,
-    0,
-  );
 
   function setCount(key: string, value: number, max: number) {
     setCounts((prev) => {
@@ -161,12 +149,11 @@ export function LogMachineVisitModal({
       {loading ? (
         <p className="text-sm text-slate-400">Loading…</p>
       ) : sources.length === 0 ? (
-        <p className="text-sm text-slate-400">No prepaid treatments available.</p>
+        <p className="text-sm text-slate-400">No sessions available. Sell sessions first.</p>
       ) : (
         <div className="space-y-3">
           {sources.map((s) => {
             const count = counts[s.key] ?? 0;
-            const billed = Math.max(0, count - s.credit);
             return (
               <div
                 key={s.key}
@@ -176,27 +163,19 @@ export function LogMachineVisitModal({
                   type="checkbox"
                   className="h-4 w-4 rounded border-slate-300"
                   checked={count > 0}
-                  onChange={(e) => setCount(s.key, e.target.checked ? 1 : 0, s.left)}
+                  onChange={(e) => setCount(s.key, e.target.checked ? 1 : 0, s.available)}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-800">{s.machine}</p>
-                  <p className="text-xs text-slate-500">
-                    Remaining: {s.left}
-                    {billed > 0 && (
-                      <span className="text-amber-600">
-                        {" · "}
-                        {formatMoney(billed * s.unitPrice, s.currency)} to pay
-                      </span>
-                    )}
-                  </p>
+                  <p className="text-xs text-slate-500">Available: {s.available}</p>
                 </div>
                 <Input
                   type="number"
                   min={0}
-                  max={s.left}
+                  max={s.available}
                   value={count || ""}
                   placeholder="0"
-                  onChange={(e) => setCount(s.key, Number(e.target.value), s.left)}
+                  onChange={(e) => setCount(s.key, Number(e.target.value), s.available)}
                   className="h-8 w-16 text-center"
                 />
               </div>
@@ -211,11 +190,6 @@ export function LogMachineVisitModal({
               onChange={(e) => setNote(e.target.value)}
             />
           </div>
-          {amountDue > 0 && (
-            <p className="text-sm text-slate-600">
-              Amount due <span className="font-semibold text-amber-600">{formatMoney(amountDue)}</span>
-            </p>
-          )}
           {error && <p className="text-sm text-rose-600">{error}</p>}
         </div>
       )}

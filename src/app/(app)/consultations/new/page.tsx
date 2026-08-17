@@ -619,9 +619,10 @@ function ConsultationEditor() {
     toast(`${pkg.machine ?? pkg.packageName} session added — adjust it below`);
   }
 
-  // Quick-add a treatment drawing from a pay-as-you-go session plan (separate from
-  // packages). Stacks onto an existing row for the same plan; prepaid credit
-  // auto-covers what it can and the rest is charged at the plan's price.
+  // Quick-add a treatment drawing from a session plan (separate from packages).
+  // Stacks onto an existing row for the same plan; sessions the patient already
+  // owns cover what they can and any newly prescribed ones are sold at the plan's
+  // price.
   function addTreatmentFromSessionPlan(plan: SessionPlan) {
     setTreatments((prev) => {
       const existingIndex = prev.findIndex((t) => t.sessionPlan && t.sessionPlanId === plan.id);
@@ -920,8 +921,8 @@ function ConsultationEditor() {
   const sessionPackages = client.packages.filter(
     (p) => p.status === "active" && p.machine && p.totalSessions - p.usedSessions > 0,
   );
-  // Session plans carrying prepaid credit — surfaced in "Sessions available" too.
-  const creditPlans = sessionPlans.filter((p) => p.status === "active" && p.credit > 0);
+  // Plans with bought-and-settled sessions left — surfaced in "Sessions available".
+  const creditPlans = sessionPlans.filter((p) => p.status === "active" && p.sessionsAvailable > 0);
 
   // How many of each treatment's sessions are covered (free) vs charged.
   // Coverage is capped at each package/bundle's remaining balance and allocated
@@ -938,7 +939,7 @@ function ConsultationEditor() {
       const plan = linkedSessionPlan(t);
       if (plan) {
         sourceKey = `s:${plan.id}`;
-        if (!remainingBySource.has(sourceKey)) remainingBySource.set(sourceKey, plan.credit);
+        if (!remainingBySource.has(sourceKey)) remainingBySource.set(sourceKey, plan.sessionsAvailable);
       }
     } else if (t.applyPackageId) {
       sourceKey = `b:${t.applyPackageId}`;
@@ -957,19 +958,21 @@ function ConsultationEditor() {
   });
   const treatmentCoverage = allocateCoverage(coverageRows, remainingBySource);
 
-  // What each treatment BILLS this visit (mirrors the server's billing kernel).
-  // Pay-as-you-go session plans: the client buys the whole "number of sessions
-  // needed", so the billable quantity is the plan's still-unpaid balance —
-  // sessions used today are consumption only and never set the amount charged.
+  // What each treatment SELLS this visit (mirrors the server's billing kernel).
+  // Session plans: the prescribed course is bought up front, so the billable
+  // quantity is what is prescribed minus what is already bought — settled
+  // (`sessionsPaid`) or sold on a front-desk basket still awaiting settlement.
+  // Sessions used today are consumption only and never set the amount charged.
   // Packages/bundles are unchanged: only the overflow past their balance is billed.
   const sessionChargeLeft = new Map<string, number>();
   const treatmentBillable = treatments.map((t, i) => {
     if (!t.sessionPlan) return treatmentCoverage[i]?.charged ?? 0;
     const want = Math.max(0, toCount(t.sessionsNeeded, 1));
     const plan = linkedSessionPlan(t);
-    if (!plan) return want; // a brand-new plan is created on save — nothing paid yet
+    if (!plan) return want; // a brand-new plan is created on save — nothing bought yet
     if (!sessionChargeLeft.has(plan.id)) {
-      sessionChargeLeft.set(plan.id, Math.max(0, Math.max(want, plan.sessionsPaid) - plan.sessionsPaid));
+      const bought = plan.sessionsPaid + plan.sessionsPendingPurchase;
+      sessionChargeLeft.set(plan.id, Math.max(0, Math.max(want, bought) - bought));
     }
     const left = sessionChargeLeft.get(plan.id)!;
     const take = Math.min(want, left);
@@ -2102,7 +2105,7 @@ function ConsultationEditor() {
                           {plan.machine ?? "Session plan"} <span className="text-xs font-normal text-slate-400">· pay-as-you-go</span>
                         </p>
                         <p className="text-xs text-emerald-700">
-                          {plan.credit} prepaid session{plan.credit === 1 ? "" : "s"} of credit available
+                          {plan.sessionsAvailable} session{plan.sessionsAvailable === 1 ? "" : "s"} available
                         </p>
                       </div>
                       <Button size="sm" variant="outline" onClick={() => addTreatmentFromSessionPlan(plan)}>

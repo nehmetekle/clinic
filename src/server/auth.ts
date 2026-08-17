@@ -90,12 +90,22 @@ export async function canManageJessy(req: Request): Promise<boolean> {
  * machine sessions. It is the clinical side that decides a consultation isn't
  * needed today, so this is the doctor's call (and the admin's). It is NOT
  * `canViewClinical` reused: that gate is about READING clinical data, this one is
- * about recording attendance and consuming a prepaid balance, and the two are
- * free to diverge later. The secretary is deliberately excluded for now — she
- * still settles whatever basket the visit raises through the normal checkout. */
+ * about recording attendance and consuming an already-purchased balance, and the
+ * two are free to diverge later. The secretary is deliberately excluded: a
+ * machine visit raises no charge at all, so there is nothing at the desk to do.
+ * Selling the sessions in the first place is `canSellSessions`. */
 export async function canLogMachineVisit(req: Request): Promise<boolean> {
   const role = await actingRole(req);
   return role === "dietitian" || role === "admin";
+}
+
+/** Selling or topping up treatment sessions outside a consultation. It raises an
+ * ordinary basket for the patient to settle, so it is a front-desk money action —
+ * the secretary's, and the admin's. The doctor's route to sell sessions is the
+ * consultation that prescribes them. */
+export async function canSellSessions(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "secretary" || role === "admin";
 }
 
 /** Lab-sample logistics (sending samples to the lab, logging results back) is a

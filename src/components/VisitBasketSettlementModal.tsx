@@ -163,10 +163,12 @@ export function VisitBasketSettlementModal({
   // (products/custom) stay editable and removable. Extra quantity is added as a
   // new line, not by re-typing a sent line's count.
   //
-  // A session-plan line is locked unconditionally, sent or not: a plan is paid
-  // upfront in full, so part-paying one here would silently push the rest onto a
-  // future visit. The server refuses any change to a plan line as well
-  // (updateVisitBasket) — this only keeps the field from inviting the attempt.
+  // A session-plan line is locked unconditionally, sent or not: its settled
+  // quantity is what UNLOCKS sessions on the plan, so retyping it here would hand
+  // the patient a different number of sessions than was sold. The server refuses
+  // any change to a plan line as well (updateVisitBasket) — this only keeps the
+  // field from inviting the attempt. The money may still be deferred to a debt;
+  // that settles the basket without changing what was sold.
   const isLockedQuantity = (i: EditItem) => i.sent || Boolean(i.sessionPlanId);
 
   // Only lines the secretary added here (sent === false) can be removed. Every
@@ -946,8 +948,7 @@ export function VisitBasketSettlementModal({
                 </div>
                 <p className="text-xs text-slate-400">
                   The payment above is recorded for what was collected now; this amount is tracked
-                  separately on the client&apos;s profile. Don&apos;t include session-plan sessions —
-                  those are already tracked on the plan.
+                  separately on the client&apos;s profile.
                 </p>
               </div>
             )}

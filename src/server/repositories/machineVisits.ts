@@ -9,19 +9,19 @@ import {
   releaseClientPackageTx,
   releaseSessionPlanTx,
 } from "./sessionCounters";
-import { getUsdToLbp } from "./settings";
 import type { Currency, MachineVisit, MachineVisitItem, Role } from "@/lib/types";
 
 /**
- * Machine visits — a patient who came only to use prepaid machine sessions.
+ * Machine visits — a patient who came only to use sessions they already own.
  *
  * Deliberately NOT a consultation: no measurements, no notes beyond a free line,
- * no consultation fee, no visit number, no close/basket state machine. What it
- * does share with a consultation is the accounting: sessions are consumed through
- * the same guarded counters (repositories/sessionCounters.ts), and sessions the
- * patient has not prepaid raise an ordinary pending VisitBasket that the
- * secretary settles through the existing checkout — same unit price, same frozen
- * rate, same receipts.
+ * no consultation fee, no visit number, no close/basket state machine.
+ *
+ * And deliberately NOT a sale: a machine visit is PURE CONSUMPTION. It draws only
+ * on sessions that have been bought and settled (`sessionsPaid - sessionsUsed`
+ * for a plan, the remaining balance for a bundle) and raises no basket, no
+ * charge and no debt. A patient with nothing left is turned back to the desk to
+ * buy sessions first — the visit is refused rather than quietly billed.
  */
 
 const include = {
@@ -46,6 +46,8 @@ export function toMachineVisit(row: MachineVisitRow): MachineVisit {
     sessionPlanId: i.sessionPlanId ?? undefined,
     clientPackageId: i.clientPackageId ?? undefined,
   }));
+  // Machine visits raise no baskets any more. These two fields describe HISTORIC
+  // rows only, from before consumption and purchase were separated.
   const openBasket = row.baskets.find((b) => b.status === "pending");
   return {
     id: row.id,
@@ -58,8 +60,8 @@ export function toMachineVisit(row: MachineVisitRow): MachineVisit {
     appointmentId: row.appointmentId ?? undefined,
     items,
     sessionsTotal: items.reduce((s, i) => s + i.sessions, 0),
-    // What this visit put on the counter, if anything. Settled through the normal
-    // checkout, so once paid it is ordinary income like any other basket.
+    // Always 0 for visits recorded under the current rules; non-zero only on
+    // historic rows that predate purchase and consumption being separated.
     amountDue: items.reduce((s, i) => s + i.billedSessions * i.unitPrice, 0),
     pendingBasketId: openBasket?.id,
     voidedAt: row.voidedAt?.toISOString(),
@@ -166,9 +168,10 @@ async function resolveAppointmentTx(
 }
 
 /**
- * Records a machine visit: consumes the sessions, bills whatever prepaid credit
- * didn't cover, completes the appointment, writes the audit line — one
- * transaction, so a failure anywhere leaves no half-recorded visit.
+ * Records a machine visit: consumes the sessions, completes the appointment,
+ * writes the audit line — one transaction, so a failure anywhere leaves no
+ * half-recorded visit. Nothing is billed: a line the patient can't cover from
+ * settled sessions fails the whole call.
  */
 export async function createMachineVisit(
   input: CreateMachineVisitInput,
@@ -189,9 +192,6 @@ export async function createMachineVisit(
       throw new ConflictError("Sessions must be a whole number of at least 1.");
     }
   }
-
-  // Frozen outside the transaction (it reads Settings), like every other basket.
-  const usdToLbp = await getUsdToLbp();
 
   const created = await db
     .$transaction(async (tx) => {
@@ -222,7 +222,6 @@ export async function createMachineVisit(
       type Line = {
         machine: string;
         sessions: number;
-        billed: number;
         unitPrice: number;
         currency: Currency;
         sessionPlanId: string | null;
@@ -240,26 +239,20 @@ export async function createMachineVisit(
           }
           if (plan.status === "cancelled") throw new ConflictError("This treatment plan is cancelled.");
 
-          // Prepaid credit covers today first; only what it can't cover is billed.
-          // The price is the plan's OWN frozen unit price — never sent by the
-          // client, never re-read from the catalog, so it matches to the cent what
-          // the same session would have cost through a consultation.
-          const credit = Math.max(0, plan.sessionsPaid - plan.sessionsUsed);
-          const billed = Math.max(0, item.sessions - credit);
-
+          // The whole rule, in one call: consume only what has been bought AND
+          // settled. Short of that it throws (naming how many are available) — it
+          // never tops the difference up as a charge.
           await consumeSessionPlanTx(tx, {
             planId: plan.id,
             clientId: input.clientId,
             sessions: item.sessions,
-            // A machine visit consumes; it never buys. Capping at `sessionsNeeded`
-            // is what keeps it from quietly enlarging the plan.
-            ceiling: true,
+            limit: "available",
           });
 
           lines.push({
             machine: plan.machine ?? "Treatment",
             sessions: item.sessions,
-            billed,
+            // Recorded for the history line only — nothing is charged here.
             unitPrice: plan.unitPrice,
             currency: asCurrency(plan.currency),
             sessionPlanId: plan.id,
@@ -273,16 +266,16 @@ export async function createMachineVisit(
           throw new NotFoundError("Bundle not found for this patient.");
         }
         if (cp.status === "cancelled") throw new ConflictError("This bundle is cancelled.");
+        // A bundle is prepaid in full at its fixed price — same principle, and
+        // over-consuming it is refused rather than clamped.
         await consumeClientPackageTx(tx, {
           packageId: cp.id,
           clientId: input.clientId,
           sessions: item.sessions,
         });
-        // A bundle is prepaid in full at its fixed price — consuming it never bills.
         lines.push({
           machine: cp.machine ?? cp.packageName,
           sessions: item.sessions,
-          billed: 0,
           unitPrice: 0,
           currency: asCurrency(cp.currency),
           sessionPlanId: null,
@@ -296,60 +289,11 @@ export async function createMachineVisit(
             machineVisitId: visit.id,
             machine: line.machine,
             sessions: line.sessions,
-            billedSessions: line.billed,
+            billedSessions: 0,
             unitPrice: line.unitPrice,
             currency: line.currency,
             sessionPlanId: line.sessionPlanId,
             clientPackageId: line.clientPackageId,
-          },
-        });
-      }
-
-      // Sessions the patient hadn't prepaid go on an ordinary pending basket —
-      // the same rows, the same settlement, the same receipts as a consultation's.
-      // Covered lines are recorded (not charged) so the checkout shows what today
-      // actually used. No consultation fee: nobody consulted.
-      const billedLines = lines.filter((l) => l.billed > 0);
-      if (billedLines.length > 0) {
-        await tx.visitBasket.create({
-          data: {
-            clientId: input.clientId,
-            dietitianId: actor.id,
-            machineVisitId: visit.id,
-            status: "pending",
-            currency: "USD",
-            usdToLbp,
-            items: {
-              create: lines.flatMap((l) => {
-                const rows: Prisma.VisitBasketItemCreateWithoutBasketInput[] = [];
-                const covered = l.sessions - l.billed;
-                if (covered > 0) {
-                  rows.push({
-                    kind: "treatment",
-                    label: l.machine,
-                    detail: `${covered} covered by credit`,
-                    quantity: covered,
-                    unitPrice: l.unitPrice,
-                    currency: l.currency,
-                    covered: true,
-                    ...(l.sessionPlanId ? { sessionPlan: { connect: { id: l.sessionPlanId } } } : {}),
-                  });
-                }
-                if (l.billed > 0) {
-                  rows.push({
-                    kind: "treatment",
-                    label: l.machine,
-                    detail: `${l.billed} session${l.billed === 1 ? "" : "s"} purchased`,
-                    quantity: l.billed,
-                    unitPrice: l.unitPrice,
-                    currency: l.currency,
-                    covered: false,
-                    ...(l.sessionPlanId ? { sessionPlan: { connect: { id: l.sessionPlanId } } } : {}),
-                  });
-                }
-                return rows;
-              }),
-            },
           },
         });
       }
@@ -394,12 +338,12 @@ export async function createMachineVisit(
 }
 
 /**
- * Voids a machine visit: the row stays in history, its sessions come back, and
- * the basket it raised (if still unpaid) disappears with it.
+ * Voids a machine visit: the row stays in history and its sessions come back
+ * exactly (they return to `available`, ready to be used again).
  *
- * Refused once money has been collected. The app has no refund or payment
- * reversal anywhere by design, so a settled basket is the end of the line — the
- * correction there is a clinic-side one, not a database one.
+ * Current visits carry no basket at all. The basket handling below is for
+ * HISTORIC rows that predate the split: a settled one still blocks the void,
+ * because the app has no refund or payment reversal anywhere by design.
  */
 export async function voidMachineVisit(
   id: string,

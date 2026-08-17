@@ -680,6 +680,14 @@ export const createSessionPlanSchema = z.object({
   sessionsNeeded: z.coerce.number().int().min(1).max(1000),
 });
 
+// A standalone session sale (front desk, no consultation). Same rule as above:
+// the price is never accepted from the request, only the treatment and how many.
+export const sellSessionsSchema = z.object({
+  clientId: z.string().min(1),
+  machine: z.string().trim().min(1),
+  sessions: z.coerce.number().int().min(1).max(1000),
+});
+
 // A machine visit records consumption only: which prepaid source, how many
 // sessions, an optional note. No price, no balance and no paid status is accepted
 // from the client — the server reads all three from the plan/bundle rows.
@@ -787,6 +795,7 @@ export type UpdateBloodSampleInput = z.infer<typeof updateBloodSampleSchema>;
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
 export type UpdateExpenseInput = z.infer<typeof updateExpenseSchema>;
 export type CreateSessionPlanInput = z.infer<typeof createSessionPlanSchema>;
+export type SellSessionsInput = z.infer<typeof sellSessionsSchema>;
 export type CreateStaffInput = z.infer<typeof createStaffSchema>;
 export type UpdateStaffInput = z.infer<typeof updateStaffSchema>;
 export type UpdateStaffSupplementsInput = z.infer<typeof updateStaffSupplementsSchema>;

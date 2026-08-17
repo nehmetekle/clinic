@@ -21,7 +21,7 @@ export type VisitBasketCardItem = {
   // Suppresses the in-place quantity editor for this line even in `editable` mode
   // — the secretary settles session/treatment lines exactly as the dietitian sent
   // them (no quantity changes), and a session-plan line is never editable at all
-  // because a plan is paid upfront in full.
+  // because its settled quantity is what unlocks sessions on the plan.
   lockQuantity?: boolean;
   // Suppresses the remove (X) for this line even in `editable` mode — e.g. the
   // secretary can't drop the consultation fee (only the dietitian/admin may).

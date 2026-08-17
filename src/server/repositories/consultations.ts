@@ -14,7 +14,11 @@ import {
 } from "./visitBaskets";
 import { reconcileVisitBloodSampleTx } from "./bloodSamples";
 import { userIdByEmail } from "./staff";
-import { activeMachineKey } from "./sessionPlans";
+import {
+  activeMachineKey,
+  pendingPurchasedSessionsTx,
+  sessionPlanNeedsFloorTx,
+} from "./sessionPlans";
 import {
   consumeClientPackageTx,
   consumeSessionPlanTx,
@@ -310,8 +314,8 @@ export type ConsultationInput = {
  * session plans and packages it draws from, reading the persisted rows as the
  * record of what has been applied. Editing a consultation reverses (−1) then
  * re-applies (+1), so usage is always the true total and never double-counts.
- * `sessionsUsed` (clinical) is what moves here; `sessionsPaid` is money-driven and
- * advances only at settlement.
+ * `sessionsUsed` (clinical) is what moves here; `sessionsPaid` is the purchased-
+ * and-settled supply and advances only at settlement.
  *
  * The counter arithmetic itself lives in repositories/sessionCounters.ts, shared
  * with machine visits: every move is a single guarded SQL statement, so two
@@ -344,14 +348,16 @@ async function applyConsultationUsage(
 
   for (const [planId, amt] of planDelta) {
     if (sign === 1) {
-      // No `sessionsNeeded` ceiling here: the consultation editor is where that
-      // number is set, and recording more sessions delivered than currently
-      // ordered has always been allowed on this path.
+      // The originating-consultation exception: the visit that prescribes a
+      // course may also deliver from it before the patient reaches the desk, so
+      // it draws against the prescribed length rather than what is settled. Safe
+      // because the visit cannot CLOSE until its basket is settled
+      // (assertBasketSettledTx) — nothing escapes unpaid.
       await consumeSessionPlanTx(tx, {
         planId,
         clientId: consultation.clientId,
         sessions: amt,
-        ceiling: false,
+        limit: "prescribed",
       });
     } else {
       await releaseSessionPlanTx(tx, planId, amt);
@@ -390,14 +396,10 @@ async function lockConsultationTx(tx: Prisma.TransactionClient, id: string): Pro
 }
 
 /**
- * Re-derives each plan's `sessionsNeeded` from the treatment rows that still
- * reference it (never below what has already been paid for). A visit that raised
- * a plan's purchase quantity and is then edited-down or deleted must not leave the
- * extra sessions behind as a phantom charge on the NEXT visit — that balance is
- * what the client gets billed for, so it has to disappear with the treatment that
- * asked for it. Paid sessions are the floor: money already collected always keeps
- * its credit (a paid visit can never be deleted, so this only ever trims unpaid
- * intent).
+ * Re-derives each plan's prescribed length (`sessionsNeeded`) from the treatment
+ * rows that still reference it. A visit that prescribed a longer course and is
+ * then edited-down or deleted must not leave the extra sessions behind. Sessions
+ * already bought or delivered are the floor — those can never be un-prescribed.
  */
 async function reconcileSessionPlanNeedsTx(
   tx: Prisma.TransactionClient,
@@ -411,13 +413,13 @@ async function reconcileSessionPlanNeedsTx(
       select: { sessionsNeeded: true },
     });
     const fromTreatments = rows.reduce((m, r) => Math.max(m, r.sessionsNeeded), 0);
-    // Floors: money already collected keeps its credit, and sessions already
-    // DELIVERED can't be un-needed either — a machine visit consumes against this
-    // plan without ever raising `sessionsNeeded`, so trimming below `sessionsUsed`
-    // would leave the plan owing fewer sessions than the patient has had. This
-    // consultation's own usage was released moments ago (applyConsultationUsage
-    // runs first), so what's left here belongs to other visits.
-    const needed = Math.max(1, plan.sessionsPaid, plan.sessionsUsed, fromTreatments);
+    // Floor: everything already BOUGHT (settled, plus anything sitting on another
+    // unsettled basket — a front-desk top-up sale) and everything already
+    // DELIVERED. This consultation's own usage was released moments ago
+    // (applyConsultationUsage runs first), so what's left here belongs to other
+    // visits, and its own basket lines were rewritten just before this runs.
+    const floor = await sessionPlanNeedsFloorTx(tx, planId);
+    const needed = Math.max(1, floor, fromTreatments);
     if (needed === plan.sessionsNeeded) continue;
     const status = statusForUsage(plan.status, plan.sessionsUsed, needed);
     await tx.sessionPlan.update({
@@ -615,36 +617,38 @@ async function buildConsultationContentTx(
     }
   }
 
-  // Pay-as-you-go session plans (SEPARATE from packages): cover from prepaid credit.
-  // Validate each referenced plan and seed its external credit, then split through
-  // the shared allocator. Only a plan that belongs to THIS client and isn't
-  // cancelled counts; anything else resolves to no source and is charged in full.
+  // Session plans: cover today's consumption from sessions the patient already
+  // owns, and sell whatever the prescribed course still lacks. Only a plan that
+  // belongs to THIS client and isn't cancelled counts; anything else resolves to
+  // no source and is charged in full.
   const sessionPlanById = new Map<string, { unitPrice: number; currency: Currency }>();
   const sessionCreditLeft = new Map<string, number>();
-  // How many sessions of each plan are still UNPAID — the billable quantity. A
-  // pay-as-you-go client buys the plan's whole `sessionsNeeded` up front; what
-  // they consume today only draws down credit and never sets the amount charged.
+  // The quantity this visit SELLS per plan: the prescribed length minus what is
+  // already bought — settled (`sessionsPaid`) or sitting unsettled on some other
+  // basket (a front-desk top-up). Excluding both is what stops the same session
+  // being billed twice. Consumption never enters this number.
   const sessionChargeLeft = new Map<string, number>();
   for (const t of treatments) {
     const planId = t.sessionPlanId ?? null;
     if (!planId || sessionPlanById.has(planId)) continue;
     let plan = await tx.sessionPlan.findUnique({ where: { id: planId } });
     if (plan && plan.clientId === input.clientId && plan.status !== "cancelled") {
-      // The treatment's "number of sessions needed" IS the quantity being bought,
-      // so keep the plan in step with it — but never below what's already been
-      // paid for (that money can't be un-charged).
+      // The treatment's "number of sessions needed" is the prescribed course
+      // length — never below what has already been bought or delivered.
       const requested = Math.max(1, Math.floor(t.sessionsNeeded ?? 1));
-      const needed = Math.max(requested, plan.sessionsPaid);
+      const floor = await sessionPlanNeedsFloorTx(tx, planId, consultationId);
+      const needed = Math.max(requested, floor);
       if (needed !== plan.sessionsNeeded) {
         plan = await tx.sessionPlan.update({ where: { id: planId }, data: { sessionsNeeded: needed } });
       }
       sessionPlanById.set(planId, { unitPrice: plan.unitPrice, currency: asCurrency(plan.currency) });
-      // External credit only: exclude this consultation's own paid installments.
+      // External credit only: exclude this consultation's own paid installments,
+      // which would otherwise phantom-cover a later edit of the same visit.
       const externalCredit = plan.sessionsPaid - (consultPaidByPlan.get(planId) ?? 0) - plan.sessionsUsed;
       sessionCreditLeft.set(planId, Math.max(0, externalCredit));
-      // `sessionsPaid` already counts this consultation's settled installments, so
-      // re-saving an edited visit can never re-charge sessions already collected.
-      sessionChargeLeft.set(planId, Math.max(0, plan.sessionsNeeded - plan.sessionsPaid));
+      const alreadyBought =
+        plan.sessionsPaid + (await pendingPurchasedSessionsTx(tx, planId, consultationId));
+      sessionChargeLeft.set(planId, Math.max(0, plan.sessionsNeeded - alreadyBought));
     }
   }
   const sessionCoverage = allocateCoverage(
@@ -657,8 +661,8 @@ async function buildConsultationContentTx(
   const isSessionTreatment = (idx: number): boolean =>
     Boolean(treatments[idx].sessionPlanId) && sessionPlanById.has(treatments[idx].sessionPlanId!);
   const sessionPrice = (idx: number) => sessionPlanById.get(treatments[idx].sessionPlanId!)!;
-  // Billable sessions per treatment: draw from the plan's unpaid balance in order,
-  // so two treatments on one plan split it instead of each charging the full plan.
+  // Sessions SOLD per treatment: draw from the plan's unbought balance in order,
+  // so two treatments on one plan split it instead of each selling the full plan.
   const sessionBillable = treatments.map((t, idx) => {
     if (!isSessionTreatment(idx)) return 0;
     const planId = t.sessionPlanId!;
@@ -815,8 +819,9 @@ async function buildConsultationContentTx(
       const lines: BasketItemInput[] = [];
       if (isSessionTreatment(idx)) {
         const sp = sessionPrice(idx);
-        // Covered = today's consumption met by prepaid credit (tracked, not billed).
-        // Charged = the plan's unpaid purchase quantity, independent of consumption.
+        // Covered = today's consumption met by sessions already owned (tracked,
+        // not billed). Charged = the sessions this visit SELLS, independent of
+        // consumption. Settling this basket is what unlocks them.
         const covered = sessionCoverage[idx].covered;
         const charged = sessionBill;
         if (covered > 0) {
