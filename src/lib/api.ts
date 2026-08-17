@@ -248,7 +248,12 @@ export const api = {
   setPackageStatus: (id: string, status: "active" | "inactive") =>
     patchJson<Package>(`/api/packages/${id}`, { status }),
 
-  listAppointments: () => getJson<Appointment[]>("/api/appointments"),
+  listAppointments: (filter?: { scope?: "mine" }) => {
+    const params = new URLSearchParams();
+    if (filter?.scope) params.set("scope", filter.scope);
+    const q = params.toString();
+    return getJson<Appointment[]>(`/api/appointments${q ? `?${q}` : ""}`);
+  },
   createAppointment: (body: CreateAppointmentInput) =>
     postJson<Appointment>("/api/appointments", body),
   setAppointmentStatus: (id: string, status: AppointmentStatus) =>
@@ -394,11 +399,17 @@ export const api = {
     postJson<{ plan: SessionPlan; basketId: string }>("/api/session-plans/sell", body),
 
   // Machine visits — prepaid machine sessions used without a consultation.
-  listMachineVisits: (filter?: { clientId?: string; from?: string; to?: string }) => {
+  listMachineVisits: (filter?: {
+    clientId?: string;
+    from?: string;
+    to?: string;
+    scope?: "mine";
+  }) => {
     const params = new URLSearchParams();
     if (filter?.clientId) params.set("clientId", filter.clientId);
     if (filter?.from) params.set("from", filter.from);
     if (filter?.to) params.set("to", filter.to);
+    if (filter?.scope) params.set("scope", filter.scope);
     const q = params.toString();
     return getJson<MachineVisit[]>(`/api/machine-visits${q ? `?${q}` : ""}`);
   },

@@ -60,10 +60,20 @@ export async function expirePastScheduledAppointments(): Promise<void> {
 
 export async function listAppointments(
   date?: string,
-  opts: { includeMedicalHistoryStatus?: boolean } = {},
+  opts: {
+    includeMedicalHistoryStatus?: boolean;
+    /** Restrict to bookings explicitly assigned to this doctor. */
+    dietitianId?: string;
+  } = {},
 ): Promise<Appointment[]> {
   await expirePastScheduledAppointments();
-  const where = date ? { date: clinicDayRange(date) } : undefined;
+  const where: Prisma.AppointmentWhereInput = date ? { date: clinicDayRange(date) } : {};
+  // Strict ownership: only bookings actually bound to this doctor. Unassigned
+  // ones are deliberately NOT included — this scoping exists so a doctor's own
+  // history page carries no other patients at all, and an unowned booking is the
+  // front desk's to route (the queue board is where it gets picked up). The admin
+  // is never scoped, so nothing becomes invisible clinic-wide.
+  if (opts.dietitianId) where.dietitianId = opts.dietitianId;
   const rows = await db.appointment.findMany({
     where,
     include,

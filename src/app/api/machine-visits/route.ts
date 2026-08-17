@@ -10,11 +10,20 @@ export async function GET(req: Request) {
     // it on the client profile and the queue.
     if (!(await actingRole(req))) return json({ error: "Not allowed" }, 403);
     const params = new URL(req.url).searchParams;
+    // `scope=mine` narrows the list to visits this doctor personally recorded.
+    // Only meaningful for a dietitian — an admin sees every doctor's, so the
+    // flag is ignored for them.
+    const actor = await actingUser(req);
+    const recordedById =
+      params.get("scope") === "mine" && actor.role === "dietitian" && actor.id
+        ? actor.id
+        : undefined;
     return json(
       await listMachineVisits({
         clientId: params.get("clientId") ?? undefined,
         from: params.get("from") ?? undefined,
         to: params.get("to") ?? undefined,
+        recordedById,
       }),
     );
   } catch (e) {

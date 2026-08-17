@@ -241,7 +241,7 @@ export async function listConsultations(
     clientId?: string;
     status?: ConsultationStatus;
     date?: string;
-    /** Restrict to one doctor's own visits (plus unowned ones). */
+    /** Restrict to visits explicitly assigned to this doctor. */
     dietitianId?: string;
   } = {},
 ): Promise<ConsultationListItem[]> {
@@ -254,11 +254,11 @@ export async function listConsultations(
   // `date` string the client compares against (even for a visit recorded just
   // after clinic-midnight, whose UTC day differs).
   if (filter.date) where.date = clinicDayRange(filter.date);
-  // A doctor scoping to "mine" also keeps unowned visits — nobody else can claim
-  // those, and hiding them from everyone would strand them open forever.
-  if (filter.dietitianId) {
-    where.OR = [{ dietitianId: filter.dietitianId }, { dietitianId: null }];
-  }
+  // Strict ownership: only visits actually bound to this doctor. Unowned visits
+  // are deliberately excluded so a doctor's own history page carries no other
+  // patients at all. They don't become invisible clinic-wide — the admin is never
+  // scoped by this flag, and the queue board surfaces unclosed drafts separately.
+  if (filter.dietitianId) where.dietitianId = filter.dietitianId;
   const rows = await db.consultation.findMany({
     where,
     include,

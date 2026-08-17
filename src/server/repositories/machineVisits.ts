@@ -77,10 +77,13 @@ export async function listMachineVisits(filter: {
   clientId?: string;
   from?: string;
   to?: string;
+  /** Restrict to visits this doctor personally recorded. */
+  recordedById?: string;
 }): Promise<MachineVisit[]> {
   const rows = await db.machineVisit.findMany({
     where: {
       clientId: filter.clientId,
+      recordedById: filter.recordedById,
       ...(filter.from || filter.to
         ? {
             // Clinic midnight in the clinic's own timezone, never UTC midnight.

@@ -17,7 +17,7 @@ import {
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { todayIso } from "@/lib/config";
+import { clinicDay, todayIso } from "@/lib/config";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
 import type { Appointment } from "@/lib/types";
 import { cn, formatDate, formatTime } from "@/lib/utils";
@@ -34,17 +34,22 @@ export default function AppointmentsPage() {
   // would flash a Reschedule button the API answers with 403. Mirrors
   // `canManageAppointments` on the server exactly.
   const canManageAppointments = user?.role === "secretary" || user?.role === "admin";
-  const { data, loading, error, refetch } = useApi(() => api.listAppointments());
-  // A doctor only ever works on their own visits, so ask the server for just
-  // those (admins/secretary are unaffected — the flag is ignored server-side for
-  // them, and the secretary gets nothing from this endpoint at all).
-  // Keyed on the role: `user` resolves a tick after mount, so without the dep the
-  // first (unscoped) request would be the one whose data sticks.
+  // A doctor only ever works on their own visits/bookings, so ask the server for
+  // just those (admins/secretary are unaffected — the flag is ignored server-side
+  // for them). Keyed on the role: `user` resolves a tick after mount, so without
+  // the dep the first (unscoped) request would be the one whose data sticks.
+  const { data, loading, error, refetch } = useApi(
+    () => api.listAppointments(isDietitian ? { scope: "mine" } : undefined),
+    [isDietitian],
+  );
   const consultations = useApi(
     () => api.listConsultations(isDietitian ? { scope: "mine" } : undefined),
     [isDietitian],
   );
-  const machineVisits = useApi(() => api.listMachineVisits());
+  const machineVisits = useApi(
+    () => api.listMachineVisits(isDietitian ? { scope: "mine" } : undefined),
+    [isDietitian],
+  );
 
   const [selectedDate, setSelectedDate] = useState(todayIso());
   // Moving a booking to another slot — front desk only, same right as booking.
@@ -67,8 +72,12 @@ export default function AppointmentsPage() {
     if (c.bloodCollection || (c.bloodTests && c.bloodTests.length > 0)) return "Blood Test";
     return c.visitNumber === 1 ? "Initial" : "Follow-up";
   };
+  // `MachineVisit.date` is a full timestamp (`toISOString()`), unlike a
+  // consultation's date-only string — so it must be narrowed to the clinic day
+  // before comparing. A raw `m.date === selectedDate` never matches anything and
+  // silently hid every machine visit from this page.
   const dayMachineVisits = (machineVisits.data ?? []).filter(
-    (m) => m.date === selectedDate && !m.voidedAt,
+    (m) => clinicDay(new Date(m.date)) === selectedDate && !m.voidedAt,
   );
   // Every visit still open, regardless of the date being viewed: a draft left
   // unclosed on an earlier day is exactly the one nobody goes looking for, so
@@ -272,9 +281,7 @@ export default function AppointmentsPage() {
                         >
                           Continue
                         </Button>
-                      ) : (
-                        <span className="text-xs font-medium text-brand-700">View</span>
-                      )}
+                      ) : null}
                     </TD>
                   </TR>
                 ))}
@@ -287,9 +294,10 @@ export default function AppointmentsPage() {
                     <TD>
                       <Badge tone="green">Done</Badge>
                     </TD>
-                    <TD>
-                      <span className="text-xs font-medium text-brand-700">View</span>
-                    </TD>
+                    {/* No action: a machine visit has no detail view of its own and
+                        nothing to reopen. The row click already goes to the client
+                        profile, where it appears in the history stream. */}
+                    <TD />
                   </TR>
                 ))}
                 {dayVisits.length === 0 && dayMachineVisits.length === 0 && (
