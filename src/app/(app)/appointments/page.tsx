@@ -20,7 +20,7 @@ import { useSession } from "@/lib/session";
 import { todayIso } from "@/lib/config";
 import { VISIT_TYPE_LABELS } from "@/lib/types";
 import type { Appointment } from "@/lib/types";
-import { bmiCategory, cn, formatDate, formatTime } from "@/lib/utils";
+import { cn, formatDate, formatTime } from "@/lib/utils";
 
 export default function AppointmentsPage() {
   const router = useRouter();
@@ -44,6 +44,7 @@ export default function AppointmentsPage() {
     () => api.listConsultations(isDietitian ? { scope: "mine" } : undefined),
     [isDietitian],
   );
+  const machineVisits = useApi(() => api.listMachineVisits());
 
   const [selectedDate, setSelectedDate] = useState(todayIso());
   // Moving a booking to another slot — front desk only, same right as booking.
@@ -59,6 +60,16 @@ export default function AppointmentsPage() {
     .filter((a) => a.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
   const dayVisits = allVisits.filter((c) => c.date === selectedDate);
+  // Purpose isn't a stored field on a consultation — derive it from what the
+  // visit actually did, since a machine-only attendance never creates one of
+  // these rows at all (it's a MachineVisit, merged in separately below).
+  const visitPurpose = (c: (typeof dayVisits)[number]) => {
+    if (c.bloodCollection || (c.bloodTests && c.bloodTests.length > 0)) return "Blood Test";
+    return c.visitNumber === 1 ? "Initial" : "Follow-up";
+  };
+  const dayMachineVisits = (machineVisits.data ?? []).filter(
+    (m) => m.date === selectedDate && !m.voidedAt,
+  );
   // Every visit still open, regardless of the date being viewed: a draft left
   // unclosed on an earlier day is exactly the one nobody goes looking for, so
   // it is surfaced here rather than only inside its own day's table. Oldest
@@ -102,7 +113,7 @@ export default function AppointmentsPage() {
         </CardBody>
       </Card>
 
-      {loading || consultations.loading ? (
+      {loading || consultations.loading || machineVisits.loading ? (
         <Loading />
       ) : error ? (
         <ErrorState message={error} />
@@ -215,7 +226,9 @@ export default function AppointmentsPage() {
           <Card>
             <CardHeader
               title={`Consultations recorded on ${formatDate(selectedDate)}`}
-              subtitle={`${dayVisits.length} visit${dayVisits.length !== 1 ? "s" : ""} recorded`}
+              subtitle={`${dayVisits.length + dayMachineVisits.length} visit${
+                dayVisits.length + dayMachineVisits.length !== 1 ? "s" : ""
+              } recorded`}
               action={<CalendarSearch className="h-4 w-4 text-slate-400" />}
             />
             <Table>
@@ -223,8 +236,7 @@ export default function AppointmentsPage() {
                 <TR>
                   <TH>Patient</TH>
                   <TH>Visit</TH>
-                  <TH>Weight</TH>
-                  <TH>BMI</TH>
+                  <TH>Purpose</TH>
                   <TH>Doctor</TH>
                   <TH>Status</TH>
                   <TH />
@@ -235,10 +247,7 @@ export default function AppointmentsPage() {
                   <TR key={c.id} onClick={() => router.push(`/clients/${c.clientId}`)}>
                     <TD className="font-medium">{c.clientName}</TD>
                     <TD>#{c.visitNumber}</TD>
-                    <TD>{c.weightKg ? `${c.weightKg} kg` : "—"}</TD>
-                    <TD className="text-slate-500">
-                      {c.bmi ? `${c.bmi} · ${bmiCategory(c.bmi)}` : "—"}
-                    </TD>
+                    <TD className="text-slate-500">{visitPurpose(c)}</TD>
                     <TD className="text-slate-500">{c.dietitianName}</TD>
                     <TD>
                       {c.status === "open" ? (
@@ -269,9 +278,23 @@ export default function AppointmentsPage() {
                     </TD>
                   </TR>
                 ))}
-                {dayVisits.length === 0 && (
+                {dayMachineVisits.map((m) => (
+                  <TR key={m.id} onClick={() => router.push(`/clients/${m.clientId}`)}>
+                    <TD className="font-medium">{m.clientName}</TD>
+                    <TD>—</TD>
+                    <TD className="text-slate-500">Machine</TD>
+                    <TD className="text-slate-500">{m.recordedByName}</TD>
+                    <TD>
+                      <Badge tone="green">Done</Badge>
+                    </TD>
+                    <TD>
+                      <span className="text-xs font-medium text-brand-700">View</span>
+                    </TD>
+                  </TR>
+                ))}
+                {dayVisits.length === 0 && dayMachineVisits.length === 0 && (
                   <TR>
-                    <TD colSpan={7} className="py-8 text-center text-slate-400">
+                    <TD colSpan={6} className="py-8 text-center text-slate-400">
                       No consultations recorded on this date.
                     </TD>
                   </TR>

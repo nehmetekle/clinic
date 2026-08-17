@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
-import { clinicDay, clinicTimeInput } from "@/lib/config";
+import { clinicDay, clinicDayRange, clinicTimeInput } from "@/lib/config";
 import { writeAudit } from "./audit";
 import { userIdByEmail } from "./staff";
 import type { BloodSample, BloodSampleStatus } from "@/lib/types";
@@ -432,4 +432,51 @@ export async function updateBloodSample(
   });
 
   return getBloodSampleOrThrow(id);
+}
+
+/**
+ * The blood tests ordered most often over a date range: one occurrence per test
+ * per lab order, ranked by occurrences and cut to `limit` (default 5).
+ *
+ * Counted from `BloodSample` — the lab order itself — rather than from
+ * `Consultation.bloodTests`, because the order is the row that survives the
+ * edit: a test taken off a still-pending order is removed from it (and audited),
+ * and an order cancelled before reaching the lab is deleted outright. So what
+ * remains is what was actually ordered, and a visit whose tests were retyped
+ * never counts twice. Windowed by `orderedAt` on the same clinic-day boundaries
+ * every other figure on the report uses, so "this period" means the same thing
+ * here as it does one card up.
+ *
+ * Test names are the frozen snapshots stored on the order, not catalog lookups,
+ * so renaming or retiring a test never rewrites (or drops) history. Names are
+ * de-duplicated per order — a list that somehow carries the same test twice is
+ * still one occurrence of it.
+ */
+export async function topBloodTests(
+  range: { from?: string; to?: string },
+  limit = 5,
+): Promise<{ name: string; count: number }[]> {
+  const hasRange = range.from !== undefined || range.to !== undefined;
+  const rows = await db.bloodSample.findMany({
+    where: hasRange
+      ? {
+          orderedAt: {
+            ...(range.from ? { gte: clinicDayRange(range.from).gte } : {}),
+            ...(range.to ? { lt: clinicDayRange(range.to).lt } : {}),
+          },
+        }
+      : {},
+    select: { tests: true },
+  });
+
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const name of new Set(parseTests(row.tests).map((t) => t.trim()).filter(Boolean))) {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, limit);
 }

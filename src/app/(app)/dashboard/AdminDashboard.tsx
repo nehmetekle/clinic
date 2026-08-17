@@ -9,12 +9,9 @@ import {
   ChevronRight,
   DollarSign,
   HandCoins,
-  Package,
   PiggyBank,
   TrendingDown,
-  TrendingUp,
   Users,
-  Wallet,
   Zap,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -23,13 +20,10 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
 import {
-  BreakdownDonut,
   ProfitTrendChart,
   TopMachinesChart,
 } from "@/components/charts/Charts";
 import { Input } from "@/components/ui/Field";
-import { ReferrerCostBreakdown } from "@/components/ReferrerCostBreakdown";
-import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
 import { RevenueKindBreakdown } from "@/components/RevenueKindBreakdown";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
@@ -44,8 +38,6 @@ export function AdminDashboard() {
   const [customFrom, setCustomFrom] = useState(`${today.slice(0, 7)}-01`);
   const [customTo, setCustomTo] = useState(today);
   const [openReferrer, setOpenReferrer] = useState<string | null>(null);
-  const [showReferrerCost, setShowReferrerCost] = useState(false);
-  const [showIncomeMethods, setShowIncomeMethods] = useState(false);
   const [showRevenueKinds, setShowRevenueKinds] = useState(false);
   const range =
     period === "Custom"
@@ -61,7 +53,6 @@ export function AdminDashboard() {
   if (!data) return null;
 
   const { finance, counts } = data;
-  const noShows = data.todaysAppointments.filter((a) => a.status === "no_show").length;
   const lowStockProducts = (products.data ?? [])
     .filter((p) => p.active && p.stock <= p.lowStockThreshold)
     .sort((a, b) => a.stock - b.stock);
@@ -109,31 +100,11 @@ export function AdminDashboard() {
         <span className="font-medium text-slate-700">{rangeLabel(range.from, range.to)}</span>. Outstanding debts are current.
       </p>
 
-      {/* Revenue − COGS = Gross profit; then operating costs give Net profit. */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard label="Revenue" value={formatMoney(finance.revenue)} icon={DollarSign} tone="green" hint="What was earned →" onClick={() => setShowRevenueKinds(true)} />
-        <StatCard label="Cost of goods sold" value={formatMoney(finance.cogs)} icon={Wallet} tone="rose" />
-        <StatCard label="Gross profit" value={formatMoney(finance.grossProfit)} icon={TrendingUp} tone={finance.grossProfit >= 0 ? "brand" : "rose"} />
-        <StatCard
-          label="Gross margin"
-          value={finance.grossMarginPercent === null ? "—" : `${finance.grossMarginPercent}%`}
-          icon={TrendingUp}
-          tone={(finance.grossMarginPercent ?? 0) >= 0 ? "brand" : "rose"}
-        />
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Operating expenses" value={formatMoney(finance.operatingExpenses)} icon={Wallet} tone="rose" />
-        <StatCard label="Referrer cost" value={formatMoney(finance.referrerCost)} icon={HandCoins} tone="rose" hint="View breakdown →" onClick={() => setShowReferrerCost(true)} />
         <StatCard label="Net profit" value={formatMoney(finance.netProfit)} icon={PiggyBank} tone={finance.netProfit >= 0 ? "brand" : "rose"} />
-        <StatCard label="Discounts given" value={formatMoney(finance.discounts)} icon={TrendingDown} tone="amber" />
-      </div>
-
-      {/* Cash and balances — deliberately separated from the profit figures above. */}
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Collected" value={formatMoney(finance.totalIncome)} icon={DollarSign} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
+        <StatCard label="Net cash" value={formatMoney(finance.netCash)} icon={PiggyBank} tone={finance.netCash >= 0 ? "brand" : "rose"} />
         <StatCard label="Owed by clients" value={formatMoney(finance.unpaidBalance)} icon={TrendingDown} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
-        <StatCard label="Owed by Jessy" value={formatMoney(finance.jessyOutstanding)} icon={HandCoins} tone="amber" hint="Open Jessy ledger →" onClick={() => router.push("/jessy")} />
         <StatCard label="Owed to referrers" value={formatMoney(finance.referralOutstanding)} icon={HandCoins} tone="amber" hint="Open referral ledger →" onClick={() => router.push("/referrals")} />
       </div>
 
@@ -146,21 +117,6 @@ export function AdminDashboard() {
         cogs={finance.cogs}
       />
 
-      <ReferrerCostBreakdown
-        open={showReferrerCost}
-        onClose={() => setShowReferrerCost(false)}
-        periodLabel={rangeLabel(range.from, range.to)}
-        report={data.referrerCostReport}
-      />
-
-      <PaymentMethodBreakdown
-        open={showIncomeMethods}
-        onClose={() => setShowIncomeMethods(false)}
-        title="Collected by method"
-        periodLabel={rangeLabel(range.from, range.to)}
-        byMethod={finance.incomeByMethod}
-        byTender={finance.incomeByTender}
-      />
 
       <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard label="Total clients" value={counts.totalClients} icon={Users} tone="blue" />
@@ -168,13 +124,6 @@ export function AdminDashboard() {
         <StatCard label="Consultations" value={counts.consultations} icon={Activity} tone="slate" />
         <StatCard label="Machine visits" value={counts.machineVisits} icon={Zap} tone="brand" />
         <StatCard label="New this month" value={counts.newThisMonth} tone="green" />
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Bundles sold" value={data.packagesSold} icon={Package} tone="brand" hint="This period" />
-        <StatCard label="Most popular bundle" value={data.mostPopularPackage} tone="blue" />
-        <StatCard label="Today's appointments" value={data.todaysAppointments.length} tone="slate" />
-        <StatCard label="No-shows today" value={noShows} tone="rose" />
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -196,12 +145,6 @@ export function AdminDashboard() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader title="Today's appointments breakdown" />
-          <CardBody>
-            <BreakdownDonut data={data.appointmentBreakdown} />
-          </CardBody>
-        </Card>
         <Card>
           <CardHeader title="Staff activity" subtitle="Consultations & front-desk activity" />
           <Table>

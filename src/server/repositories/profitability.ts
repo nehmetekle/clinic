@@ -163,7 +163,15 @@ function basketWhere(range: ProfitabilityRange) {
   const gte = range.from ? clinicDayRange(range.from).gte : undefined;
   const lt = range.to ? clinicDayRange(range.to).lt : undefined;
   return {
-    status: "paid",
+    // BOTH settled statuses, never `paid` alone. `closed` is not a different kind
+    // of sale — it is the SAME settled basket after `retirePaidBasketsTx` retired
+    // it from the settlement queue when the dietitian closed the visit. Filtering
+    // on `paid` only made revenue evaporate retroactively: a sale counted while
+    // its visit was open silently left the books the moment the visit closed, so
+    // Revenue drifted below Collected by exactly the closed visits' takings.
+    // `paidAt` (set once, at settlement) is what dates the sale — the status only
+    // says whether the basket is still on the board.
+    status: { in: ["paid", "closed"] },
     ...(range.dietitianId ? { dietitianId: range.dietitianId } : {}),
     ...(gte || lt ? { paidAt: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) } } : {}),
   };

@@ -18,7 +18,7 @@ import {
   formatFxRate,
   type FxSuspicion,
 } from "@/lib/money";
-import type { Currency, Package, Product, ServicePrice, StaffUser } from "@/lib/types";
+import type { Currency, Package, Product, Referrer, ServicePrice, StaffUser } from "@/lib/types";
 
 /**
  * Central pricing hub (admin only). One place to manage every price on the
@@ -37,10 +37,14 @@ export default function PricingPage() {
 
       <div className="space-y-6">
         <ServicePricesCard />
-        <ConsultationFeesCard />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <ConsultationFeesCard />
+          <CardSurchargeCard />
+        </div>
         <div className="grid gap-6 lg:grid-cols-2">
           <ProductsCard />
           <ExchangeRateCard />
+          <ReferrersCard />
         </div>
       </div>
     </div>
@@ -644,12 +648,12 @@ function ConsultationFeesCard() {
     );
 
   return (
-    <Card>
+    <Card className="flex flex-col">
       <CardHeader
         title="Consultation fees"
-        subtitle="Per-doctor fee auto-added to the visit basket when that doctor runs the consultation. Charged in USD; set 0 for no fee. The doctor can remove it from an individual visit."
+        subtitle="Set the default USD fee added when each doctor runs a consultation. It can still be removed from an individual visit."
       />
-      <CardBody className="space-y-2">
+      <CardBody className="flex-1 space-y-2">
         {staff.loading ? (
           <p className="text-sm text-slate-400">Loading doctors…</p>
         ) : staff.error ? (
@@ -710,7 +714,7 @@ function ConsultationFeeRow({
         </p>
       </div>
       <div className="mt-3 flex items-end gap-3">
-        <FormRow label="Fee (USD)" className="flex-1">
+        <FormRow label="Fee (USD)" className="min-w-0 flex-1">
           <MoneyInput value={fee} onValueChange={setFee} placeholder="0" />
         </FormRow>
         <Button size="sm" variant="outline" onClick={save} disabled={saving || !dirty}>
@@ -1162,5 +1166,240 @@ function ExchangeRateCard() {
         )}
       </Modal>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Referrers & card surcharge
+// ---------------------------------------------------------------------------
+
+// Admin-set fee added to a card payment, e.g. 10 = 10%. Applied server-side
+// whenever the method is "card" — a normal payment's full amount, or just the
+// card portion of a split settlement. 0 (the default) disables it. Changing it
+// only affects payments recorded from now on; past receipts keep whatever was
+// applied when they were made.
+function CardSurchargeCard() {
+  const { toast } = useToast();
+  const settings = useApi(() => api.getSettings());
+  const [rate, setRate] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (settings.data) setRate(String(settings.data.cardSurchargePercent));
+  }, [settings.data]);
+
+  async function save() {
+    const cardSurchargePercent = Number(rate);
+    if (!Number.isFinite(cardSurchargePercent) || cardSurchargePercent < 0 || cardSurchargePercent > 100) {
+      toast("Enter a percentage between 0 and 100");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateSettings({ cardSurchargePercent });
+      toast("Card surcharge updated");
+      settings.refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="flex flex-col">
+      <CardHeader
+        title="Card surcharge"
+        subtitle="Fee added to a payment made by card. Set to 0 to disable it."
+      />
+      <CardBody className="flex-1">
+        <div className="rounded-lg border border-slate-200 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-slate-700">Card payments</p>
+            <p className="text-xs text-slate-400">
+              {Number(rate) > 0 ? `${rate}% fee` : "Disabled"}
+            </p>
+          </div>
+          <div className="mt-3 flex items-end gap-3">
+            <FormRow label="Surcharge (%)" className="min-w-0 flex-1">
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                value={rate}
+                onChange={(e) => setRate(e.target.value)}
+                placeholder="0"
+              />
+            </FormRow>
+            <Button size="sm" onClick={save} disabled={saving || settings.loading}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+// Admin-editable list of who refers patients (e.g. a partner doctor, or "None"
+// for self-referred). Drives the referrer dropdown at registration and check-in.
+// The chosen name is snapshotted onto the client, so renaming/removing here never
+// rewrites past client records.
+function ReferrersCard() {
+  const { toast } = useToast();
+  const referrers = useApi(() => api.listReferrers());
+  const [newName, setNewName] = useState("");
+  const [newFee, setNewFee] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  async function addReferrer() {
+    if (!newName.trim()) {
+      toast("Enter a referrer name");
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.createReferrer({ name: newName.trim(), fee: Number(newFee) || 0 });
+      toast("Referrer added");
+      setNewName("");
+      setNewFee("");
+      referrers.refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Referrers"
+        subtitle="Who refers patients to the clinic — offered at registration and check-in, alongside a built-in “None” option for patients who came organically (no referrer, no fee). The referral fee is the commission paid per patient they send. Renaming, removing or re-pricing one never changes past client records (each patient's fee is frozen at registration)."
+      />
+      <CardBody className="space-y-4">
+        <div className="space-y-2">
+          {referrers.loading ? (
+            <p className="text-sm text-slate-400">Loading referrers…</p>
+          ) : referrers.error ? (
+            <p className="text-sm text-rose-600">{referrers.error}</p>
+          ) : (referrers.data ?? []).length === 0 ? (
+            <p className="text-sm text-slate-400">No referrers yet.</p>
+          ) : (
+            (referrers.data ?? []).map((r) => (
+              <ReferrerRow key={r.id} referrer={r} onChanged={() => referrers.refetch()} />
+            ))
+          )}
+        </div>
+
+        <div className="border-t border-slate-100 pt-4">
+          <p className="mb-2 text-xs font-medium text-slate-500">Add a referrer</p>
+          <div className="flex items-end gap-3">
+            <FormRow label="Name" className="flex-1">
+              <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Dr. Karam" />
+            </FormRow>
+            <FormRow label="Fee / referral (USD)" className="w-40">
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={newFee}
+                onChange={(e) => setNewFee(e.target.value)}
+                placeholder="0"
+              />
+            </FormRow>
+            <Button size="sm" onClick={addReferrer} disabled={adding}>
+              {adding ? "Adding…" : "Add"}
+            </Button>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+function ReferrerRow({ referrer, onChanged }: { referrer: Referrer; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState(referrer.name);
+  const [fee, setFee] = useState(String(referrer.fee));
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const nameDirty = name.trim() !== referrer.name && name.trim() !== "";
+  const feeDirty = (Number(fee) || 0) !== referrer.fee;
+  const dirty = nameDirty || feeDirty;
+
+  // Saves whichever of name/fee changed. Editing the fee only changes the LIVE
+  // rate for future referrals — commissions already frozen onto past patients are
+  // untouched (that snapshot lives on the client, not here).
+  async function save() {
+    setSaving(true);
+    try {
+      await api.updateReferrer(referrer.id, {
+        ...(nameDirty ? { name: name.trim() } : {}),
+        ...(feeDirty ? { fee: Number(fee) || 0 } : {}),
+      });
+      toast("Referrer updated");
+      onChanged();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Deactivating hides a referrer from the dropdown without touching the clients
+  // who already recorded it (their snapshotted name keeps displaying unchanged).
+  async function toggleActive() {
+    setBusy(true);
+    try {
+      await api.updateReferrer(referrer.id, { active: !referrer.active });
+      toast(referrer.active ? "Referrer deactivated" : "Referrer activated");
+      onChanged();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await api.deleteReferrer(referrer.id);
+      toast("Referrer removed");
+      onChanged();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`flex items-end gap-3 rounded-lg border border-slate-200 p-3 ${referrer.active ? "" : "bg-slate-50 opacity-70"}`}>
+      <FormRow label="Name" className="flex-1">
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </FormRow>
+      <FormRow label="Fee / referral (USD)" className="w-40">
+        <Input type="number" min={0} step="0.01" value={fee} onChange={(e) => setFee(e.target.value)} />
+      </FormRow>
+      {!referrer.active && <Badge tone="gray">Inactive</Badge>}
+      <Button size="sm" variant="outline" onClick={save} disabled={saving || !dirty}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={toggleActive} disabled={busy}>
+        {referrer.active ? "Deactivate" : "Activate"}
+      </Button>
+      <button
+        type="button"
+        onClick={remove}
+        disabled={busy}
+        className="pb-2 text-slate-400 hover:text-rose-600 disabled:opacity-50"
+        aria-label="Remove referrer"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
   );
 }

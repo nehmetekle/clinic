@@ -107,6 +107,34 @@ export function TopMachinesChart({
   );
 }
 
+// Same visual language as TopMachinesChart (horizontal bars, teal) because it
+// answers the same shape of question — "what did the clinic lean on this period"
+// — one card down. Counts ORDERS, not money, so nothing here is redacted.
+export function TopBloodTestsChart({
+  data,
+}: {
+  data: { name: string; count: number }[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <BarChart data={data} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+        <XAxis type="number" tick={axis} axisLine={false} tickLine={false} allowDecimals={false} />
+        <YAxis
+          type="category"
+          dataKey="name"
+          tick={axis}
+          axisLine={false}
+          tickLine={false}
+          width={140}
+        />
+        <Tooltip formatter={(value: number | string) => [formatChartNumber(value), "Times ordered"]} />
+        <Bar dataKey="count" name="Times ordered" fill="#0d9488" radius={[0, 6, 6, 0]} maxBarSize={40} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 export function BreakdownDonut({
   data,
 }: {

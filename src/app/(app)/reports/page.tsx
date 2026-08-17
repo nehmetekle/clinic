@@ -11,7 +11,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { Input, Select } from "@/components/ui/Field";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
-import { ProfitTrendChart, TopMachinesChart } from "@/components/charts/Charts";
+import { ProfitTrendChart, TopBloodTestsChart, TopMachinesChart } from "@/components/charts/Charts";
 import { ReferrerCostBreakdown } from "@/components/ReferrerCostBreakdown";
 import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
 import { RevenueKindBreakdown } from "@/components/RevenueKindBreakdown";
@@ -123,11 +123,24 @@ export default function ReportsPage() {
         })),
       },
       {
+        // Money in and money out, both dated when they moved — see the Cash on
+        // hand block on the page. Paid-out figures are exported NEGATIVE so the
+        // four rows sum to Net cash in a spreadsheet.
+        title: `Cash on hand — ${period}`,
+        rows: clinicWide([
+          { Figure: "Cash received", "Amount (USD)": usd(f.cashCollected) },
+          { Figure: "— of which received from Jessy", "Amount (USD)": usd(f.jessyReceived) },
+          { Figure: "— excluded, paid through Jessy (income, not yet cash)", "Amount (USD)": usd(-f.jessyIncome) },
+          { Figure: "Expenses paid", "Amount (USD)": usd(-f.operatingExpenses) },
+          { Figure: "Paid to referrers", "Amount (USD)": usd(-f.referrerPayouts) },
+          { Figure: "Net cash", "Amount (USD)": usd(f.netCash) },
+        ]),
+      },
+      {
         // Balances, deliberately labelled as such: they are current, not for the
         // period above, and a reader of the file has no other way to know that.
-        title: "Cash and balances (collected in period; balances are current)",
+        title: "Balances (current, not for the selected period)",
         rows: clinicWide([
-          { Figure: `Collected — ${period}`, "Amount (USD)": usd(f.totalIncome) },
           { Figure: "Owed by clients (current)", "Amount (USD)": usd(f.unpaidBalance) },
           { Figure: "Owed by Jessy (current)", "Amount (USD)": usd(f.jessyOutstanding) },
           { Figure: "Owed to referrers (current)", "Amount (USD)": usd(f.referralOutstanding) },
@@ -160,6 +173,13 @@ export default function ReportsPage() {
           "Sessions at machine visits": m.machineVisitSessions,
           "Sessions in consultations": m.consultationSessions,
           "Machine visits": m.machineVisits,
+        })),
+      },
+      {
+        title: `Most-ordered blood tests — ${period}`,
+        rows: clinicWide(data.topBloodTests).map((t) => ({
+          "Blood test": t.name,
+          "Times ordered": t.count,
         })),
       },
       {
@@ -301,15 +321,38 @@ export default function ReportsPage() {
 
       {!scoped && (
       <>
+      {/* Cash on hand — the same period read as money in and money out, rather than
+          as earnings. Sits above "Cash and balances" because it answers the question
+          an owner asks first, and because its Collected figure is the same number
+          the balances block opens with. */}
       <p className="mt-6 mb-3 text-sm text-slate-500">
-        <span className="font-medium text-slate-700">Cash and balances.</span> What was
-        actually collected, and what is still owed — kept separate from the profit
-        figures above. A sale on credit is revenue when it is made and cash when it is
-        collected; the balances are current, not for the selected period.
+        <span className="font-medium text-slate-700">Cash on hand.</span> What the
+        period actually put in the till: money collected, minus money paid out. A sale
+        on credit adds nothing here until it is collected, and a debt collected now
+        counts in full even if the sale was months ago. Cost of goods is not
+        subtracted — stock is paid for through its own expense. Money paid through
+        Jessy counts here when Jessy transfers it, not when the patient pays.
       </p>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Collected" value={formatMoney(data.finance.totalIncome)} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
+        {/* Cash actually received: collections, with Jessy re-timed to the transfer. */}
+        <StatCard label="Cash received" value={formatMoney(data.finance.cashCollected)} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
+        <StatCard label="Expenses paid" value={formatMoney(data.finance.operatingExpenses)} tone="rose" hint="Open expenses →" onClick={() => router.push("/expenses")} />
+        <StatCard label="Paid to referrers" value={formatMoney(data.finance.referrerPayouts)} tone="rose" hint="Open referral ledger →" onClick={() => router.push("/referrals")} />
+        <StatCard label="Net cash" value={formatMoney(data.finance.netCash)} tone={data.finance.netCash >= 0 ? "brand" : "rose"} />
+      </div>
+
+      <p className="mt-6 mb-3 text-sm text-slate-500">
+        <span className="font-medium text-slate-700">Balances.</span> What is still
+        owed, in both directions — kept separate from the figures above because a
+        balance is not a period figure: all three are current totals and do not change
+        with the selected dates.
+      </p>
+
+      {/* Three balances, no flow figure among them — "Collected" used to lead this
+          row and was removed: it duplicated the cash block above and was the only
+          windowed card in a section about current balances. */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <StatCard label="Owed by clients" value={formatMoney(data.finance.unpaidBalance)} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
         {/* Money Jessy has not transferred yet. NOT revenue and NOT patient debt. */}
         <StatCard label="Owed by Jessy" value={formatMoney(data.finance.jessyOutstanding)} tone="amber" hint="Open Jessy ledger →" onClick={() => router.push("/jessy")} />
@@ -366,16 +409,9 @@ export default function ReportsPage() {
           ) : (
             <Table>
               <THead>
-                {/* Units are stated in the headers: the middle two columns are
-                    sessions, the last pair is a visit count. Without that,
-                    "Sessions 12 / Machine visits 5" reads as though 5 of the 12
-                    sessions came from machine visits. */}
                 <TR>
                   <TH>Machine</TH>
                   <TH>Sessions</TH>
-                  <TH>Sessions at machine visits</TH>
-                  <TH>Sessions in consultations</TH>
-                  <TH>Machine visits</TH>
                 </TR>
               </THead>
               <TBody>
@@ -383,9 +419,6 @@ export default function ReportsPage() {
                   <TR key={m.machine}>
                     <TD className="font-medium">{m.machine}</TD>
                     <TD className="font-medium">{m.sessions}</TD>
-                    <TD className="text-slate-500">{m.machineVisitSessions}</TD>
-                    <TD className="text-slate-500">{m.consultationSessions}</TD>
-                    <TD className="text-slate-500">{m.machineVisits}</TD>
                   </TR>
                 ))}
               </TBody>
@@ -402,6 +435,18 @@ export default function ReportsPage() {
             <CardBody className="text-sm text-slate-400">No sessions in this period.</CardBody>
           ) : (
             <CardBody><TopMachinesChart data={data.topMachines} /></CardBody>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Most-ordered blood tests"
+            subtitle={`Top 5 by lab orders ${rangeLabel(range.from, range.to)}${scoped ? " · whole clinic" : ""}`}
+          />
+          {data.topBloodTests.length === 0 ? (
+            <CardBody className="text-sm text-slate-400">No blood tests ordered in this period.</CardBody>
+          ) : (
+            <CardBody><TopBloodTestsChart data={data.topBloodTests} /></CardBody>
           )}
         </Card>
       </div>

@@ -645,13 +645,6 @@ export default function BloodSamplesPage() {
               </CardBody>
             </Card>
           )}
-
-          <p className="mt-4 text-xs text-slate-400">
-            Records are created automatically when a doctor orders blood work. The courier
-            picks up once a day — “Awaiting send” and “At lab” always show every outstanding
-            sample; the date arrows scope the “Results received” column. Click any time to adjust
-            it. All changes save instantly.
-          </p>
         </>
       )}
     </div>

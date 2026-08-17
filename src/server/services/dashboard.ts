@@ -3,6 +3,7 @@ import { clinicDay, NONE_REFERRER, todayIso, toUsdFrozen } from "@/lib/config";
 import { listAppointments } from "../repositories/appointments";
 import { listClients } from "../repositories/clients";
 import { listConsultations } from "../repositories/consultations";
+import { topBloodTests } from "../repositories/bloodSamples";
 import { listMachineVisits, machineUtilization } from "../repositories/machineVisits";
 import { listExpenses } from "../repositories/expenses";
 import { getJessyOutstanding } from "../repositories/jessy";
@@ -12,7 +13,7 @@ import { debtOutstandingUsd } from "../repositories/clientDebts";
 import { getProfitability, getMonthlyProfitability, getBundleProfitability } from "../repositories/profitability";
 import { getReferralSummary } from "../repositories/referralCommissions";
 import { listStaff } from "../repositories/staff";
-import { NO_MACHINE_LABEL } from "@/lib/types";
+import { JESSY_METHOD, NO_MACHINE_LABEL } from "@/lib/types";
 import type {
   AppointmentStatus,
   DashboardSummary,
@@ -69,7 +70,7 @@ export async function getDashboardSummaryForRole(
   const today = todayIso();
   const monthStart = `${today.slice(0, 7)}-01`;
 
-  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralCommissions, usdToLbp, jessyOutstanding, allMachineVisits, machineUsage, profitability, referralSummary, monthlyProfit, bundleProfit] =
+  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralCommissions, usdToLbp, jessyOutstanding, allMachineVisits, machineUsage, topBloodTestsOrdered, profitability, referralSummary, monthlyProfit, bundleProfit, referralPayouts, jessySettlements] =
     await Promise.all([
       listClients(),
       listPayments(),
@@ -108,6 +109,9 @@ export async function getDashboardSummaryForRole(
       // it must never move the consultation figures.
       listMachineVisits({}),
       machineUtilization({ from: opts.from, to: opts.to }),
+      // Lab volume for the same window: which blood tests were ordered most. A
+      // count of orders, never money, so it passes through for every role.
+      topBloodTests({ from: opts.from, to: opts.to }),
       // EARNED revenue and its COGS for the window, from the frozen figures on
       // settled basket lines. Deliberately independent of what was collected.
       getProfitability({ from: opts.from, to: opts.to, dietitianId: opts.dietitianId }),
@@ -125,6 +129,16 @@ export async function getDashboardSummaryForRole(
       // Per-bundle revenue/COGS/margin for the SAME window as the headline cards,
       // from the same settled lines — see getBundleProfitability.
       getBundleProfitability({ from: opts.from, to: opts.to, dietitianId: opts.dietitianId }),
+      // CASH going OUT to referrers. Dated by `paidAt` — when the money actually
+      // left — which is a different question from `incurredAt` above and must
+      // never be confused with it: the commission was the expense, this is the
+      // cash movement that settles it. Only the cash-on-hand block reads this.
+      db.referralPayout.findMany({ select: { amount: true, paidAt: true } }),
+      // CASH coming IN from Jessy. A settlement writes no Payment (the income was
+      // recognized when the patient paid through Jessy), so it is invisible to
+      // every income figure — which is exactly why the cash block has to read it
+      // directly. USD only, by design: the Jessy ledger is single-currency.
+      db.jessySettlement.findMany({ select: { amount: true, createdAt: true } }),
     ]);
 
   // All financial figures below are aggregated in USD. Each record is converted
@@ -256,6 +270,44 @@ export async function getDashboardSummaryForRole(
     referrerCost,
   );
 
+  // ---- CASH ON HAND -------------------------------------------------------
+  // The owner's other question, answered on its own terms: not "did we earn
+  // well" but "how much money did this month actually put in my pocket".
+  //
+  //   netCash = collected − operating expenses paid − referrer payouts
+  //
+  // Every term is a REAL MOVEMENT OF MONEY dated when it moved, which is why this
+  // block shares only `totalIncome` with the accrual figures above and derives
+  // nothing from revenue, COGS or net profit:
+  //  - COGS is deliberately absent. Stock was paid for when it was bought, and
+  //    that purchase is an Expense row; subtracting COGS here would charge the
+  //    same money twice, once as the expense and once as the cost of the sale.
+  //  - A sale on credit contributes NOTHING until the debt is collected, and
+  //    collecting an old debt counts here in full even though it is revenue from
+  //    a period long closed. That is the entire point of the figure.
+  //  - Referrer cash uses `paidAt`, never `incurredAt`. The commission is an
+  //    expense when incurred (see `referrerCost`); it is cash when it is paid.
+  const referrerPayouts = referralPayouts
+    .filter((p) => inRange(clinicDay(p.paidAt)))
+    .reduce((s, p) => s + p.amount, 0);
+  // Jessy is the one place income and cash genuinely happen on different days, so
+  // the cash block re-times it and NOTHING else does:
+  //  - a `jessy` Payment is income today but no money in the till, so it comes OUT
+  //    of the cash figure even though it stays in `totalIncome`;
+  //  - a settlement is money actually transferred and writes no Payment at all,
+  //    so it goes IN, dated when it arrived.
+  // Over any window wide enough to contain both, the two cancel exactly — which is
+  // the same `recorded − settled === outstanding` identity the Jessy tests assert.
+  const jessyIncome = payments
+    .filter((p) => p.method === JESSY_METHOD && inRange(p.date))
+    .reduce((s, p) => s + p.amountUsd, 0);
+  const jessyReceived = jessySettlements
+    .filter((t) => inRange(clinicDay(t.createdAt)))
+    .reduce((s, t) => s + t.amount, 0);
+  const cashCollected = Math.round((totalIncome - jessyIncome + jessyReceived) * 100) / 100;
+  const cashOut = Math.round((totalExpenses + referrerPayouts) * 100) / 100;
+  const netCash = Math.round((cashCollected - cashOut) * 100) / 100;
+
   const finance = {
     // ---- EARNED / PROFITABILITY ----------------------------------------------
     // Revenue, COGS and gross profit come from the FROZEN figures on settled
@@ -288,6 +340,16 @@ export async function getDashboardSummaryForRole(
     // Owed TO referrers — a balance, never windowed, and never an expense again
     // (it was recognized when each commission was incurred).
     referralOutstanding: referralSummary.outstanding,
+    // ---- CASH ON HAND --------------------------------------------------------
+    // Collected minus what was actually paid out, both dated by the movement of
+    // money. See the derivation above; `totalIncome` and `operatingExpenses` are
+    // the same numbers reported elsewhere on this object, not re-derived ones.
+    referrerPayouts: Math.round(referrerPayouts * 100) / 100,
+    jessyIncome: Math.round(jessyIncome * 100) / 100,
+    jessyReceived: Math.round(jessyReceived * 100) / 100,
+    cashCollected,
+    cashOut,
+    netCash,
     paymentsToday,
     incomeByMethod,
     paymentsTodayByMethod,
@@ -523,6 +585,7 @@ export async function getDashboardSummaryForRole(
     referrerReport,
     referrerCostReport,
     machineUtilization: machineUsage,
+    topBloodTests: topBloodTestsOrdered,
   };
 
   return redactForRole(summary, opts.role);
@@ -555,6 +618,14 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
       netProfit: 0,
       totalIncome: 0,
       unpaidBalance: 0,
+      // Cash on hand is the owner's P&L question in cash form — admin-only, like
+      // every term it is built from.
+      referrerPayouts: 0,
+      jessyIncome: 0,
+      jessyReceived: 0,
+      cashCollected: 0,
+      cashOut: 0,
+      netCash: 0,
       // Receivable/payable ledger figures — reports territory, so admin-only like
       // the totals above.
       jessyOutstanding: 0,

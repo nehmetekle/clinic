@@ -1032,6 +1032,22 @@ export interface DashboardSummary {
     unpaidBalance: number;      // outstanding client debt — a balance, not windowed
     jessyOutstanding: number;   // owed by Jessy — a balance, not windowed
     referralOutstanding: number;// owed TO referrers — a balance, not windowed
+    // ---- CASH ON HAND (what the period actually put in the till) ----
+    // netCash = cashCollected − operatingExpenses − referrerPayouts. Every term is
+    // dated when the money MOVED, so a sale on credit adds nothing until it is
+    // collected and an old debt collected now counts here in full. COGS is
+    // deliberately not subtracted — stock was paid for through its own Expense
+    // row, and taking it out again would count the same money twice.
+    referrerPayouts: number;    // cash paid TO referrers in the period (paidAt)
+    // Jessy re-timed to when the money moves. A `jessy` Payment is income on the
+    // day the patient pays but no cash yet, so it is REMOVED from the cash figure
+    // (it stays in totalIncome); a settlement is the transfer actually arriving
+    // and writes no Payment, so it is ADDED. Only this block does that.
+    jessyIncome: number;        // jessy payments in the period (income, not cash)
+    jessyReceived: number;      // settlements received from Jessy in the period
+    cashCollected: number;      // totalIncome − jessyIncome + jessyReceived
+    cashOut: number;            // operatingExpenses + referrerPayouts
+    netCash: number;            // cashCollected − cashOut
     paymentsToday: number;
     incomeByMethod: Record<string, number>;
     paymentsTodayByMethod: Record<string, number>;
@@ -1100,6 +1116,12 @@ export interface DashboardSummary {
   // part that came through a consultation instead, so the row reads as total
   // utilization with the machine-visit share visible inside it.
   machineUtilization: MachineUtilizationRow[];
+  // The five blood tests ordered most often in the selected period, with how many
+  // lab orders each appeared on. Counted from the lab orders themselves (see
+  // topBloodTests), so cancelled orders and tests removed before the lab never
+  // show up. Names are the frozen snapshots stored on the order. Clinical volume,
+  // not money — not redacted.
+  topBloodTests: { name: string; count: number }[];
 }
 
 
