@@ -7,11 +7,23 @@ import { SESSION_COOKIE_NAME } from "./session-constants";
 
 export { SESSION_COOKIE_NAME };
 
-const ABSOLUTE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, per docs/01-product-spec.md §3.1
-// Avoid a DB write on every single request — only bump lastUsedAt if it's
-// gone stale by more than this, while still updating it well within the
-// inactivity timeout above.
+// The ONLY thing that ages a session out. Frozen onto the row at creation
+// (`expiresAt`) and onto the cookie (`maxAge`), so it is a fixed wall-clock
+// deadline: it does not slide, and nothing shortens it. Requests, page loads,
+// app restarts and deployments are all irrelevant to it — the deadline lives
+// in Postgres and in the client's cookie, not in server memory.
+const ABSOLUTE_TTL_MS = 31 * 24 * 60 * 60 * 1000; // 31 days
+
+// There is deliberately NO inactivity timeout. A session that goes untouched
+// for the full 31 days is still valid on day 31. Ending a session early is an
+// explicit act, never a passive one: logout (`revokeSessionByToken`), an admin
+// password reset or account deactivation (`revokeAllSessionsForUser`), account
+// deletion (the `Session` rows cascade), or the account ceasing to be `active`
+// (checked on every resolve below).
+
+// `lastUsedAt` is now informational only — "when was this session last seen",
+// for support and future session-management UI. It has no bearing on validity,
+// so this throttle only exists to keep a DB write off every single request.
 const LASTUSED_THROTTLE_MS = 60 * 1000;
 
 export const MAX_FAILED_LOGIN_ATTEMPTS = 5;
@@ -66,8 +78,9 @@ export async function createSession(
 }
 
 /** Resolves a raw session token to the user it belongs to, or null if the
- * token is missing/unknown/revoked/expired/inactivity-timed-out, or the
- * user it belongs to is no longer active. */
+ * token is missing/unknown/revoked/past its absolute expiry, or the user it
+ * belongs to is no longer active. Idleness is not a reason — see
+ * ABSOLUTE_TTL_MS above. */
 export async function resolveSessionToken(token: string | null): Promise<ResolvedUser | null> {
   if (!token) return null;
 
@@ -78,10 +91,11 @@ export async function resolveSessionToken(token: string | null): Promise<Resolve
   if (!session || session.revokedAt || session.expiresAt < new Date()) return null;
 
   const now = Date.now();
-  if (now - session.lastUsedAt.getTime() > INACTIVITY_TIMEOUT_MS) {
-    await db.session.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
-    return null;
-  }
+
+  // Authorization is re-checked on every resolve, so a deactivated account
+  // loses access immediately — it does not wait for the 31-day expiry, and it
+  // does not depend on `revokeAllSessionsForUser` having run (that runs too,
+  // from `updateStaff`, but this is the check that makes it instant).
   if (session.user.status !== "active") return null;
 
   if (now - session.lastUsedAt.getTime() > LASTUSED_THROTTLE_MS) {

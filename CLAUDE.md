@@ -6,7 +6,7 @@ Clinic management web app for a nutrition / dietitian practice. Built in 4 versi
 ## Where we are
 - **Version 1 — Frontend clickable demo** ✅ done
 - **Version 2 — Backend + database** ✅ done (and code cleaned: no unused files/exports)
-- **Version 3 — Real authentication + permissions** ✅ done — real login (email + password, Argon2id via `@node-rs/argon2`), server-side DB-backed sessions (httpOnly cookie, `Session` model, 30-min inactivity timeout, 7-day absolute TTL), login lockout after 5 failed attempts, and the DB moved off SQLite to Postgres. RBAC (`src/server/auth.ts`) now derives identity from the verified session instead of client-supplied headers.
+- **Version 3 — Real authentication + permissions** ✅ done — real login (email + password, Argon2id via `@node-rs/argon2`), server-side DB-backed sessions (httpOnly cookie, `Session` model, **31-day absolute TTL, no inactivity timeout** — see "Session lifetime" below), login lockout after 5 failed attempts, and the DB moved off SQLite to Postgres. RBAC (`src/server/auth.ts`) now derives identity from the verified session instead of client-supplied headers.
 - **Version 4 — Full data export, printable/PDF receipts, file upload, reminders** — later
 
 ## Run it
@@ -68,6 +68,31 @@ client-supplied header:
   `/api/*` calls); it never validates a session itself (Prisma doesn't run on Edge).
 - `src/lib/api.ts` no longer attaches any identity headers — the session cookie
   rides along automatically on same-origin `fetch`.
+
+### Session lifetime — 31 days, activity-independent
+**There is no inactivity timeout. Don't reintroduce one.** A session is valid for
+a fixed **31 days from login** (`ABSOLUTE_TTL_MS` in `src/server/session.ts`),
+whether the user works in it constantly or never touches it.
+- The deadline is frozen at creation onto `Session.expiresAt` **and** onto the
+  cookie's `maxAge`, both from the same constant — so it can't slide, and
+  restarts/redeploys/navigation/idle time can't shorten it. It lives in Postgres
+  and the client's cookie, never in server memory.
+- `Session.lastUsedAt` is **informational only** now ("when was this last
+  seen"). It no longer gates validity; the throttled write just keeps a DB
+  update off every request. Don't wire it back into an expiry check.
+- **Why**: the old 30-min idle timeout (docs/01-product-spec.md §3.1) assumed a
+  browser on a shared desk. The clinic runs the Electron kiosk fullscreen on
+  staff PCs where nothing pings the server between patients, so it fired several
+  times a day. The kiosk shell is not involved — it persists cookies correctly
+  in `%APPDATA%\Layaka` via `session.defaultSession`.
+- **Ending a session early is always an explicit act**: logout
+  (`revokeSessionByToken`), admin password reset or account deactivation
+  (`revokeAllSessionsForUser`, from `repositories/staff.ts`), account deletion
+  (`Session` cascades on `User`), or an admin revocation.
+- **Deactivation is immediate and doesn't rely on that revocation sweep** —
+  `resolveSessionToken` re-reads `user.status` on every single resolve and
+  refuses anything not `active`. The sweep runs too; it makes the tokens dead
+  rather than merely rejected, so nothing revives on re-activation.
 
 ### Hardening pass (post-launch security review)
 - **HTTP security headers** (`next.config.mjs`): CSP, `X-Frame-Options: DENY`,

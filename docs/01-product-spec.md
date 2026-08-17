@@ -80,7 +80,13 @@ Legend: ✅ full · ✏️ limited · ❌ none.
 - Role-based redirect after login (Secretary → queue, Dietitian → today's clients, Admin → overview).
 - Forgot-password (email link) + admin-initiated password reset.
 - Optional **2FA (TOTP)** for admin — ✅ implemented (Settings → "Two-factor authentication").
-- Auto-logout after inactivity (configurable, default 30 min) — important for shared front-desk machines.
+- **No auto-logout after inactivity** — superseded. This originally specified a
+  30-min idle timeout for shared front-desk machines, but the clinic runs the
+  Electron kiosk fullscreen on staff PCs, where the screen sits untouched
+  between patients: it fired several times a day and staff re-logged in
+  constantly. Sessions now last a fixed **31 days** from login regardless of
+  activity. Ending one early is an explicit act — logout, admin password reset,
+  account deactivation/deletion, or admin session revocation.
 
 ### 3.2 Clients
 - Create / view / edit / soft-delete (status = cancelled).
