@@ -188,10 +188,12 @@ function ServicePriceRow({
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [bundleOpen, setBundleOpen] = useState(false);
-  // The "Other" row is the fallback bucket that prices every custom test/treatment
-  // (see priceSnapshot); deactivating it would zero out custom pricing, so it can
-  // never be toggled off.
-  const canToggleActive = deactivatable && servicePrice.key !== "Other";
+  // The blood-test "Other" row is the fallback bucket that prices a one-off
+  // custom lab test (see priceSnapshot); deactivating it would zero out that
+  // pricing, so it can never be toggled off. Treatments have no such bucket —
+  // there is no "Other" machine — so nothing is pinned on that side.
+  const canToggleActive =
+    deactivatable && !(servicePrice.kind === "blood_test" && servicePrice.key === "Other");
   // Bundles can only be started for a live treatment type, so hide their
   // management on a deactivated one.
   const showBundles = treatmentFeatures && servicePrice.active;
@@ -610,8 +612,9 @@ function BloodTestModal({
   );
 }
 
-// Both blood tests and treatment types are dynamic: active first, then by name
-// with the "Other" fallback bucket always last.
+// Both blood tests and treatment types are dynamic: active first, then by name,
+// with the blood-test "Other" fallback bucket always last. Treatments have no
+// "Other" row, so that tiebreak simply never fires for them.
 function orderServicePrices(prices: ServicePrice[], kind: ServicePrice["kind"]) {
   return prices
     .filter((price) => price.kind === kind)

@@ -135,7 +135,7 @@ export async function createSessionPlan(input: {
   // can't set an off-catalog price. To charge less, they apply a logged discount.
   const service = await db.servicePrice.findFirst({
     where: { kind: "treatment", key: machine, active: true },
-    select: { price: true, currency: true },
+    select: { price: true, cost: true, currency: true },
   });
   if (!service) {
     throw new ConflictError(`No active catalog price for treatment "${machine}".`);
@@ -165,6 +165,10 @@ export async function createSessionPlan(input: {
       machine,
       activeMachineKey: activeMachineKey("active", machine),
       unitPrice: service.price,
+      // F-03: freeze the clinic's own per-session cost alongside the price, from
+      // the same catalog row at the same instant. A later catalog cost edit must
+      // not be able to rewrite the margin of sessions sold under this plan.
+      unitCost: service.cost,
       currency: asCurrency(service.currency),
       // Freeze the live rate onto the plan, like every other financial record.
       usdToLbp: await getUsdToLbp(),
@@ -211,7 +215,7 @@ export async function sellSessions(
   // request — the same rule the consultation path follows.
   const service = await db.servicePrice.findFirst({
     where: { kind: "treatment", key: machine, active: true },
-    select: { price: true, currency: true },
+    select: { price: true, cost: true, currency: true },
   });
   if (!service) throw new ConflictError(`No active catalog price for treatment "${machine}".`);
 
@@ -234,6 +238,8 @@ export async function sellSessions(
               machine,
               activeMachineKey: activeMachineKey("active", machine),
               unitPrice: service.price,
+              // F-03: frozen per-session cost, same rule as createSessionPlan.
+              unitCost: service.cost,
               currency: asCurrency(service.currency),
               usdToLbp,
               sessionsNeeded: sessions,
@@ -261,6 +267,12 @@ export async function sellSessions(
                 // The plan's OWN frozen unit price, so a top-up costs exactly what
                 // the same session costs through a consultation.
                 unitPrice: plan.unitPrice,
+                // F-03: same rule as the consultation path (consultations.ts) — a
+                // plan-backed line inherits the cost frozen on the PLAN, never
+                // today's catalog. Without this the line's `unitCost` silently
+                // defaulted to 0, so every standalone session sale recognized $0
+                // COGS and overstated gross/net profit in the profitability report.
+                unitCost: plan.unitCost,
                 currency: asCurrency(plan.currency),
                 covered: false,
                 sessionPlanId: plan.id,

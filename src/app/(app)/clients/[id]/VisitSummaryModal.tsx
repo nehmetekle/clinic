@@ -116,7 +116,7 @@ export function VisitSummaryModal({
             <ul className="space-y-2 text-sm text-slate-600">
               {treatments.map((t, i) => (
                 <li key={t.id ?? i} className="rounded-lg bg-slate-50 px-3 py-2">
-                  <p className="font-medium text-slate-700">{t.machineOther || t.machine}</p>
+                  <p className="font-medium text-slate-700">{t.machine}</p>
                   <p className="text-xs text-slate-500">
                     {t.bodyParts.length > 0 ? t.bodyParts.join(", ") : "No body parts recorded"}
                   </p>

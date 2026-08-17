@@ -3,7 +3,7 @@ import { JESSY_METHOD, PAYMENT_METHOD_VALUES, VISIT_TYPE_VALUES } from "@/lib/ty
 import { TENDER_CURRENCY_VALUES } from "@/lib/money";
 import { FOOD_LIST_LANGUAGES } from "@/lib/food-list";
 import { moneyCap } from "@/lib/utils";
-import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER } from "@/lib/config";
+import { todayIso, isWeekendIso, WEEKEND_BOOKING_MESSAGE, NONE_REFERRER, EXPENSE_BACKDATE_LIMIT_DAYS, earliestExpenseDate, latestExpenseDate } from "@/lib/config";
 import { isValidInternationalPhone, PHONE_FORMAT_MESSAGE } from "@/lib/phone";
 
 // ---- Patient phone format ----
@@ -237,7 +237,6 @@ export const createConsultationSchema = z.object({
     .array(
       z.object({
         machine: z.string().min(1),
-        machineOther: z.string().optional(),
         bodyParts: z.array(z.string()).optional(),
         sessionsNeeded: z.coerce.number().int().min(0).optional(),
         sessionsUsed: z.coerce.number().int().min(0).optional(),
@@ -318,7 +317,9 @@ export const createPaymentSchema = z
 // ---- Visit basket (dietitian → secretary settlement) ----
 const visitBasketItemSchema = z
   .object({
-    kind: z.enum(["blood_test", "treatment", "product", "custom", "consultation_fee"]).optional(),
+    kind: z
+      .enum(["blood_test", "treatment", "product", "package", "custom", "consultation_fee"])
+      .optional(),
     label: z.string().trim().min(1),
     detail: z.string().optional(),
     // Cap quantity so an absurd count can't produce an absurd total (R5).
@@ -332,6 +333,14 @@ const visitBasketItemSchema = z
     // Preserved through send/edit so a "product" line keeps its catalog link —
     // settlement deducts inventory by the final settled quantity per product.
     productId: z.string().nullish(),
+    // Preserved through send/edit so a bundle line keeps its package link. Without
+    // it the round-trip through the settlement screen would strip the link and the
+    // server's package guard would see the line as removed.
+    clientPackageId: z.string().nullish(),
+    // NOTE: `unitCost` is deliberately absent. The clinic's cost is never accepted
+    // from a request — it is snapshotted server-side from the catalog at the same
+    // moment as the price, exactly like `unitPrice` is re-derived rather than
+    // trusted. A client-supplied cost would be an unaudited margin channel.
   })
   .superRefine((v, ctx) => refineMoneyCap(v.unitPrice, v.currency, ctx, "unitPrice"));
 
@@ -598,6 +607,24 @@ export const createServicePriceSchema = z.object({
   bodyParts: z.array(z.string().trim().min(1)).nullable().optional(),
 });
 
+export const recordReferralPayoutSchema = z.object({
+  // Which commissions this transfer settles. The server re-reads each one and
+  // refuses any that is already paid or voided, so the list is a request, not a
+  // fact — a stale screen can never mark the same commission paid twice.
+  commissionIds: z.array(z.string().trim().min(1)).min(1).max(500),
+  reference: z.string().trim().max(200).optional(),
+  notes: z.string().trim().max(1000).optional(),
+  // Replay guard for a double-clicked confirm.
+  idempotencyKey: z.string().trim().max(200).nullish(),
+  // NOTE: no amount. The payout is worth exactly the sum of the commissions it
+  // settles, computed server-side from their FROZEN amounts. Accepting a figure
+  // from the client would let a payout disagree with what it claims to pay.
+});
+
+export const voidReferralCommissionSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required to void a commission."),
+});
+
 export const createExpenseSchema = z
   .object({
     title: z.string().min(1),
@@ -608,7 +635,32 @@ export const createExpenseSchema = z
     notes: z.string().min(1),
     paidBy: z.string().optional(),
   })
-  .superRefine((v, ctx) => refineMoneyCap(v.amount, v.currency, ctx, "amount")); // R5 cap
+  .superRefine((v, ctx) => {
+    refineMoneyCap(v.amount, v.currency, ctx, "amount"); // R5 cap
+    // The date decides which reporting period the expense lands in, and it is
+    // immutable once saved. A far back-dated entry would silently rewrite a
+    // period that has already been reported; a future-dated one would file the
+    // expense into a period that hasn't happened yet. Allowed window:
+    // [today − 30 days, today], in CLINIC days. createExpense enforces the same
+    // bounds on the write path; these are here so the route answers 400 with a
+    // field-level message instead of a generic conflict.
+    const earliest = earliestExpenseDate();
+    const latest = latestExpenseDate();
+    if (v.date < earliest) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["date"],
+        message: `An expense can't be dated before ${earliest} (${EXPENSE_BACKDATE_LIMIT_DAYS} days back).`,
+      });
+    }
+    if (v.date > latest) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["date"],
+        message: `An expense can't be dated in the future (nothing after ${latest}).`,
+      });
+    }
+  });
 
 // Expense edits reuse the same field rules but the DATE is immutable after
 // creation (F8) — it's omitted here so a client can't change which reporting
@@ -793,6 +845,8 @@ export type UpdateVisitBasketInput = z.infer<typeof updateVisitBasketSchema>;
 export type SettleVisitBasketInput = z.infer<typeof settleVisitBasketSchema>;
 export type UpdateBloodSampleInput = z.infer<typeof updateBloodSampleSchema>;
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
+export type RecordReferralPayoutInput = z.infer<typeof recordReferralPayoutSchema>;
+export type VoidReferralCommissionInput = z.infer<typeof voidReferralCommissionSchema>;
 export type UpdateExpenseInput = z.infer<typeof updateExpenseSchema>;
 export type CreateSessionPlanInput = z.infer<typeof createSessionPlanSchema>;
 export type SellSessionsInput = z.infer<typeof sellSessionsSchema>;

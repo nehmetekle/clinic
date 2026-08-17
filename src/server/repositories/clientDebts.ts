@@ -18,20 +18,38 @@ import type { ClientDebt } from "@/lib/types";
 /** A debt is an OBLIGATION, so its principal is USD (LBP survives on legacy
  * rows). This is its principal expressed in USD — the figure `paidAmount` is
  * measured against. */
-function debtPrincipalUsd(d: { amount: number; currency: string; usdToLbp: number }): number {
-  return round2(toUsd(d.amount, d.currency, d.usdToLbp > 0 ? d.usdToLbp : CLINIC.defaultUsdToLbp));
+function debtPrincipalUsd(
+  d: { amount: number; currency: string; usdToLbp: number },
+  liveRate?: number,
+): number {
+  // A legacy LBP debt with no frozen rate has no knowable contemporaneous rate —
+  // it was never recorded, and it is not invented here. The fallback is the
+  // clinic's CURRENT configured rate, which is what every other money figure in
+  // the app falls back to (toUsdFrozen). It used to fall back to
+  // CLINIC.defaultUsdToLbp, a build-time constant: that made the same legacy debt
+  // value differently here than in the payment, receipt and report figures beside
+  // it, and it drifted further from reality with every rate change without anyone
+  // being able to see why.
+  const fallback = liveRate && liveRate > 0 ? liveRate : CLINIC.defaultUsdToLbp;
+  return round2(toUsd(d.amount, d.currency, d.usdToLbp > 0 ? d.usdToLbp : fallback));
 }
 
 /** What is still owed, in USD. Never negative — overpayment is refused, and the
  * DB CHECK backs that up, but a clamp here keeps a corrupt row from producing a
  * negative balance in a report. */
-export function debtOutstandingUsd(d: {
-  amount: number;
-  currency: string;
-  usdToLbp: number;
-  paidAmount: number;
-}): number {
-  return Math.max(0, round2(debtPrincipalUsd(d) - d.paidAmount));
+export function debtOutstandingUsd(
+  d: {
+    amount: number;
+    currency: string;
+    usdToLbp: number;
+    paidAmount: number;
+  },
+  // The clinic's current rate, used ONLY for a legacy row that froze none. Pass
+  // it wherever it is available so a legacy debt values consistently with the
+  // figures it is reported next to.
+  liveRate?: number,
+): number {
+  return Math.max(0, round2(debtPrincipalUsd(d, liveRate) - d.paidAmount));
 }
 
 const include = {
@@ -41,7 +59,7 @@ const include = {
 
 type ClientDebtRow = Prisma.ClientDebtGetPayload<{ include: typeof include }>;
 
-export function toClientDebt(d: ClientDebtRow): ClientDebt {
+export function toClientDebt(d: ClientDebtRow, liveRate?: number): ClientDebt {
   return {
     id: d.id,
     clientId: d.clientId,
@@ -52,7 +70,7 @@ export function toClientDebt(d: ClientDebtRow): ClientDebt {
     currency: asCurrency(d.currency),
     usdToLbp: d.usdToLbp,
     paidAmount: d.paidAmount,
-    outstandingAmount: debtOutstandingUsd(d),
+    outstandingAmount: debtOutstandingUsd(d, liveRate),
     reason: d.reason,
     source: d.source as ClientDebt["source"],
     status: d.status as ClientDebt["status"],
@@ -69,7 +87,8 @@ export async function listClientDebts(clientId: string): Promise<ClientDebt[]> {
     include,
     orderBy: { createdAt: "desc" },
   });
-  return rows.map(toClientDebt);
+  const liveRate = await getUsdToLbp();
+  return rows.map((r) => toClientDebt(r, liveRate));
 }
 
 /** Every still-outstanding debt across all clients (for money-owed summaries). */
@@ -79,7 +98,8 @@ export async function listOutstandingDebts(): Promise<ClientDebt[]> {
     include,
     orderBy: { createdAt: "desc" },
   });
-  return rows.map(toClientDebt);
+  const liveRate = await getUsdToLbp();
+  return rows.map((r) => toClientDebt(r, liveRate));
 }
 
 export type CreateClientDebtInput = {
@@ -125,7 +145,7 @@ export async function createClientDebtTx(
 async function getClientDebtOrThrow(id: string): Promise<ClientDebt> {
   const row = await db.clientDebt.findUnique({ where: { id }, include });
   if (!row) throw new NotFoundError("Debt not found");
-  return toClientDebt(row);
+  return toClientDebt(row, await getUsdToLbp());
 }
 
 /**

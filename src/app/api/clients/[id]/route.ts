@@ -1,6 +1,6 @@
 import { getClientDetail, updateClient } from "@/server/repositories/clients";
 import { updateClientSchema } from "@/lib/validation";
-import { actingRole, canViewClinical } from "@/server/auth";
+import { actingRole, actingUser, canViewClinical } from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
 export async function GET(
@@ -32,7 +32,9 @@ export async function PATCH(
     if (!role) return json({ error: "Not allowed" }, 403);
     const { id } = await params;
     const input = await readJson(req, updateClientSchema);
-    return json(await updateClient(id, input, role));
+    // Resolve WHO is editing, so a referrer correction is attributable (F-07).
+    const actor = await actingUser(req);
+    return json(await updateClient(id, input, role, { id: actor.id, name: actor.name }));
   } catch (e) {
     return handleError(e);
   }

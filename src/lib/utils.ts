@@ -238,6 +238,67 @@ export function cardSurchargeAmount(
  * LBP line folds in at `usdToLbp` (the basket's frozen rate), so a mix of
  * currencies still combines into one correct figure.
  */
+/**
+ * Splits a whole-bill discount across the lines it applies to, so the discounted
+ * line amounts sum EXACTLY to the discounted bill total.
+ *
+ * A bill discount is agreed on the bill, not on any one item, so it is shared out
+ * in proportion to what each line contributes — never dropped onto whichever line
+ * happens to be first, which would misstate the revenue of both that line and
+ * every other one.
+ *
+ * Exactness is the whole point, and naive proportional division does not give it:
+ * three $10 lines sharing a $10 discount each want $3.333…, which rounds to
+ * $3.33 and loses a cent against the total. This uses the LARGEST REMAINDER
+ * method — floor every share to the cent, then hand the leftover cents out one
+ * at a time to the lines with the largest fractional parts. The result always
+ * satisfies `Σ allocated === discount` to the cent, so revenue reconciles to the
+ * amount actually charged with no residual anywhere.
+ *
+ * Covered lines (already paid for out of prepaid credit) contribute nothing to
+ * the bill and therefore absorb none of the discount.
+ */
+export function allocateDiscount(
+  lines: { gross: number; covered?: boolean }[],
+  discount: number,
+): number[] {
+  const alloc = lines.map(() => 0);
+  const cents = Math.round(Math.max(0, discount) * 100);
+  if (cents === 0) return alloc;
+
+  const eligible = lines
+    .map((l, index) => ({ index, gross: l.covered ? 0 : Math.max(0, l.gross) }))
+    .filter((l) => l.gross > 0);
+  const total = eligible.reduce((s, l) => s + l.gross, 0);
+  // Nothing to discount against: refuse to invent an allocation rather than
+  // spreading money across lines worth nothing.
+  if (total <= 0) return alloc;
+
+  // Never allocate more than the bill is worth — a discount larger than the
+  // subtotal zeroes the bill, it does not create a negative line.
+  const cap = Math.round(total * 100);
+  let remaining = Math.min(cents, cap);
+
+  const shares = eligible.map((l) => {
+    const exact = (remaining * l.gross) / total;
+    const floor = Math.floor(exact);
+    return { index: l.index, floor, frac: exact - floor };
+  });
+  let assigned = shares.reduce((s, x) => s + x.floor, 0);
+  // Hand out the leftover cents to the largest fractional parts first; ties go to
+  // the earlier line so the result is deterministic for a given basket.
+  const order = [...shares].sort((a, b) => b.frac - a.frac || a.index - b.index);
+  let i = 0;
+  while (assigned < remaining && order.length > 0) {
+    order[i % order.length].floor += 1;
+    assigned += 1;
+    i += 1;
+  }
+  for (const sh of shares) alloc[sh.index] = sh.floor / 100;
+  remaining = 0;
+  return alloc;
+}
+
 export function basketTotals(
   items: BasketLine[],
   discount?: { type?: "percent" | "amount" | null; value?: number | null },
@@ -307,18 +368,60 @@ export function initials(first: string, last: string) {
 }
 
 /** Builds a CSV from an array of records and triggers a browser download. */
-export function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
-  if (rows.length === 0) return;
+const csvEscape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+function csvBlock(rows: Record<string, unknown>[]): string[] {
+  if (rows.length === 0) return [];
   const headers = Object.keys(rows[0]);
-  const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const csv = [
+  return [
     headers.join(","),
-    ...rows.map((r) => headers.map((h) => escape(r[h])).join(",")),
-  ].join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    ...rows.map((r) => headers.map((h) => csvEscape(r[h])).join(",")),
+  ];
+}
+
+/**
+ * Saves a CSV. Returns FALSE when there was nothing to save.
+ *
+ * The return value is the point: this used to return silently on empty input
+ * while the caller went ahead and announced a successful export, so a user with
+ * no data was told a file had been written that never was.
+ *
+ * The blob opens with a UTF-8 BOM. Without it Excel decodes the file as the local
+ * ANSI codepage and every Arabic patient name arrives as mojibake — the one
+ * failure mode that makes an export worthless to this clinic specifically.
+ */
+export function downloadCsv(filename: string, rows: Record<string, unknown>[]): boolean {
+  return downloadCsvSections(filename, [{ title: "", rows }]);
+}
+
+/**
+ * Saves several tables into one CSV, each under its own title row and separated
+ * by a blank line — the shape a spreadsheet opens without complaint.
+ *
+ * A report is more than its largest table. Exporting only one of them and calling
+ * it "the report" is how a number that exists on screen turns out to be missing
+ * from the file someone is reconciling against.
+ */
+export function downloadCsvSections(
+  filename: string,
+  sections: { title: string; rows: Record<string, unknown>[] }[],
+): boolean {
+  const blocks = sections
+    .map((s) => ({ title: s.title, lines: csvBlock(s.rows) }))
+    .filter((b) => b.lines.length > 0);
+  if (blocks.length === 0) return false;
+
+  const csv = blocks
+    .map((b) => (b.title ? [csvEscape(b.title), ...b.lines] : b.lines).join("\n"))
+    .join("\n\n");
+
+  const url = URL.createObjectURL(
+    new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }),
+  );
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+  return true;
 }

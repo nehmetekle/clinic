@@ -242,7 +242,9 @@ export type MachineVisitStatus = "recorded" | "voided";
 
 export interface MachineVisitItem {
   id: string;
-  machine: string;
+  /** Catalog machine key, or null when the plan/bundle this line drew on is not
+   * tied to a machine. Render it through NO_MACHINE_LABEL, never as "Other". */
+  machine: string | null;
   sessions: number;
   // Historic only — always 0 now that a machine visit is pure consumption. On
   // older rows: sessions this line billed because credit didn't cover them.
@@ -274,9 +276,20 @@ export interface MachineVisit {
   voidReason?: string;
 }
 
+/** One machine's workload over a period.
+ *
+ * NOTE THE UNITS — three of these fields count SESSIONS and one counts VISITS,
+ * which is why they are named apart rather than left to a column header:
+ *   sessions             = total sessions delivered on the machine (the workload)
+ *                        = machineVisitSessions + consultationSessions
+ *   machineVisitSessions = of those, sessions delivered at a machine-only visit
+ *   consultationSessions = of those, sessions delivered inside a consultation
+ *   machineVisits        = how many machine-only VISITS delivered them
+ */
 export interface MachineUtilizationRow {
   machine: string;
   sessions: number;
+  machineVisitSessions: number;
   machineVisits: number;
   consultationSessions: number;
 }
@@ -308,10 +321,16 @@ export const SUPPLEMENTS = [
 // in the ServicePrice catalog (kind "treatment"); see ServicePrice.bodyParts for
 // the preset semantics. The old MACHINES / BODY_PARTS consts were removed.
 
+/** How a missing machine is shown. A line can legitimately have no machine; what
+ * it must never have is a made-up one. "Other" as a machine identity is gone —
+ * it let one physical machine be filed under two different names. */
+export const NO_MACHINE_LABEL = "No machine";
+
 export interface ConsultationTreatment {
   id?: string;
+  /** A key from the treatment catalog (ServicePrice, kind "treatment"). There is
+   * no custom/"Other" machine and no free-text alternative — see the schema. */
   machine: string;
-  machineOther?: string;
   bodyParts: string[];
   sessionsNeeded: number;
   sessionsUsed: number;
@@ -487,6 +506,10 @@ export type VisitBasketItemKind =
   | "blood_test"
   | "treatment"
   | "product"
+  // A prepaid bundle sale. Its own kind rather than "custom" so it can be
+  // price-protected at checkout and traced to the ClientPackage it created —
+  // an anonymous custom line could be neither.
+  | "package"
   | "custom"
   | "consultation_fee";
 
@@ -499,12 +522,19 @@ export interface VisitBasketItem {
   unitPrice: number;
   currency: Currency;
   covered: boolean;
+  // Frozen share of the bill-level discount allocated to this line at settlement.
+  // A discount is not a price edit: `unitPrice` stays the original, auditable
+  // price and this is the reduction, separately. Sale value for the line is
+  // `unitPrice * quantity - discountAmount`.
+  discountAmount?: number;
   // Set on pay-as-you-go session lines so the plan link survives a secretary edit
   // and its settled quantity advances the plan's sessionsPaid. Absent otherwise.
   sessionPlanId?: string;
   // Set on a "product" line so it survives a secretary edit — settlement deducts
   // inventory by the final settled quantity per product. Absent otherwise.
   productId?: string;
+  // The prepaid bundle this line sells.
+  clientPackageId?: string;
 }
 
 export interface VisitBasket {
@@ -628,6 +658,10 @@ export interface Expense {
   paidBy: string;
   method: PaymentMethod;
   notes?: string;
+  // "operating" (a normal running cost, counted as an operating expense) or
+  // "referral_commission" (already recognized on the commission ledger, so it is
+  // EXCLUDED from operating expenses rather than counted a second time).
+  kind: "operating" | "referral_commission";
   amountEdited?: boolean;
 }
 
@@ -979,46 +1013,65 @@ export interface DashboardSummary {
     machineVisits: number;
   };
   finance: {
-    totalIncome: number; // payments dated within the selected period (all-time if none)
-    totalExpenses: number; // operating expenses dated within the selected period
-    netProfit: number; // income − operating expenses − referrer cost (COGS excluded, by design)
-    cogs: number; // cost of goods sold: frozen ClientPackage.cost for sales in the period
-    grossMargin: number; // income − (operating expenses + COGS + referrer cost)
-    // Referrer commissions frozen onto patients registered in the period. A real
-    // clinic cost, deducted from net profit (and gross margin) like operating expenses.
-    referrerCost: number;
-    unpaidBalance: number; // total outstanding tracked debt in USD (money owed) — current snapshot
-    // What the third-party payer Jessy still owes the clinic (USD) — current
-    // snapshot, NOT windowed and NOT part of any income figure: the money was
-    // already recognized as income when the patient paid through Jessy. Separate
-    // from `unpaidBalance`, which is patient debt. Admin-only (redacted below).
-    jessyOutstanding: number;
+    // ---- EARNED / PROFITABILITY (accrual, dated at transaction finalization) ----
+    // Recognized when the sale is finalized, never when cash arrives and never
+    // when a prepaid session is later used. See server/repositories/profitability.ts.
+    revenue: number;            // net of discounts — what was actually charged
+    grossRevenue: number;       // before discounts (original prices, kept visible)
+    discounts: number;          // the reduction given, accounted separately
+    cogs: number;               // frozen cost of what was sold
+    grossProfit: number;        // revenue − cogs
+    grossMarginPercent: number | null; // null when there is no revenue
+    operatingExpenses: number;  // Expense rows (kind "operating") in the period
+    referrerCost: number;       // referral commissions INCURRED in the period
+    netProfit: number;          // grossProfit − operatingExpenses − referrerCost
+    revenueByKind: { kind: string; revenue: number; cogs: number }[];
+
+    // ---- CASH / COLLECTION (never mixed into the figures above) ----
+    totalIncome: number;        // money COLLECTED in the period (payments)
+    unpaidBalance: number;      // outstanding client debt — a balance, not windowed
+    jessyOutstanding: number;   // owed by Jessy — a balance, not windowed
+    referralOutstanding: number;// owed TO referrers — a balance, not windowed
     paymentsToday: number;
-    // Payment-method split (USD) behind the collected-money figures, for the
-    // click-to-open breakdown on the "amount collected" stat cards. `incomeByMethod`
-    // mirrors `totalIncome` (windowed by the selected period); `paymentsTodayByMethod`
-    // mirrors `paymentsToday` (today only). Each is redacted alongside its parent
-    // total. Keyed by the RAW method value stored on each payment (an empty-string
-    // key is the blank/"Other" bucket), so a retired method keeps its own label.
     incomeByMethod: Record<string, number>;
     paymentsTodayByMethod: Record<string, number>;
-    // The same money split by method AND tender currency, for cash-drawer /
-    // account reconciliation: "Cash USD" and "Cash EUR" are the same method but
-    // different physical piles. `usd` is the accounting value (frozen rate);
-    // `native` is what is actually in the drawer. Keyed `method|currency`. A
-    // USD-only clinic day produces exactly one entry per method, so this never
-    // adds noise where there is none.
     incomeByTender: TenderBreakdownEntry[];
     paymentsTodayByTender: TenderBreakdownEntry[];
   };
+  // Bundles SOLD in the selected period, counted from the settled `package`
+  // basket lines — so this is windowed, and an abandoned draft's orphaned
+  // ClientPackage row is not a sale and is not counted.
   packagesSold: number;
   mostPopularPackage: string;
   todaysAppointments: Appointment[];
   recentPayments: Payment[];
   recentConsultations: RecentConsultation[];
   staffActivity: { name: string; role: Role; consults: number; machineVisits: number }[];
-  incomeExpenseSeries: { month: string; income: number; expenses: number }[];
-  packageRevenue: { name: string; revenue: number }[];
+  // EARNED profit trend, last 6 months. Never collections — cash belongs to the
+  // Cash & balances figures. `costs` = COGS + operating expenses + referrer
+  // commissions incurred, so `netProfit` here equals the Net profit card when the
+  // same month is selected as the period.
+  profitSeries: { month: string; revenue: number; costs: number; netProfit: number }[];
+  // The most profitable bundles in the selected period, from the finalized
+  // package sales. `name` is the name FROZEN on each sale, so renaming a bundle
+  // in the catalog never restates a closed period. Revenue is what was charged
+  // after discount and cogs is the cost frozen at the sale — later session usage
+  // does not move either, because a prepaid bundle is recognized in full when it
+  // is bought. Admin-only, like every other cost figure.
+  packageRevenue: {
+    name: string;
+    sales: number;
+    revenue: number;
+    cogs: number;
+    grossProfit: number;
+    grossMarginPercent: number | null;
+  }[];
+  // The five machines with the most SESSIONS delivered in the selected period.
+  // Sliced from `machineUtilization`, so it is the same period, boundaries and
+  // canonical machine identity — the chart cannot rank a machine differently from
+  // the table it sits next to. Ranked by sessions rather than visits because one
+  // visit can carry several sessions. Excludes the "no machine" bucket.
+  topMachines: { machine: string; sessions: number; machineVisits: number }[];
   appointmentBreakdown: { name: string; value: number; color: string }[];
   // Clients with money owed; `balance` holds their outstanding tracked debt (USD).
   unpaidClients: { id: string; name: string; balance: number }[];
@@ -1047,4 +1100,38 @@ export interface DashboardSummary {
   // part that came through a consultation instead, so the row reads as total
   // utilization with the machine-visit share visible inside it.
   machineUtilization: MachineUtilizationRow[];
+}
+
+
+/** The referral-commission ledger (admin only). Mirrors `JessyReport` in shape:
+ * three headline figures that must never be conflated, plus the rows behind them.
+ *
+ *   incurred    — recognized as an EXPENSE, once, when the commission arose
+ *   paid        — CASH paid out to referrers; never an expense a second time
+ *   outstanding — a BALANCE (incurred − paid − voided), never windowed
+ */
+export interface ReferralReport {
+  summary: { incurred: number; paid: number; outstanding: number };
+  commissions: {
+    id: string;
+    clientId: string;
+    clientName: string;
+    referrerName: string;
+    amount: number;
+    incurredAt: string;
+    triggerType: string;
+    status: string;
+    paidAt?: string;
+    voidReason?: string;
+  }[];
+  payouts: {
+    id: string;
+    referrerName: string;
+    amount: number;
+    reference?: string;
+    notes?: string;
+    paidAt: string;
+    recordedByName?: string;
+    commissionCount: number;
+  }[];
 }

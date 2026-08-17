@@ -3,8 +3,9 @@ import { db } from "../db";
 import { ConflictError, DuplicatePhoneError, ForbiddenError, NotFoundError } from "../http";
 import { dateOnly, toClientPackage } from "../serialize";
 import { expirePastScheduledAppointments, toAppointment } from "./appointments";
+import { writeAudit } from "./audit";
 import { listClientDebts } from "./clientDebts";
-import { resolveReferralFee } from "./referrers";
+import { resolveReferralAttribution } from "./referrers";
 import { consultationInclude, toConsultation } from "./consultations";
 import { paymentInclude, toPayment } from "./payments";
 import { listSessionPlans } from "./sessionPlans";
@@ -308,7 +309,14 @@ export async function createClient(input: {
   // referrer here. A one-time fee, snapshotted from the referrer's LIVE rate at
   // registration so a later rate change never re-prices this patient. null when
   // self-referred or the referrer has no fee at registration.
-  const referralFee = await resolveReferralFee(input.referralSource);
+  // Attribution starts here but keeps following `referralSource` (via
+  // `updateClient`) until a commission is actually incurred — see there. The
+  // COMMISSION itself is not created here at all: registering a patient who
+  // never attends must cost the clinic nothing, so the obligation waits for
+  // their first completed visit (see repositories/referralCommissions.ts).
+  // `referralSource` stays the editable front-desk value; `referrerNameSnapshot`
+  // is the durable attribution a commission will eventually be raised against.
+  const attribution = await resolveReferralAttribution(input.referralSource);
 
   const created = await db.client.create({
     data: {
@@ -326,7 +334,8 @@ export async function createClient(input: {
       country: input.country,
       maritalStatus: input.maritalStatus,
       referralSource: input.referralSource,
-      referralFee,
+      referrerNameSnapshot: attribution.referrerName,
+      referrerId: attribution.referrerId,
       firstTimePatient: input.firstTimePatient ?? false,
       intakeComplete: input.intakeComplete ?? deriveIntakeComplete(input),
       assignedDietitianId: input.assignedDietitianId ?? null,
@@ -393,17 +402,29 @@ export async function updateClient(
     assignedDietitianId?: string | null;
   },
   role: Role,
+  // Who is making the change. Optional so no existing caller breaks, but the
+  // route supplies it — an unattributed edit is exactly what F-07 was about.
+  actor?: { id?: string | null; name?: string | null },
 ): Promise<Client> {
+  // Read the fields an edit is allowed to change that REPORTING depends on, so
+  // the audit line can state what actually moved. `referralSource` is the one
+  // that matters most: it is the front desk's live view of who referred the
+  // patient, and before this it could be rewritten with no record whatsoever.
   const current = await db.client.findUnique({
     where: { id },
-    select: { intakeComplete: true },
+    select: {
+      intakeComplete: true,
+      referralSource: true,
+      referrerId: true,
+      referrerNameSnapshot: true,
+    },
   });
   if (!current) throw new NotFoundError("Client not found");
   if (current.intakeComplete) assertCanEditClientFields(role, input);
 
   // Only forward keys that were actually supplied so a partial check-in update
   // never clears fields it didn't touch. dateOfBirth is mapped to a Date.
-  const data: Prisma.ClientUpdateInput = {};
+  const data: Prisma.ClientUncheckedUpdateInput = {};
   if (input.firstName !== undefined) data.firstName = input.firstName;
   if (input.lastName !== undefined) data.lastName = input.lastName;
   if (input.phone !== undefined) data.phone = input.phone;
@@ -422,23 +443,79 @@ export async function updateClient(
     data.passportNumber = input.passportNumber || null;
   if (input.country !== undefined) data.country = input.country || null;
   if (input.maritalStatus !== undefined) data.maritalStatus = input.maritalStatus || null;
-  // referralFee is deliberately NOT (re)frozen here. The commission is snapshotted
-  // once, at the registration moment (createClient) — which includes a phone
-  // booking, since that captures the referrer too. Editing referralSource later is
-  // a correction to the record, not a new registration, so it never re-prices the
-  // frozen fee (nor retroactively attaches a rate the referrer only got afterwards).
+  // `referralSource` is the front desk's live view and may be corrected freely.
+  // The ATTRIBUTION (`referrerId` / `referrerNameSnapshot`) follows it — but only
+  // up until the patient's first completed visit incurs a commission. Before
+  // that point nothing has been billed yet, so a correction (or a referrer added
+  // after the fact, e.g. "walked in" turning out to have been sent by someone)
+  // simply re-targets who would be owed. Once a `ReferralCommission` row exists
+  // for this client, that row is what was actually incurred and paid against —
+  // the attribution freezes there and no further edit may redirect it.
   if (input.referralSource !== undefined) data.referralSource = input.referralSource;
   if (input.firstTimePatient !== undefined) data.firstTimePatient = input.firstTimePatient;
   if (input.intakeComplete !== undefined) data.intakeComplete = input.intakeComplete;
   if (input.assignedDietitianId !== undefined)
-    data.assignedDietitian = input.assignedDietitianId
-      ? { connect: { id: input.assignedDietitianId } }
-      : { disconnect: true };
+    data.assignedDietitianId = input.assignedDietitianId;
 
-  const row = await db.client.update({
-    where: { id },
-    data,
-    include: listInclude,
+  const { row, attributionMoved, incurred } = await db.$transaction(async (tx) => {
+    // Row lock: without it, this read-then-write could race a visit close that
+    // is incurring the first-visit commission (`recordReferralCommissionTx`,
+    // which takes the same lock) and attribute a new referrer a few
+    // milliseconds after the old one was actually the one who earned it.
+    await tx.$queryRaw`SELECT "id" FROM "Client" WHERE "id" = ${id} FOR UPDATE`;
+
+    let attributionMoved = false;
+    let incurred = false;
+    if (input.referralSource !== undefined) {
+      const existingCommission = await tx.referralCommission.findUnique({
+        where: { clientId: id },
+        select: { id: true },
+      });
+      incurred = !!existingCommission;
+      if (!existingCommission) {
+        const attribution = await resolveReferralAttribution(input.referralSource);
+        attributionMoved = attribution.referrerId !== current.referrerId;
+        data.referrerId = attribution.referrerId;
+        data.referrerNameSnapshot = attribution.referrerName;
+      }
+    }
+
+    const row = await tx.client.update({ where: { id }, data, include: listInclude });
+    return { row, attributionMoved, incurred };
   });
+
+  // F-07 / spec §3.13: a patient edit is an audited event. Previously nothing was
+  // written here at all, which is why a corrected referrer left no trace and the
+  // original attribution became unrecoverable. Only a REAL change to the referrer
+  // is logged — a check-in that re-submits the same value every time would
+  // otherwise bury the log in noise.
+  const before = current.referralSource ?? "";
+  const after = row.referralSource ?? "";
+  if (input.referralSource !== undefined && before !== after) {
+    let note: string;
+    if (!incurred) {
+      // Attribution moved with it (or there was nothing to move, e.g. both
+      // resolved to "no referrer") — state plainly what it now targets.
+      note = attributionMoved
+        ? ` — commission attribution now targets "${row.referrerNameSnapshot ?? "no referrer"}"`
+        : " — no commission was frozen for this patient";
+    } else {
+      // A commission already exists: the text changed but money did not move.
+      const owed = current.referrerNameSnapshot;
+      note = owed
+        ? ` — commission stays with "${owed}" (already incurred)`
+        : " — no commission was frozen for this patient";
+    }
+    await writeAudit(db, {
+      userId: actor?.id ?? null,
+      userName: actor?.name,
+      action: "Changed patient referrer",
+      entityType: "Client",
+      entityLabel:
+        `${row.firstName} ${row.lastName}: referrer "${before || "empty"}" -> ` +
+        `"${after || "empty"}"${note}`,
+    });
+  }
+
   return toClient(row);
 }

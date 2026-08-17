@@ -27,6 +27,15 @@ export async function createServicePrice(
 ): Promise<ServicePrice> {
   const kind = input.kind ?? "treatment";
   const key = input.name.trim();
+  // "Other" is the blood-test catalog's fallback bucket for a one-off custom lab
+  // test. It is NOT a machine: a treatment must name one of the clinic's actual
+  // predefined machines, so a treatment row called "Other" is refused rather than
+  // quietly recreating the custom-machine identity that reporting cannot group.
+  if (kind === "treatment" && key.toLowerCase() === "other") {
+    throw new ConflictError(
+      'There is no "Other" machine — add the machine by its real name, or leave the treatment off the visit.',
+    );
+  }
   const existing = await db.servicePrice.findUnique({
     where: { kind_key: { kind, key } },
   });
@@ -60,10 +69,11 @@ export async function updateServicePrice(
   const existing = await db.servicePrice.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError("Service price not found");
 
-  // The "Other" row is the fallback that prices every custom test/treatment (see
-  // priceSnapshot); deactivating it would silently zero out custom pricing, so it
-  // can never be turned off. Its price/cost stay editable.
-  if (existing.key === "Other" && input.active === false) {
+  // The blood-test "Other" row is the fallback that prices a one-off custom lab
+  // test (see priceSnapshot); deactivating it would silently zero out that
+  // pricing, so it can never be turned off. Its price/cost stay editable.
+  // Treatments have no such bucket — there is no custom machine.
+  if (existing.kind === "blood_test" && existing.key === "Other" && input.active === false) {
     throw new ConflictError('The "Other" entry can\'t be deactivated.');
   }
 

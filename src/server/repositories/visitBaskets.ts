@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, NotFoundError } from "../http";
 import { asCurrency } from "../serialize";
-import { basketTotals } from "@/lib/utils";
+import { allocateDiscount, basketLineUsd, basketTotals } from "@/lib/utils";
 import { CLINIC, toUsd } from "@/lib/config";
 import {
   StaleFxRateError,
@@ -58,6 +58,11 @@ export type BasketItemInput = {
   // per productId is what settleVisitBasket deducts from inventory. null for
   // everything else (blood tests/treatments/custom lines never map to a Product).
   productId?: string | null;
+  // The prepaid bundle this line sells. Makes the bundle line traceable to the
+  // ClientPackage it created — and price-protectable like any other catalog line.
+  clientPackageId?: string | null;
+  // Clinic cost per unit, frozen from the same source that supplied `unitPrice`.
+  unitCost?: number;
 };
 
 /** Normalizes a basket item payload into a row create object. */
@@ -70,8 +75,11 @@ function itemCreate(i: BasketItemInput) {
     unitPrice: Math.max(0, i.unitPrice ?? 0),
     currency: i.currency ?? "USD",
     covered: i.covered ?? false,
+    // Frozen at the same moment as unitPrice, from the same source row.
+    unitCost: Math.max(0, i.unitCost ?? 0),
     sessionPlanId: i.sessionPlanId ?? null,
     productId: i.productId ?? null,
+    clientPackageId: i.clientPackageId ?? null,
   };
 }
 
@@ -85,8 +93,14 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     unitPrice: i.unitPrice,
     currency: asCurrency(i.currency),
     covered: i.covered,
+    // The line's frozen share of the bill discount. Exposed so the base price,
+    // the reduction and the resulting sale value are all separately visible on a
+    // settled basket. `unitCost` is deliberately NOT exposed — the clinic's cost
+    // is admin-only, like every other cost in this app.
+    discountAmount: i.discountAmount,
     sessionPlanId: i.sessionPlanId ?? undefined,
     productId: i.productId ?? undefined,
+    clientPackageId: i.clientPackageId ?? undefined,
   }));
   const totals = basketTotals(
     items,
@@ -465,6 +479,88 @@ export async function updateVisitBasket(
     );
   }
 
+  // THE BASE PRICE OF A CATALOG-BACKED LINE IS NOT EDITABLE. A DISCOUNT IS NOT A
+  // PRICE EDIT.
+  //
+  // Every line whose price came from a source — the service catalog, a session
+  // plan, a product, a prepaid bundle, the doctor's consultation fee — must come
+  // back at exactly the price that source gave it. Retyping it here would make the
+  // bill disagree with the item it is billing for, destroy the audit trail of what
+  // the thing actually costs, and (for a bundle) silently redefine the economics
+  // frozen onto the ClientPackage.
+  //
+  // Reducing what the client pays is fully supported and unaffected — through the
+  // discount, which is stored separately and leaves the original price standing.
+  // Only genuinely ad-hoc lines the desk adds itself (kind "custom") carry a price
+  // the desk is allowed to set, because there is no source to disagree with.
+  //
+  // Enforced on the SERVER, so a direct PATCH cannot bypass what the settlement
+  // screen disables.
+  const SOURCED_KINDS = new Set(["consultation_fee", "blood_test", "treatment", "product", "package"]);
+  const isSourced = (i: { kind?: string | null; sessionPlanId?: string | null; productId?: string | null; clientPackageId?: string | null }) =>
+    SOURCED_KINDS.has(i.kind ?? "custom") ||
+    Boolean(i.sessionPlanId) ||
+    Boolean(i.productId) ||
+    Boolean(i.clientPackageId);
+  // Identity deliberately EXCLUDES price: that is the whole point — we are looking
+  // for the same line coming back at a different price, which a price-inclusive
+  // signature would read as an unrelated line and wave through.
+  //
+  // Prefer a real catalog FK when the line carries one: `label` is a display name
+  // with no uniqueness guarantee (two Products, or two ClientPackage purchases of
+  // the same package, can share a name), so keying on label alone can attach one
+  // line's frozen price/cost to a different catalog row of the same name. Only
+  // genuinely unsourced lines (no FK at all — e.g. "custom") fall back to it.
+  const priceKey = (i: {
+    kind?: string | null;
+    label: string;
+    covered?: boolean | null;
+    productId?: string | null;
+    clientPackageId?: string | null;
+    sessionPlanId?: string | null;
+  }) =>
+    i.productId
+      ? `product::${i.productId}`
+      : i.clientPackageId
+        ? `package::${i.clientPackageId}`
+        : i.sessionPlanId
+          ? `plan::${i.sessionPlanId}`
+          : `${i.kind ?? "custom"}::${i.label.trim().toLowerCase()}::${i.covered ? 1 : 0}`;
+  const sourcedPrices = new Map<string, number>();
+  for (const i of existing.items) {
+    if (isSourced(i)) sourcedPrices.set(priceKey(i), i.unitPrice);
+  }
+  for (const i of input.items) {
+    if (!isSourced(i)) continue;
+    const original = sourcedPrices.get(priceKey(i));
+    if (original === undefined) continue; // a newly added sourced line prices itself
+    if ((i.unitPrice ?? 0) !== original) {
+      throw new ConflictError(
+        `"${i.label}" is priced from the catalog and can't be re-priced at checkout. ` +
+          `Apply a discount instead — the original price stays on the bill and the ` +
+          `reduction is recorded separately.`,
+      );
+    }
+  }
+
+  // A prepaid bundle line is fixed in full: its price AND its quantity define the
+  // ClientPackage that was created when it was sold, so neither can move here.
+  const packageFingerprint = (
+    rows: { clientPackageId?: string | null; quantity?: number | null; unitPrice?: number | null }[],
+  ): string[] =>
+    rows
+      .filter((i) => i.clientPackageId)
+      .map((i) => [i.clientPackageId, Math.max(1, Math.floor(i.quantity ?? 1)), i.unitPrice ?? 0].join("::"))
+      .sort();
+  const pkgBefore = packageFingerprint(existing.items);
+  const pkgAfter = packageFingerprint(input.items);
+  if (pkgBefore.length !== pkgAfter.length || pkgBefore.some((sig, idx) => sig !== pkgAfter[idx])) {
+    throw new ConflictError(
+      "A prepaid bundle is sold at its agreed package price — its line can't be changed at checkout. " +
+        "Apply a discount instead.",
+    );
+  }
+
   const nextType = input.discountType ?? null;
   const nextValue = input.discountValue ?? 0;
   const discountApplied = Boolean(nextType) && nextValue > 0;
@@ -482,6 +578,37 @@ export async function updateVisitBasket(
   const dietitianName = existing.dietitian?.fullName ?? "Unassigned";
   const editSummary = diffBasketItems(existing.items, input.items, lineSig);
 
+  // COST IS NEVER ACCEPTED FROM THE REQUEST, and this rebuild must not lose it.
+  // `updateVisitBasket` deletes and recreates every line, so without this the
+  // round-trip through the settlement screen — which has no cost field, by design
+  // — would silently reset every frozen `unitCost` to 0 and report the whole visit
+  // as pure margin. Each surviving line carries its own cost forward from the row
+  // the dietitian sent; a line the secretary adds here resolves its cost
+  // server-side from the catalog, the same way its price is resolved.
+  const sourcedCosts = new Map<string, number>();
+  for (const i of existing.items) sourcedCosts.set(priceKey(i), i.unitCost);
+  const addedProductIds = [
+    ...new Set(
+      input.items
+        .filter((i) => i.productId && sourcedCosts.get(priceKey(i)) === undefined)
+        .map((i) => i.productId as string),
+    ),
+  ];
+  const addedProductCost = new Map<string, number>();
+  if (addedProductIds.length > 0) {
+    const rows = await db.product.findMany({
+      where: { id: { in: addedProductIds } },
+      select: { id: true, cost: true },
+    });
+    for (const r of rows) addedProductCost.set(r.id, r.cost);
+  }
+  const withFrozenCost = (i: BasketItemInput): BasketItemInput => ({
+    ...i,
+    unitCost:
+      sourcedCosts.get(priceKey(i)) ??
+      (i.productId ? addedProductCost.get(i.productId) ?? 0 : 0),
+  });
+
   await db.$transaction(async (tx) => {
     await tx.visitBasketItem.deleteMany({ where: { basketId: id } });
     await tx.visitBasket.update({
@@ -491,7 +618,7 @@ export async function updateVisitBasket(
         discountValue: nextValue,
         discountReason: nextReason,
         currency: input.currency ?? "USD",
-        items: { create: input.items.map(itemCreate) },
+        items: { create: input.items.map(withFrozenCost).map(itemCreate) },
       },
     });
 
@@ -771,6 +898,38 @@ export async function settleVisitBasket(
     });
     if (flipped.count === 0) {
       throw new ConflictError("This basket is already settled.");
+    }
+
+    // FREEZE THE DISCOUNT ALLOCATION. The bill-level discount was agreed on the
+    // bill; from here on it must also be attributable, because revenue is reported
+    // per line (a bundle sale, a product sale, a treatment) and every one of those
+    // figures has to net down to what the client actually paid.
+    //
+    // The original `unitPrice` on each line is untouched — it stays the auditable
+    // record of what the item costs. Only the share of the reduction is written,
+    // and it is allocated proportionally with a largest-remainder rule so
+    //
+    //     Σ (unitPrice × quantity − discountAmount) === the basket total
+    //
+    // exactly, with no residual cent between the lines and the bill. Frozen here,
+    // at settlement, so a later change to the discount rule can never restate what
+    // was charged. Covered lines contribute nothing to the bill and absorb none of
+    // the discount.
+    if (view.discount > 0) {
+      const shares = allocateDiscount(
+        view.items.map((i) => ({
+          gross: basketLineUsd(i, rate),
+          covered: i.covered,
+        })),
+        view.discount,
+      );
+      for (let idx = 0; idx < view.items.length; idx++) {
+        if (shares[idx] <= 0) continue;
+        await tx.visitBasketItem.update({
+          where: { id: view.items[idx].id },
+          data: { discountAmount: shares[idx] },
+        });
+      }
     }
 
     // Inventory: deduct by the FINAL settled quantity of each product line —

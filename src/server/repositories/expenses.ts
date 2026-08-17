@@ -2,7 +2,8 @@ import { db } from "../db";
 import { toAudit, toExpense } from "../serialize";
 import { getUsdToLbp } from "./settings";
 import { userIdByEmail } from "./staff";
-import { NotFoundError } from "../http";
+import { ConflictError, NotFoundError } from "../http";
+import { EXPENSE_BACKDATE_LIMIT_DAYS, earliestExpenseDate, latestExpenseDate } from "@/lib/config";
 import type { AuditEntry, Expense } from "@/lib/types";
 
 type ExpenseActor = {
@@ -63,6 +64,23 @@ export async function createExpense(
   actor?: ExpenseActor,
 ): Promise<Expense> {
   const userId = input.createdById ?? (await userIdByEmail(actor?.email));
+  // Enforced HERE, in the one function every expense is created through, rather
+  // than in the Zod schema alone — the rule protects closed reporting periods, so
+  // it must not be bypassable by any caller that skips route validation.
+  const earliest = earliestExpenseDate();
+  const latest = latestExpenseDate();
+  if (input.date && input.date < earliest) {
+    throw new ConflictError(
+      `An expense can't be dated more than ${EXPENSE_BACKDATE_LIMIT_DAYS} days back (nothing before ${earliest}). ` +
+        "The date is permanent once saved, so record it in the current period and explain the delay in the notes.",
+    );
+  }
+  if (input.date && input.date > latest) {
+    throw new ConflictError(
+      `An expense can't be dated in the future (nothing after ${latest}). ` +
+        "A cost that hasn't been incurred yet isn't an expense — record it on the day it is paid.",
+    );
+  }
   const row = await db.expense.create({
     data: {
       title: input.title.trim(),

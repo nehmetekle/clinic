@@ -35,7 +35,7 @@ import { useSession } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import { SUPPLEMENTS } from "@/lib/types";
+import { NO_MACHINE_LABEL, SUPPLEMENTS } from "@/lib/types";
 import type {
   ClientPackage,
   ConsultationFile,
@@ -49,7 +49,6 @@ import { allocateCoverage } from "@/lib/coverage";
 // ---- Visit services form state (local to the editor) ----
 type TreatmentForm = {
   machine: string;
-  machineOther: string;
   bodyParts: string[];
   bodyPartCustom: string;
   sessionsNeeded: string;
@@ -70,7 +69,6 @@ type ProductForm = { productId: string; quantity: string };
 
 const EMPTY_TREATMENT: TreatmentForm = {
   machine: "",
-  machineOther: "",
   bodyParts: [],
   bodyPartCustom: "",
   sessionsNeeded: "1",
@@ -381,10 +379,6 @@ type BasketItem = {
   treatmentIndex?: number;
 };
 
-function treatmentName(machine: string, machineOther?: string) {
-  return machine === "Other" ? machineOther || "Other treatment" : machine;
-}
-
 function partsLabel(parts: string[]) {
   return parts.length > 0 ? parts.join(", ") : "General";
 }
@@ -439,17 +433,14 @@ function ConsultationEditor() {
   // Treatment types (machines) are admin-managed in the ServicePrice catalog.
   // `treatmentTypes` is the full list — used to resolve prices and body-part
   // presets for treatments already on a visit, even if the type was later
-  // deactivated. `activeTreatmentTypes` (Other kept last) is what a new treatment
-  // may pick. `bodyPartsFor` returns a type's preset: undefined = free-text entry,
+  // deactivated. `activeTreatmentTypes` is what a new treatment may pick: the
+  // clinic's predefined machines and nothing else, since there is no custom
+  // machine to offer. `bodyPartsFor` returns a type's preset: undefined = free-text entry,
   // [] = no body-part field, [names] = fixed checklist.
   const treatmentTypes = (servicePrices.data ?? []).filter((p) => p.kind === "treatment");
   const activeTreatmentTypes = treatmentTypes
     .filter((p) => p.active)
-    .sort(
-      (a, b) =>
-        (a.key === "Other" ? 1 : 0) - (b.key === "Other" ? 1 : 0) ||
-        a.name.localeCompare(b.name),
-    );
+    .sort((a, b) => a.name.localeCompare(b.name));
   const bodyPartsFor = (machine: string): string[] | undefined =>
     treatmentTypes.find((p) => p.key === machine)?.bodyParts;
 
@@ -616,7 +607,7 @@ function ConsultationEditor() {
       ];
     });
     setTreatmentsOpen(true);
-    toast(`${pkg.machine ?? pkg.packageName} session added — adjust it below`);
+    toast(`${pkg.machine ?? NO_MACHINE_LABEL} session added — adjust it below`);
   }
 
   // Quick-add a treatment drawing from a session plan (separate from packages).
@@ -645,7 +636,7 @@ function ConsultationEditor() {
       ];
     });
     setTreatmentsOpen(true);
-    toast(`${plan.machine ?? "Session plan"} session added — adjust it below`);
+    toast(`${plan.machine ?? NO_MACHINE_LABEL} session added — adjust it below`);
   }
 
   function updateProduct(i: number, patch: Partial<ProductForm>) {
@@ -727,7 +718,6 @@ function ConsultationEditor() {
         return {
           ...EMPTY_TREATMENT,
           machine: t.machine,
-          machineOther: t.machineOther ?? "",
           bodyParts: customParts.length > 0 ? [...presetParts, "Other"] : presetParts,
           bodyPartCustom: customParts.join(", "),
           sessionsNeeded: String(t.sessionsNeeded),
@@ -872,8 +862,10 @@ function ConsultationEditor() {
     const price = servicePriceFor(kind, key);
     return price ? formatMoney(price.price, price.currency) : "Price not set";
   };
-  const treatmentPriceFor = (machine: string) =>
-    servicePriceFor("treatment", machine === "Other" ? "Other" : machine);
+  // A machine is always a catalog key — there is no "Other" treatment bucket to
+  // fall back to, so an unpriced machine shows as "Price not set" rather than
+  // quietly borrowing another row's price.
+  const treatmentPriceFor = (machine: string) => servicePriceFor("treatment", machine);
   const bloodPriceFor = (name: string) =>
     servicePriceFor("blood_test", bloodTestKeys.has(name) ? name : "Other");
   // The checklist offers every active test, plus any already-selected test that
@@ -998,7 +990,6 @@ function ConsultationEditor() {
         const parts = treatmentPartsForForm(t);
         return {
           machine: t.machine,
-          machineOther: t.machine === "Other" ? t.machineOther || undefined : undefined,
           bodyParts: parts,
           sessionsNeeded: t.sessionsNeeded ? Number(t.sessionsNeeded) : 1,
           sessionsUsed: t.sessionsUsed ? Number(t.sessionsUsed) : 0,
@@ -1174,7 +1165,7 @@ function ConsultationEditor() {
         lines.push({
           id: `treatment-${i}-covered`,
           kind: "treatment",
-          label: treatmentName(t.machine, t.machineOther),
+          label: t.machine,
           detail: `${parts} · ${covered} covered by ${coveredBy}`,
           quantity: covered,
           unitPrice: unit,
@@ -1189,7 +1180,7 @@ function ConsultationEditor() {
         lines.push({
           id: `treatment-${i}-charged`,
           kind: "treatment",
-          label: treatmentName(t.machine, t.machineOther),
+          label: t.machine,
           detail: t.sessionPlan
             ? `${parts} · ${charged} session${charged === 1 ? "" : "s"} purchased`
             : `${parts} · ${charged} charged`,
@@ -1675,7 +1666,7 @@ function ConsultationEditor() {
                             {String(i + 1).padStart(2, "0")}
                           </span>
                           <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-slate-800">
-                            {t.machine ? treatmentName(t.machine, t.machineOther) : "New treatment"}
+                            {t.machine || "New treatment"}
                           </p>
                           {t.machine && treatmentPrice && (
                             <span className="shrink-0 text-xs tabular-nums text-slate-400">
@@ -1737,16 +1728,6 @@ function ConsultationEditor() {
                               ))}
                             </Select>
                           </DataRow>
-
-                          {t.machine === "Other" && (
-                            <DataRow label="Custom name">
-                              <Input
-                                className={controlClass}
-                                value={t.machineOther}
-                                onChange={(e) => updateTreatment(i, { machineOther: e.target.value })}
-                              />
-                            </DataRow>
-                          )}
 
                           {t.machine && showBodyParts && (
                             <DataRow label="Body parts" align="start">
@@ -2102,7 +2083,7 @@ function ConsultationEditor() {
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-slate-700">
-                          {plan.machine ?? "Session plan"} <span className="text-xs font-normal text-slate-400">· pay-as-you-go</span>
+                          {plan.machine ?? NO_MACHINE_LABEL} <span className="text-xs font-normal text-slate-400">· pay-as-you-go</span>
                         </p>
                         <p className="text-xs text-emerald-700">
                           {plan.sessionsAvailable} session{plan.sessionsAvailable === 1 ? "" : "s"} available

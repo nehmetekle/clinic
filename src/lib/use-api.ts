@@ -19,13 +19,25 @@ interface ApiState<T> {
  * `if (loading) return <Loading/>`) don't unmount and remount their subtree,
  * which would otherwise reset in-view UI state like the active tab.
  */
-export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): ApiState<T> {
+export function useApi<T>(
+  fetcher: () => Promise<T>,
+  deps: unknown[] = [],
+  // `enabled: false` holds the request back without discarding what is already
+  // loaded — for a form whose inputs are mid-edit and not yet a valid query.
+  // Loading stops, so a page gated on `loading` stays interactive.
+  opts: { enabled?: boolean } = {},
+): ApiState<T> {
+  const enabled = opts.enabled ?? true;
   const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const load = useCallback((background = false) => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     if (!background) setLoading(true);
     fetcher()
       .then((d) => {
@@ -34,7 +46,7 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): ApiS
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, deps);
+  }, [enabled, ...deps]);
 
   useEffect(() => {
     load();

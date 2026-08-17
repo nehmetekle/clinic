@@ -7,9 +7,10 @@ import type { DashboardSummary } from "@/lib/types";
 
 /**
  * Drill-down behind the "Referrer cost" figure: each referrer owed a commission
- * for patients registered in the selected period, the total owed to them, and the
- * patients that drove it (each with the fee frozen at their registration). Opened
- * from the dashboard/reports "Referrer cost" stat card.
+ * for patients whose first completed visit fell in the selected period, the total
+ * owed to them, and the patients that drove it (each with the fee frozen at the
+ * referrer's rate at that first visit). Opened from the dashboard/reports
+ * "Referrer cost" stat card.
  */
 export function ReferrerCostBreakdown({
   open,
@@ -26,9 +27,9 @@ export function ReferrerCostBreakdown({
   return (
     <Modal open={open} onClose={onClose} title="Referrer cost breakdown">
       <p className="mb-4 text-sm text-slate-500">
-        Commissions owed for patients registered {periodLabel}. Each patient&apos;s fee
-        is frozen at the moment they were registered (the new-client form or a phone
-        booking), so it never changes if the referrer&apos;s rate is edited later.
+        Commissions owed for patients whose first completed visit fell {periodLabel}.
+        Each patient&apos;s fee is frozen at the referrer&apos;s rate at that first visit, so
+        it never changes if the referrer&apos;s rate is edited later.
       </p>
       {report.length === 0 ? (
         <p className="py-6 text-center text-sm text-slate-400">

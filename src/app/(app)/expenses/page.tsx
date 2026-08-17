@@ -15,7 +15,7 @@ import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { useSession } from "@/lib/session";
-import { CLINIC, todayIso, toUsdFrozen } from "@/lib/config";
+import { CLINIC, EXPENSE_BACKDATE_LIMIT_DAYS, earliestExpenseDate, latestExpenseDate, todayIso, toUsdFrozen } from "@/lib/config";
 import { cn, formatDate, formatDateTime, formatMoney, parseNumberInput } from "@/lib/utils";
 // Jessy is a channel patients pay THROUGH, never one the clinic spends from, so
 // the expense form offers every method except that one.
@@ -72,6 +72,8 @@ export default function ExpensesPage() {
 
   // Period filter — presets are anchored to today's real date.
   const today = todayIso();
+  const earliestDate = earliestExpenseDate(today);
+  const latestDate = latestExpenseDate(today);
   const [mode, setMode] = useState<PeriodMode>("month");
   const [month, setMonth] = useState(today.slice(0, 7));
   const [day, setDay] = useState(today);
@@ -323,16 +325,33 @@ export default function ExpensesPage() {
             </Select>
           </FormRow>
           <FormRow label="Date *">
-            {/* F8: the date is fixed once an expense is created — it can't be moved
-                to another period. Editable only when adding a new expense. */}
+            {/* The date is fixed once an expense is created — it can't be moved to
+                another period — and at creation it must fall in
+                [today − EXPENSE_BACKDATE_LIMIT_DAYS, today]. Together those close
+                both loopholes: reopening a reported month by back-dating into it,
+                and parking a cost in a period that hasn't happened yet. `min`/`max`
+                are conveniences; createExpense enforces the same bounds. */}
             <Input
               type="date"
               value={form.date}
+              min={editingId ? undefined : earliestDate}
+              max={editingId ? undefined : latestDate}
               onChange={(e) => setForm({ ...form, date: e.target.value })}
               disabled={!!editingId}
               className={cn(form.date === "" && missingClass, !!editingId && "cursor-not-allowed bg-slate-50 text-slate-500")}
             />
-            {editingId && <p className="mt-1 text-xs text-slate-400">The date can’t be changed after an expense is created.</p>}
+            {editingId ? (
+              <p className="mt-1 text-xs text-slate-400">
+                The date can’t be changed after an expense is created. The amount still can — the
+                change is recorded in this expense’s history.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-slate-400">
+                Must be between {earliestDate} and {latestDate} ({EXPENSE_BACKDATE_LIMIT_DAYS} days back,
+                and never in the future), and is permanent once saved. For an older receipt, record it
+                today and say so in the notes.
+              </p>
+            )}
           </FormRow>
           <FormRow label="Payment method *">
             <Select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} className={cn(form.method === "" && missingClass)}>

@@ -13,6 +13,7 @@ import {
   type BasketItemInput,
 } from "./visitBaskets";
 import { reconcileVisitBloodSampleTx } from "./bloodSamples";
+import { recordReferralCommissionTx } from "./referralCommissions";
 import { userIdByEmail } from "./staff";
 import {
   activeMachineKey,
@@ -69,6 +70,10 @@ function parseCharges(value: string | null): ConsultationBloodTestCharge[] {
         name: String(item?.name ?? ""),
         price: Number(item?.price ?? 0),
         currency: asCurrency(String(item?.currency ?? "USD")),
+        // NOTE: the stored snapshot also carries a frozen `cost` (F-03). It is
+        // deliberately NOT mapped here — this builds the CLIENT-facing type, and
+        // the clinic's cost is admin-only (the same rule `withoutCost` applies to
+        // catalog rows). Reporting reads the raw column server-side instead.
       }))
       .filter((item) => item.name);
   } catch {
@@ -94,7 +99,7 @@ function parseServiceTotals(value: string | null): ConsultationServiceTotal[] {
   }
 }
 
-type PriceRow = { kind: string; key: string; price: number; currency: string };
+type PriceRow = { kind: string; key: string; price: number; cost: number; currency: string };
 
 function priceSnapshot(
   prices: PriceRow[],
@@ -102,12 +107,24 @@ function priceSnapshot(
   key: string,
   name: string,
 ) {
+  // The "Other" fallback bucket exists for BLOOD TESTS only — a one-off lab test
+  // the clinic really does order but does not keep a catalog row for. There is no
+  // such thing for treatments: a machine is one of the clinic's own predefined
+  // machines or it is not a machine, so an unmatched treatment key falls through
+  // to 0 rather than being priced from a bucket that no longer exists.
   const row =
     prices.find((p) => p.kind === kind && p.key === key) ??
-    prices.find((p) => p.kind === kind && p.key === "Other");
+    (kind === "blood_test"
+      ? prices.find((p) => p.kind === kind && p.key === "Other")
+      : undefined);
   return {
     name,
     price: row?.price ?? 0,
+    // F-03: the clinic's own cost, snapshotted from the SAME catalog row that
+    // supplied the price, at the same instant. Admin-only — it is written to the
+    // stored snapshot but never reaches a client (see parseCharges, and the
+    // explicit field lists in toConsultation).
+    cost: row?.cost ?? 0,
     currency: asCurrency(row?.currency ?? "USD"),
   };
 }
@@ -185,7 +202,6 @@ export function toConsultation(c: ConsultationRow): Consultation {
     treatments: c.treatments.map((t) => ({
       id: t.id,
       machine: t.machine,
-      machineOther: t.machineOther ?? undefined,
       bodyParts: parseList(t.bodyParts),
       sessionsNeeded: t.sessionsNeeded,
       sessionsUsed: t.sessionsUsed,
@@ -283,7 +299,6 @@ export type ConsultationInput = {
   waiveConsultationFee?: boolean;
   treatments?: {
     machine: string;
-    machineOther?: string;
     bodyParts?: string[];
     sessionsNeeded?: number;
     sessionsUsed?: number;
@@ -445,7 +460,10 @@ async function buildConsultationContentTx(
     // Frozen product snapshots (by catalog id) from THIS consultation's prior save,
     // used to rebuild a sold line whose catalog product was deleted meanwhile — so
     // a historical sale is never dropped just because the catalog changed.
-    priorProducts?: Map<string, { name: string; unitPrice: number; currency: Currency }>;
+    priorProducts?: Map<
+      string,
+      { name: string; unitPrice: number; unitCost: number; currency: Currency }
+    >;
     // Acting user, threaded through so a blood-test removal/cancellation on this
     // save is attributed to whoever made it in the audit log (accountability).
     actor?: { name?: string | null; email?: string | null };
@@ -477,6 +495,20 @@ async function buildConsultationContentTx(
     servicePrices.filter((p) => p.kind === "blood_test").map((p) => p.key),
   );
 
+  // A machine is one of the clinic's own predefined machines or it is not a
+  // machine — there is no "Other" bucket for treatments (see priceSnapshot).
+  // Reject any treatment line whose `machine` isn't a live catalog key up front,
+  // rather than letting it fall through to a $0-priced, fabricated-machine row
+  // that would still count toward machine utilization.
+  const knownTreatmentMachines = new Set<string>(
+    servicePrices.filter((p) => p.kind === "treatment").map((p) => p.key),
+  );
+  for (const t of treatments) {
+    if (!knownTreatmentMachines.has(t.machine)) {
+      throw new ConflictError(`Unknown machine "${t.machine}".`);
+    }
+  }
+
   // F4: resolve each sold product against the admin-managed catalog and snapshot
   // its price/currency HERE — never trust a price from the request. A dietitian
   // who wants to charge less applies a logged visit discount instead.
@@ -500,6 +532,11 @@ async function buildConsultationContentTx(
         name: prior.name,
         quantity,
         unitPrice: prior.unitPrice,
+        // The frozen COST rides along with the frozen price: a line already sold
+        // on this visit keeps the economics it was sold under, even if the admin
+        // has since changed what the product costs the clinic. Quantity may still
+        // change on an open draft, which correctly rescales both.
+        unitCost: prior.unitCost,
         amount: prior.unitPrice * quantity,
         currency: prior.currency,
         notes: p.notes,
@@ -515,6 +552,9 @@ async function buildConsultationContentTx(
         name: cat.name,
         quantity,
         unitPrice: cat.price,
+        // First sale of this product on this visit: snapshot the live catalog
+        // cost now, at the true time of sale, exactly as the price is snapshotted.
+        unitCost: cat.cost,
         amount: cat.price * quantity,
         currency: asCurrency(cat.currency),
         notes: p.notes,
@@ -546,7 +586,14 @@ async function buildConsultationContentTx(
   // machine-linked ClientPackage per bundle so its sessions are available now.
   const bundleByIndex = new Map<
     number,
-    { clientPackageId: string; name: string; price: number; currency: Currency; sessions: number }
+    {
+      clientPackageId: string;
+      name: string;
+      price: number;
+      cost: number;
+      currency: Currency;
+      sessions: number;
+    }
   >();
   if (opts.allowBundles) {
     for (let idx = 0; idx < treatments.length; idx++) {
@@ -573,6 +620,8 @@ async function buildConsultationContentTx(
         clientPackageId: cp.id,
         name: pkg.name,
         price: netPrice,
+        // The whole package's frozen cost, recognized once at purchase.
+        cost: pkg.cost,
         currency: asCurrency(pkg.currency),
         sessions: pkg.sessions,
       });
@@ -621,7 +670,10 @@ async function buildConsultationContentTx(
   // owns, and sell whatever the prescribed course still lacks. Only a plan that
   // belongs to THIS client and isn't cancelled counts; anything else resolves to
   // no source and is charged in full.
-  const sessionPlanById = new Map<string, { unitPrice: number; currency: Currency }>();
+  const sessionPlanById = new Map<
+    string,
+    { unitPrice: number; unitCost: number; currency: Currency }
+  >();
   const sessionCreditLeft = new Map<string, number>();
   // The quantity this visit SELLS per plan: the prescribed length minus what is
   // already bought — settled (`sessionsPaid`) or sitting unsettled on some other
@@ -641,7 +693,13 @@ async function buildConsultationContentTx(
       if (needed !== plan.sessionsNeeded) {
         plan = await tx.sessionPlan.update({ where: { id: planId }, data: { sessionsNeeded: needed } });
       }
-      sessionPlanById.set(planId, { unitPrice: plan.unitPrice, currency: asCurrency(plan.currency) });
+      sessionPlanById.set(planId, {
+        unitPrice: plan.unitPrice,
+        // F-03: a plan-backed line inherits the cost frozen on the PLAN, not
+        // today's catalog — the plan is where this course's economics were fixed.
+        unitCost: plan.unitCost,
+        currency: asCurrency(plan.currency),
+      });
       // External credit only: exclude this consultation's own paid installments,
       // which would otherwise phantom-cover a later edit of the same visit.
       const externalCredit = plan.sessionsPaid - (consultPaidByPlan.get(planId) ?? 0) - plan.sessionsUsed;
@@ -692,8 +750,8 @@ async function buildConsultationContentTx(
     const servicePrice = priceSnapshot(
       servicePrices,
       "treatment",
-      t.machine === "Other" ? "Other" : t.machine,
-      t.machineOther || t.machine,
+      t.machine,
+      t.machine,
     );
     addMoney(serviceSubtotals, servicePrice.currency, servicePrice.price * charged);
   }
@@ -747,20 +805,24 @@ async function buildConsultationContentTx(
       : priceSnapshot(
           servicePrices,
           "treatment",
-          t.machine === "Other" ? "Other" : t.machine,
-          t.machineOther || t.machine,
+          t.machine,
+          t.machine,
         );
     const covered = session ? sessionCoverage[idx].covered : effectivePackageId(idx) ? coverage[idx].covered : 0;
     await tx.consultationTreatment.create({
       data: {
         consultationId,
         machine: t.machine,
-        machineOther: t.machineOther,
         bodyParts: JSON.stringify(t.bodyParts ?? []),
         sessionsNeeded: t.sessionsNeeded ?? 1,
         sessionsUsed: t.sessionsUsed ?? 0,
         coveredSessions: covered,
         price: session ? (sp as { unitPrice: number }).unitPrice : (sp as { price: number }).price,
+        // F-03: the cost counterpart of `price`, from the SAME snapshot object —
+        // the plan's frozen `unitCost` for a plan-backed session, otherwise the
+        // catalog cost captured by priceSnapshot. Frozen here so a later catalog
+        // edit can never restate this visit's margin.
+        unitCost: session ? (sp as { unitCost: number }).unitCost : (sp as { cost: number }).cost,
         currency: (sp as { currency: Currency }).currency,
         clientPackageId: session ? null : effectivePackageId(idx),
         sessionPlanId: session ? t.sessionPlanId : null,
@@ -777,6 +839,7 @@ async function buildConsultationContentTx(
         quantity: p.quantity,
         amount: p.amount,
         unitPrice: p.unitPrice, // frozen per-unit price (stored, not re-derived)
+        unitCost: p.unitCost, // F-03: frozen per-unit cost, same freeze-at-sale rule
         currency: p.currency,
         notes: p.notes,
       },
@@ -796,6 +859,9 @@ async function buildConsultationContentTx(
             detail: consultRow?.dietitian?.fullName ?? undefined,
             quantity: 1,
             unitPrice: consultationFee,
+            // No cost of goods: the doctor's time is an operating expense (salary),
+            // not a cost of this sale.
+            unitCost: 0,
             currency: "USD" as Currency,
             covered: false,
           },
@@ -807,13 +873,14 @@ async function buildConsultationContentTx(
       detail: "Blood test",
       quantity: 1,
       unitPrice: charge.price,
+      unitCost: charge.cost,
       currency: charge.currency,
       covered: false,
     })),
     ...treatments.flatMap((t, idx) => {
       const sessionBill = isSessionTreatment(idx) ? sessionBillable[idx] : 0;
       if ((t.sessionsUsed ?? 0) <= 0 && sessionBill <= 0) return [];
-      const label = t.machine === "Other" ? t.machineOther || "Other treatment" : t.machine;
+      const label = t.machine;
       const parts = (t.bodyParts ?? []).filter(Boolean);
       const partsLabel = parts.length > 0 ? parts.join(", ") : "General";
       const lines: BasketItemInput[] = [];
@@ -827,42 +894,54 @@ async function buildConsultationContentTx(
         if (covered > 0) {
           lines.push({
             kind: "treatment", label, detail: `${partsLabel} · ${covered} covered by credit`,
-            quantity: covered, unitPrice: sp.unitPrice, currency: sp.currency, covered: true, sessionPlanId: t.sessionPlanId,
+            quantity: covered, unitPrice: sp.unitPrice, unitCost: sp.unitCost,
+            currency: sp.currency, covered: true, sessionPlanId: t.sessionPlanId,
           });
         }
         if (charged > 0) {
           lines.push({
             kind: "treatment", label, detail: `${partsLabel} · ${charged} session${charged === 1 ? "" : "s"} purchased`,
-            quantity: charged, unitPrice: sp.unitPrice, currency: sp.currency, covered: false, sessionPlanId: t.sessionPlanId,
+            quantity: charged, unitPrice: sp.unitPrice, unitCost: sp.unitCost,
+            currency: sp.currency, covered: false, sessionPlanId: t.sessionPlanId,
           });
         }
         return lines;
       }
       const sp = priceSnapshot(
-        servicePrices, "treatment", t.machine === "Other" ? "Other" : t.machine, t.machineOther || t.machine,
+        servicePrices, "treatment", t.machine, t.machine,
       );
       const { covered, charged } = coverage[idx];
       if (covered > 0) {
         lines.push({
           kind: "treatment", label, detail: `${partsLabel} · ${covered} covered by package`,
-          quantity: covered, unitPrice: sp.price, currency: sp.currency, covered: true,
+          // Covered by a bundle the client already bought and that was already
+          // recognized in full at its purchase — so this line sells nothing and
+          // carries no cost of its own.
+          quantity: covered, unitPrice: sp.price, unitCost: 0, currency: sp.currency, covered: true,
         });
       }
       if (charged > 0) {
         lines.push({
           kind: "treatment", label, detail: `${partsLabel} · ${charged} charged`,
-          quantity: charged, unitPrice: sp.price, currency: sp.currency, covered: false,
+          quantity: charged, unitPrice: sp.price, unitCost: sp.cost, currency: sp.currency, covered: false,
         });
       }
       return lines;
     }),
+    // A prepaid bundle is its own kind of line, not an anonymous "custom" charge.
+    // The kind + clientPackageId are what make it price-protected at checkout and
+    // traceable back to the package whose economics it froze. Quantity is 1 and
+    // unitPrice/unitCost are the WHOLE package's frozen figures: a prepaid package
+    // is recognized in full at purchase, never per session.
     ...[...bundleByIndex.values()].map((b) => ({
-      kind: "custom", label: b.name, detail: `Bundle · ${b.sessions} sessions`,
-      quantity: 1, unitPrice: b.price, currency: b.currency, covered: false,
+      kind: "package", label: b.name, detail: `Bundle · ${b.sessions} sessions`,
+      quantity: 1, unitPrice: b.price, unitCost: b.cost, currency: b.currency,
+      covered: false, clientPackageId: b.clientPackageId,
     })),
     ...products.map((p) => ({
       kind: "product", label: p.name, detail: "Product",
-      quantity: p.quantity, unitPrice: p.unitPrice, currency: p.currency, covered: false,
+      quantity: p.quantity, unitPrice: p.unitPrice, unitCost: p.unitCost,
+      currency: p.currency, covered: false,
       // Carried through so settlement can deduct inventory by the exact final
       // quantity in the basket — see settleVisitBasket in visitBaskets.ts.
       productId: p.productId,
@@ -1276,6 +1355,14 @@ export async function createConsultation(
       await freezeVisitHistoryNamesTx(tx, created.id);
       await completeLinkedAppointmentTx(tx, input.clientId, linkedAppointmentId);
       await retirePaidBasketsTx(tx, created.id);
+      // Same trigger as closeConsultation — this is the other path a visit can be
+      // finalized through (nothing billable, so it closes on the first save).
+      await recordReferralCommissionTx(
+        tx,
+        input.clientId,
+        { type: "consultation", consultationId: created.id },
+        opts.actorName,
+      );
     }
     return { id: created.id, closeBlocked: false };
   });
@@ -1322,7 +1409,10 @@ export async function updateConsultation(
     // rows, so a sold line whose catalog product was deleted meanwhile can be
     // rebuilt from its own snapshot instead of vanishing on re-save.
     const priorProductRows = await tx.consultationProduct.findMany({ where: { consultationId: id } });
-    const priorProducts = new Map<string, { name: string; unitPrice: number; currency: Currency }>();
+    const priorProducts = new Map<
+      string,
+      { name: string; unitPrice: number; unitCost: number; currency: Currency }
+    >();
     for (const r of priorProductRows) {
       if (r.productId) {
         priorProducts.set(r.productId, {
@@ -1330,6 +1420,11 @@ export async function updateConsultation(
           // Read the frozen unit price straight from the column — never re-derive
           // it as amount ÷ quantity — so a later quantity change stays exact.
           unitPrice: r.unitPrice,
+          // F-03: the frozen unit COST is carried across the rebuild for exactly
+          // the same reason. Without this the delete-and-recreate on every draft
+          // save would re-snapshot the cost from the live catalog and quietly
+          // re-price the margin of a line that was sold days earlier.
+          unitCost: r.unitCost,
           currency: asCurrency(r.currency),
         });
       }
@@ -1389,6 +1484,17 @@ export async function closeConsultation(
     await logConsultationFeeWaiveTx(tx, id, { name: opts.actorName, email: opts.actorEmail });
     await completeLinkedAppointmentTx(tx, existing.clientId, existing.appointmentId);
     await retirePaidBasketsTx(tx, id);
+    // The referral commission is incurred HERE — at the patient's first completed
+    // visit — not at registration. No-ops for a returning patient, a patient with
+    // no referrer, or a referrer whose rate is 0. Inside the close transaction, so
+    // a visit can never close without its commission (or leave one behind if the
+    // close rolls back).
+    await recordReferralCommissionTx(
+      tx,
+      existing.clientId,
+      { type: "consultation", consultationId: id },
+      opts.actorName,
+    );
   });
   return getConsultationById(id);
 }

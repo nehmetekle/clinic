@@ -53,6 +53,7 @@ import {
   type MachineVisit,
   type PaymentMethod,
 } from "@/lib/types";
+import { NO_MACHINE_LABEL } from "@/lib/types";
 import {
   age,
   bmiCategory,
@@ -433,7 +434,7 @@ export default function ClientProfilePage() {
                     <ul className="mt-2 space-y-1 text-sm text-slate-600">
                       {creditPlans.map((p) => (
                         <li key={p.id} className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-slate-700">{p.machine ?? "General"}</span>
+                          <span className="font-medium text-slate-700">{p.machine ?? NO_MACHINE_LABEL}</span>
                           <span className="font-medium text-emerald-600">{p.sessionsAvailable} available</span>
                         </li>
                       ))}
@@ -656,7 +657,7 @@ export default function ClientProfilePage() {
                       <TBody>
                         {sessionPlans.map((p) => (
                           <TR key={p.id}>
-                            <TD className="font-medium">{p.machine ?? "General"}</TD>
+                            <TD className="font-medium">{p.machine ?? NO_MACHINE_LABEL}</TD>
                             <TD>{formatMoney(p.unitPrice, p.currency)}</TD>
                             <TD>{p.sessionsNeeded}</TD>
                             <TD>{p.sessionsPaid}</TD>
@@ -805,7 +806,7 @@ export default function ClientProfilePage() {
                           )}
                           {c.treatments?.map((t) => (
                             <p key={t.id}>
-                              <span className="font-medium text-slate-700">{t.machineOther || t.machine}: </span>
+                              <span className="font-medium text-slate-700">{t.machine}: </span>
                               {t.bodyParts.length > 0 ? t.bodyParts.join(", ") : "—"}
                               {t.price !== undefined && t.price > 0 && (
                                 <span className="text-slate-400"> · {formatMoney(t.price, t.currency)}</span>
@@ -1382,7 +1383,7 @@ export default function ClientProfilePage() {
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
-            {voidTarget?.items.map((i) => `${i.machine} ×${i.sessions}`).join(", ")}
+            {voidTarget?.items.map((i) => `${i.machine ?? NO_MACHINE_LABEL} ×${i.sessions}`).join(", ")}
           </p>
           <div>
             <Label htmlFor="void-reason">Reason (optional)</Label>

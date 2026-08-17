@@ -86,6 +86,15 @@ export async function canManageJessy(req: Request): Promise<boolean> {
   return (await actingRole(req)) === "admin";
 }
 
+/** The referral-commission ledger: what the clinic owes the people who send it
+ * patients, and what it has paid them. Admin-only for the same reason as the
+ * Jessy ledger — it is a financial report (docs/01-product-spec.md §2.1 reserves
+ * those for the owner), and recording a payout means agreeing a balance the
+ * secretary has no business seeing. Stricter than `canHandleMoney` on purpose. */
+export async function canManageReferrals(req: Request): Promise<boolean> {
+  return (await actingRole(req)) === "admin";
+}
+
 /** Logging a machine-only visit — a patient who came in just to use prepaid
  * machine sessions. It is the clinical side that decides a consultation isn't
  * needed today, so this is the doctor's call (and the admin's). It is NOT

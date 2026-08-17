@@ -3,12 +3,15 @@ import { db } from "../db";
 import { ConflictError, ForbiddenError, NotFoundError } from "../http";
 import { asCurrency } from "../serialize";
 import { writeAudit } from "./audit";
+import { recordReferralCommissionTx } from "./referralCommissions";
+import { clinicDayRange } from "@/lib/config";
 import {
   consumeClientPackageTx,
   consumeSessionPlanTx,
   releaseClientPackageTx,
   releaseSessionPlanTx,
 } from "./sessionCounters";
+import { NO_MACHINE_LABEL } from "@/lib/types";
 import type { Currency, MachineVisit, MachineVisitItem, Role } from "@/lib/types";
 
 /**
@@ -80,9 +83,15 @@ export async function listMachineVisits(filter: {
       clientId: filter.clientId,
       ...(filter.from || filter.to
         ? {
+            // Clinic midnight in the clinic's own timezone, never UTC midnight.
+            // Building these from raw "...T00:00:00.000Z" strings shifts the whole
+            // window by the UTC offset, so an evening visit falls into the next
+            // day and drops out of the period it belongs to. Half-open (`lt` on
+            // the day AFTER `to`) so the final day is included whole without the
+            // .999 millisecond that an `lte` endpoint silently truncates.
             date: {
-              ...(filter.from ? { gte: new Date(`${filter.from}T00:00:00.000Z`) } : {}),
-              ...(filter.to ? { lte: new Date(`${filter.to}T23:59:59.999Z`) } : {}),
+              ...(filter.from ? { gte: clinicDayRange(filter.from).gte } : {}),
+              ...(filter.to ? { lt: clinicDayRange(filter.to).lt } : {}),
             },
           }
         : {}),
@@ -220,9 +229,16 @@ export async function createMachineVisit(
       });
 
       type Line = {
-        machine: string;
+        // Catalog machine key, or null when the plan/bundle is not tied to a
+        // machine. Never an invented stand-in label — see MachineVisitItem.machine.
+        machine: string | null;
         sessions: number;
         unitPrice: number;
+        // F-03: the clinic's own per-session cost, frozen from the source the
+        // sessions were bought under. A machine visit bills nothing, so this row
+        // is the ONLY record that these sessions were delivered at a cost — with
+        // no price to carry the economics, the cost has to carry them alone.
+        unitCost: number;
         currency: Currency;
         sessionPlanId: string | null;
         clientPackageId: string | null;
@@ -250,10 +266,15 @@ export async function createMachineVisit(
           });
 
           lines.push({
-            machine: plan.machine ?? "Treatment",
+            // Verbatim from the plan. It used to fall back to the literal
+            // "Treatment", which then appeared in machine reports as a machine by
+            // that name; a plan with no machine now honestly records none.
+            machine: plan.machine,
             sessions: item.sessions,
             // Recorded for the history line only — nothing is charged here.
             unitPrice: plan.unitPrice,
+            // Inherited from the plan's own frozen cost, never today's catalog.
+            unitCost: plan.unitCost,
             currency: asCurrency(plan.currency),
             sessionPlanId: plan.id,
             clientPackageId: null,
@@ -274,9 +295,17 @@ export async function createMachineVisit(
           sessions: item.sessions,
         });
         lines.push({
-          machine: cp.machine ?? cp.packageName,
+          // Likewise verbatim: falling back to the bundle's NAME put a product
+          // name in the machine column of the utilization report.
+          machine: cp.machine,
           sessions: item.sessions,
           unitPrice: 0,
+          // A bundle freezes ONE cost for the whole course (ClientPackage.cost),
+          // so the per-session cost is that total spread over the sessions it
+          // bought. Both numbers were frozen at the sale, so this stays a
+          // historical figure — it is not re-derived from the catalog. Guarded
+          // against a zero-session bundle so a corrupt row can't produce Infinity.
+          unitCost: cp.totalSessions > 0 ? cp.cost / cp.totalSessions : 0,
           currency: asCurrency(cp.currency),
           sessionPlanId: null,
           clientPackageId: cp.id,
@@ -291,6 +320,7 @@ export async function createMachineVisit(
             sessions: line.sessions,
             billedSessions: 0,
             unitPrice: line.unitPrice,
+            unitCost: line.unitCost,
             currency: line.currency,
             sessionPlanId: line.sessionPlanId,
             clientPackageId: line.clientPackageId,
@@ -303,7 +333,18 @@ export async function createMachineVisit(
         await tx.machineVisit.update({ where: { id: visit.id }, data: { appointmentId } });
       }
 
-      const label = lines.map((l) => `${l.machine} ×${l.sessions}`).join(", ");
+      // A machine visit is a real completed visit, so it triggers the referral
+      // commission on the same "first completed visit" rule as a consultation —
+      // whichever kind of visit the patient attends first is the one that makes
+      // the clinic liable. No-ops for every subsequent visit.
+      await recordReferralCommissionTx(
+        tx,
+        input.clientId,
+        { type: "machine_visit", machineVisitId: visit.id },
+        actor.name,
+      );
+
+      const label = lines.map((l) => `${l.machine ?? NO_MACHINE_LABEL} ×${l.sessions}`).join(", ");
       await writeAudit(tx, {
         userId: actor.id,
         userName: actor.name,
@@ -395,7 +436,7 @@ export async function voidMachineVisit(
       userName: actor.name,
       action: "Voided machine visit",
       entityType: "MachineVisit",
-      entityLabel: `${visit.items.map((i) => `${i.machine} ×${i.sessions}`).join(", ")}${
+      entityLabel: `${visit.items.map((i) => `${i.machine ?? NO_MACHINE_LABEL} ×${i.sessions}`).join(", ")}${
         input.reason?.trim() ? ` — ${input.reason.trim()}` : ""
       }`,
     });
@@ -420,15 +461,23 @@ export async function voidMachineVisit(
  * consultations and machine visits until their sessions run out.
  */
 export async function machineUtilization(range: { from?: string; to?: string }): Promise<
-  { machine: string; sessions: number; machineVisits: number; consultationSessions: number }[]
+  {
+    machine: string;
+    sessions: number;
+    machineVisitSessions: number;
+    machineVisits: number;
+    consultationSessions: number;
+  }[]
 > {
+  // Clinic-day boundaries, matching every other windowed figure on the report —
+  // see the note in listMachineVisits.
   const dateFilter = {
-    ...(range.from ? { gte: new Date(`${range.from}T00:00:00.000Z`) } : {}),
-    ...(range.to ? { lte: new Date(`${range.to}T23:59:59.999Z`) } : {}),
+    ...(range.from ? { gte: clinicDayRange(range.from).gte } : {}),
+    ...(range.to ? { lt: clinicDayRange(range.to).lt } : {}),
   };
   const hasRange = range.from !== undefined || range.to !== undefined;
 
-  const [visitRows, consultRows] = await Promise.all([
+  const [visitRows, consultRows, catalogMachines] = await Promise.all([
     db.machineVisit.findMany({
       where: { status: "recorded", ...(hasRange ? { date: dateFilter } : {}) },
       include: { items: true },
@@ -438,19 +487,42 @@ export async function machineUtilization(range: { from?: string; to?: string }):
         sessionsUsed: { gt: 0 },
         consultation: { status: "closed", ...(hasRange ? { date: dateFilter } : {}) },
       },
-      select: { machine: true, machineOther: true, sessionsUsed: true },
+      select: { machine: true, sessionsUsed: true },
     }),
+    db.servicePrice.findMany({ where: { kind: "treatment" }, select: { key: true } }),
   ]);
+  // Machine = one of the clinic's own catalog machines, or no machine — never a
+  // third option. New writes are enforced at save time (buildConsultationContentTx,
+  // createSessionPlan, sellSessions); this catches stale rows from before that
+  // enforcement existed (e.g. the old "Other" bucket) so they don't linger in
+  // reports. Matches against every catalog key ever used (not just `active`) so a
+  // machine that's merely been retired doesn't drop out of historical reporting.
+  const knownMachines = new Set(catalogMachines.map((m) => m.key));
 
-  const by = new Map<
-    string,
-    { machine: string; sessions: number; machineVisits: number; consultationSessions: number }
-  >();
-  const row = (machine: string) => {
-    let r = by.get(machine);
+  // Two of these count SESSIONS and one counts VISITS. They are reported as
+  // separate fields, and labelled as such, because a single "sessions" total next
+  // to a visit count invites the two to be compared as if they were the same
+  // thing. The split is also the useful part: `sessions` is the machine's total
+  // workload, and `machineVisitSessions` + `consultationSessions` say whether that
+  // workload arrived as machine-only attendance or inside a full consultation.
+  type Row = {
+    machine: string;
+    sessions: number;
+    machineVisitSessions: number;
+    machineVisits: number;
+    consultationSessions: number;
+  };
+  const by = new Map<string, Row>();
+  // ONE canonical identity per machine, on both paths: the catalog key stored on
+  // the row. Nothing is derived from a label, a bundle name or a free-text field,
+  // which is what used to file the same physical machine under two names and split
+  // it across two rows. A row with no machine is reported as exactly that.
+  const row = (machine: string | null) => {
+    const key = machine ?? NO_MACHINE_LABEL;
+    let r = by.get(key);
     if (!r) {
-      r = { machine, sessions: 0, machineVisits: 0, consultationSessions: 0 };
-      by.set(machine, r);
+      r = { machine: key, sessions: 0, machineVisitSessions: 0, machineVisits: 0, consultationSessions: 0 };
+      by.set(key, r);
     }
     return r;
   };
@@ -459,20 +531,23 @@ export async function machineUtilization(range: { from?: string; to?: string }):
     const seen = new Set<string>();
     for (const item of v.items) {
       const r = row(item.machine);
+      const seenKey = item.machine ?? NO_MACHINE_LABEL;
       r.sessions += item.sessions;
+      r.machineVisitSessions += item.sessions;
       // One visit counts once per machine, however many lines it has.
-      if (!seen.has(item.machine)) {
+      if (!seen.has(seenKey)) {
         r.machineVisits += 1;
-        seen.add(item.machine);
+        seen.add(seenKey);
       }
     }
   }
   for (const t of consultRows) {
-    const label = t.machine === "Other" ? t.machineOther || "Other" : t.machine;
-    const r = row(label);
+    const r = row(t.machine);
     r.sessions += t.sessionsUsed;
     r.consultationSessions += t.sessionsUsed;
   }
 
-  return [...by.values()].sort((a, b) => b.sessions - a.sessions || a.machine.localeCompare(b.machine));
+  return [...by.values()]
+    .filter((r) => r.machine === NO_MACHINE_LABEL || knownMachines.has(r.machine))
+    .sort((a, b) => b.sessions - a.sessions || a.machine.localeCompare(b.machine));
 }

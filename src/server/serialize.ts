@@ -140,6 +140,7 @@ export function toExpense(e: PExpense): Expense {
     usdToLbp: e.usdToLbp,
     date: dateOnly(e.date)!,
     paidBy: e.paidBy ?? "",
+    kind: (e.kind === "referral_commission" ? "referral_commission" : "operating"),
     method: asPaymentMethod(e.method ?? "cash"),
     notes: e.notes ?? undefined,
     amountEdited: e.amountEdited,

@@ -71,6 +71,41 @@ export function todayIso(): string {
   return clinicDay();
 }
 
+/**
+ * How far back an expense may be dated at creation, in days.
+ *
+ * A new expense may be dated anywhere in [today − 30 days, today] and nowhere
+ * else. The date is what decides which reporting period the expense lands in, and
+ * it is immutable once written (see updateExpense), so the period is fixed at
+ * creation and can never be moved afterwards.
+ *
+ * Both ends of the window matter, for the same reason from opposite directions:
+ *  - Too far BACK would reopen a month that has already been reported, silently
+ *    changing a figure someone has acted on.
+ *  - Any date in the FUTURE would file the expense into a period that has not
+ *    happened yet, where it sits invisible in today's report and then appears in
+ *    a later one without anything having been entered that day.
+ *
+ * A back-window rather than "today only" because a real receipt does arrive a few
+ * weeks late. There is no equivalent excuse for a future date: a cost that has
+ * not been incurred is not yet an expense.
+ */
+export const EXPENSE_BACKDATE_LIMIT_DAYS = 30;
+
+/** The earliest date a new expense may carry, as a clinic-day string. */
+export function earliestExpenseDate(today: string = todayIso()): string {
+  // Built from the clinic day, so the window is measured in the clinic's own
+  // calendar rather than the server's timezone.
+  const d = new Date(`${today}T12:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() - EXPENSE_BACKDATE_LIMIT_DAYS);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The latest date a new expense may carry: the clinic's today. */
+export function latestExpenseDate(today: string = todayIso()): string {
+  return today;
+}
+
 /** Minutes the clinic wall-clock is ahead of UTC at `date` (negative if behind);
  * reflects DST at that instant. */
 function clinicOffsetMinutes(date: Date): number {

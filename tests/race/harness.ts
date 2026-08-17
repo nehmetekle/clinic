@@ -28,6 +28,10 @@ export async function resetDb() {
   // Machine visits reference session plans/bundles with RESTRICT foreign keys, so
   // they must go before the client cascade would try to remove those rows.
   await db.machineVisit.deleteMany({});
+  // Basket lines reference the ClientPackage they SOLD with a RESTRICT foreign
+  // key (a sale must never be orphaned from the package it created), so the
+  // baskets go before the client cascade reaches those packages.
+  await db.visitBasket.deleteMany({});
   await db.consultation.deleteMany({});
   await db.client.deleteMany({});
   await db.user.deleteMany({});

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Field";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
+import { NO_MACHINE_LABEL } from "@/lib/types";
 import type { ClientDetail, MachineVisit } from "@/lib/types";
 
 /**
@@ -33,7 +34,7 @@ function sourcesFrom(detail: ClientDetail): Source[] {
     .filter((p) => p.status === "active" && p.sessionsAvailable > 0)
     .map((p) => ({
       key: `plan:${p.id}`,
-      machine: p.machine ?? "Treatment",
+      machine: p.machine ?? NO_MACHINE_LABEL,
       available: p.sessionsAvailable,
       sessionPlanId: p.id,
     }));
@@ -41,7 +42,7 @@ function sourcesFrom(detail: ClientDetail): Source[] {
     .filter((p) => p.status === "active" && p.totalSessions - p.usedSessions > 0)
     .map((p) => ({
       key: `pkg:${p.id}`,
-      machine: p.machine ?? p.packageName,
+      machine: p.machine ?? NO_MACHINE_LABEL,
       // A bundle is prepaid in full, so its whole remaining balance is available.
       available: p.totalSessions - p.usedSessions,
       clientPackageId: p.id,

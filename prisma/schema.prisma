@@ -38,6 +38,7 @@ model User {
   consultationFiles   ConsultationFile[]
   expenses            Expense[]
   jessySettlements    JessySettlement[]
+  referralPayouts     ReferralPayout[]
   payments            Payment[]
   pendingTwoFactors   PendingTwoFactor[]
   sessions            Session[]
@@ -89,7 +90,26 @@ model Client {
   passportNumber      String?
   country             String?
   maritalStatus       String?
+  /// The referrer as the front desk currently believes it — EDITABLE (a check-in
+  /// or profile correction rewrites it). Because it is mutable it must never be
+  /// the key a financial figure is grouped by; use `referrerNameSnapshot` for
+  /// that. Kept as the live display value and the input to `resolveReferralFee`
+  /// at registration.
   referralSource      String?
+  /// The referrer this patient is ATTRIBUTED to. Follows `referralSource` on
+  /// every edit (registration, check-in correction, or adding one after the
+  /// fact) right up until a `ReferralCommission` row exists for this client —
+  /// then it freezes, because that row is what was actually incurred/paid
+  /// against and no later edit may redirect it. This is the identity half of the
+  /// referral model; the AMOUNT is not stored here — it is resolved from the
+  /// referrer's live rate at the moment the commission is incurred (the first
+  /// completed visit) and frozen onto the ReferralCommission row then.
+  referrerNameSnapshot String?
+  /// Precise link to the Referrer row the fee was resolved from, for the cases a
+  /// name cannot disambiguate (two referrers, one renamed into the other's old
+  /// name). Nulls out if that referrer is later deleted, which is exactly why the
+  /// NAME is snapshotted separately and is the durable field.
+  referrerId          String?
   firstTimePatient    Boolean           @default(false)
   intakeComplete      Boolean           @default(true)
   registeredAt        DateTime          @default(now())
@@ -97,13 +117,14 @@ model Client {
   updatedAt           DateTime          @updatedAt
   assignedDietitianId String?
   createdById         String?
-  referralFee         Float?
   // Whether this patient gets WhatsApp appointment reminders. Default on; staff
   // can opt a patient out (see consent checkbox at registration/check-in).
   whatsappOptIn       Boolean           @default(true)
   appointments        Appointment[]
   bloodSamples        BloodSample[]
   assignedDietitian   User?             @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
+  referrer            Referrer?         @relation(fields: [referrerId], references: [id], onDelete: SetNull)
+  referralCommission  ReferralCommission?
   createdBy           User?             @relation("CreatedByUser", fields: [createdById], references: [id])
   debts               ClientDebt[]
   packages            ClientPackage[]
@@ -121,6 +142,12 @@ model SessionPlan {
   clientId          String
   machine           String?
   unitPrice         Float
+  /// The clinic's OWN per-session cost, frozen from ServicePrice.cost when this
+  /// plan was created. Admin-only and never serialized to a client. Frozen for
+  /// the same reason `unitPrice` is: a later catalog cost edit must not rewrite
+  /// the margin of sessions already sold and delivered. 0 on rows created before
+  /// cost capture existed — see the reporting cutover in docs/known-issues.md.
+  unitCost          Float                   @default(0)
   currency          String                  @default("USD")
   usdToLbp          Float                   @default(0)
   sessionsNeeded    Int
@@ -220,6 +247,7 @@ model ClientPackage {
   package           Package?                @relation(fields: [packageId], references: [id])
   treatments        ConsultationTreatment[]
   machineVisitItems MachineVisitItem[]
+  basketItems       VisitBasketItem[]
 }
 
 model Appointment {
@@ -274,6 +302,12 @@ model Consultation {
   followUpPlan          String?
   bloodCollection       Boolean                 @default(false)
   bloodTests            String?
+  /// JSON array of the blood tests charged on this visit, each snapshotted from
+  /// the catalog at save time: `{ name, price, currency, cost }`. `cost` is the
+  /// clinic's own frozen cost and is ADMIN-ONLY — `parseCharges` strips it when
+  /// building the client-facing type, so it never leaves the server outside a
+  /// report. Rows written before cost capture have no `cost` key (treat as
+  /// unknown, not as zero).
   bloodTestCharges      String?
   nurseRequired         Boolean                 @default(false)
   visitDiscountType     String?
@@ -365,13 +399,25 @@ model ConsultationFile {
 model ConsultationTreatment {
   id                  String         @id @default(cuid())
   consultationId      String
+  /// The machine this treatment was delivered on: a KEY FROM THE TREATMENT
+  /// CATALOG (ServicePrice, kind "treatment"), never free text.
+  ///
+  /// There is deliberately no "Other"/custom machine. A machine is one of the
+  /// clinic's predefined machines or it is nothing — the old `machineOther`
+  /// free-text escape hatch is gone, because it gave the SAME physical machine
+  /// two identities (the catalog key on one path, the typed label on another) and
+  /// split it into two rows in every report that grouped by machine.
   machine             String
-  machineOther        String?
   bodyParts           String         @default("[]")
   sessionsNeeded      Int            @default(1)
   sessionsUsed        Int            @default(0)
   coveredSessions     Int            @default(0)
   price               Float          @default(0)
+  /// Per-session (or per-treatment) clinic cost, frozen at the moment this line
+  /// was first written, from ServicePrice.cost — or from the session plan's own
+  /// frozen `unitCost` for a plan-backed line. Admin-only; never serialized.
+  /// Preserved verbatim across draft edits, exactly like `price`.
+  unitCost            Float          @default(0)
   currency            String         @default("USD")
   clientPackageId     String?
   sessionPlanId       String?
@@ -431,6 +477,10 @@ model ConsultationProduct {
   quantity       Int          @default(1)
   amount         Float        @default(0)
   unitPrice      Float        @default(0)
+  /// Per-unit clinic cost frozen at the moment of sale from Product.cost, the
+  /// exact counterpart of `unitPrice`. COGS for this line is unitCost × quantity.
+  /// Admin-only; never serialized to a client.
+  unitCost       Float        @default(0)
   currency       String       @default("USD")
   notes          String?
   createdAt      DateTime     @default(now())
@@ -590,14 +640,37 @@ model VisitBasketItem {
   unitPrice     Float        @default(0)
   currency      String       @default("USD")
   covered       Boolean      @default(false)
+  /// The clinic's own cost for this line, per unit, FROZEN when the line was
+  /// built — the cost counterpart of `unitPrice`. COGS for the line is
+  /// `unitCost * quantity`. 0 for lines that have no cost of goods (a
+  /// consultation fee is the doctor's time, which is an operating expense).
+  /// Admin-only: never serialized to a client.
+  unitCost      Float        @default(0)
+  /// The line's allocated share of the bill-level discount, in the basket's
+  /// currency, FROZEN at settlement.
+  ///
+  /// A discount is NOT a price edit. `unitPrice` stays exactly what the item cost
+  /// according to its source, forever and auditably; the reduction lives here,
+  /// separately. The line's actual sale amount is
+  /// `unitPrice * quantity - discountAmount`, and the allocation is computed so
+  /// these sum EXACTLY to the amount charged to the client — no residual cent can
+  /// appear between the sum of the lines and the basket total.
+  discountAmount Float       @default(0)
   sessionPlanId String?
   // Permanent catalog reference for a "product" line (survives rename/delete,
   // like ConsultationProduct.productId) — lets settlement deduct inventory by
   // the exact final quantity sitting in the basket. Null for non-product lines.
   productId     String?
+  /// The prepaid bundle this line SELLS. Without it a bundle line was an
+  /// untraceable "custom" row: nothing connected the money on the bill to the
+  /// ClientPackage it created, so the package's real agreed price could not be
+  /// established once a bill-level discount was involved. It is also what lets
+  /// the line be price-protected like any other catalog-backed item.
+  clientPackageId String?
   createdAt     DateTime     @default(now())
   basket        VisitBasket  @relation(fields: [basketId], references: [id], onDelete: Cascade)
   sessionPlan   SessionPlan? @relation(fields: [sessionPlanId], references: [id])
+  clientPackage ClientPackage? @relation(fields: [clientPackageId], references: [id])
 }
 
 model ClientDebt {
@@ -684,6 +757,13 @@ model Expense {
   paidBy       String?
   method       String?
   notes        String?
+  /// What this expense IS, for the P&L. "operating" (the default) is a normal
+  /// running cost and is the only kind counted as an operating expense.
+  /// "referral_commission" exists so a commission someone records here by hand is
+  /// EXCLUDED rather than silently double-counted against the ReferralCommission
+  /// ledger, which already recognized it. Referral payouts never create an
+  /// Expense row at all — this is the safety net for manual entry, not the path.
+  kind         String   @default("operating")
   amountEdited Boolean  @default(false)
   createdById  String?
   createdAt    DateTime @default(now())
@@ -744,7 +824,12 @@ model MachineVisit {
 model MachineVisitItem {
   id              String         @id @default(cuid())
   machineVisitId  String
-  machine         String
+  /// Catalog machine key, frozen at consumption — or NULL when the plan/bundle
+  /// this line drew on is not tied to a machine. Null means NO MACHINE and is
+  /// reported as such; it is never backfilled with an invented label (this used
+  /// to fall back to the literal "Treatment", or to the bundle's name, either of
+  /// which appears in a machine report as a machine that does not exist).
+  machine         String?
   sessions        Int
   sessionPlanId   String?
   clientPackageId String?
@@ -753,6 +838,11 @@ model MachineVisitItem {
   // reports read, never re-derived from today's plan state.
   billedSessions  Int            @default(0)
   unitPrice       Float          @default(0)
+  /// Per-session clinic cost frozen when this consumption was recorded — copied
+  /// from the source plan's own frozen `unitCost` (a bundle-backed line carries
+  /// the bundle's per-session cost). Machine visits never bill, so this is the
+  /// ONLY cost signal they leave behind. Admin-only; never serialized.
+  unitCost        Float          @default(0)
   currency        String         @default("USD")
   createdAt       DateTime       @default(now())
   machineVisit    MachineVisit   @relation(fields: [machineVisitId], references: [id], onDelete: Cascade)
@@ -792,6 +882,87 @@ model Referrer {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   fee       Float    @default(0)
+  /// Patients attributed to THIS referrer. Deleting a referrer nulls the link
+  /// (SetNull) rather than cascading — a commission that was incurred must
+  /// survive the referrer being removed from the dropdown.
+  /// `Client.referrerNameSnapshot` is what keeps it attributable afterwards.
+  referredClients Client[]
+  commissions     ReferralCommission[]
+  payouts         ReferralPayout[]
+}
+
+/// A commission the clinic OWES a referrer, and its settlement.
+///
+/// THE OBLIGATION IS NOT CREATED BY REGISTRATION. Attributing a patient to a
+/// referrer records who sent them; it commits the clinic to nothing. The
+/// liability is incurred when that patient's FIRST VISIT COMPLETES — a closed
+/// consultation or a recorded machine visit, whichever comes first. A patient who
+/// registers and never attends costs the clinic nothing, which is the whole point
+/// of the rule.
+///
+/// The amount is the referrer's rate AT THAT MOMENT, frozen here. Editing the
+/// referrer's fee afterwards prices future referrals only; this row never moves.
+///
+/// Incurring affects PROFIT (once). Paying affects CASH and creates no second
+/// expense — a ReferralPayout writes no Expense and no Payment, exactly as a
+/// Jessy settlement writes no Payment.
+model ReferralCommission {
+  id                    String    @id @default(cuid())
+  /// One commission per patient, EVER — enforced by the unique constraint below
+  /// rather than by convention, so two visits completing concurrently cannot both
+  /// mint one. A recurring-referral model would widen this to
+  /// @@unique([clientId, periodKey]); nothing else in the design would move.
+  clientId              String    @unique
+  referrerId            String?
+  /// Durable attribution: survives the referrer being renamed or deleted.
+  referrerNameSnapshot  String
+  /// USD, frozen from the referrer's rate at the instant this was incurred.
+  amount                Float
+  /// When the clinic became liable = when the first visit completed.
+  incurredAt            DateTime  @default(now())
+  /// Which visit crystallized it. Exactly one of these is set.
+  triggerType           String
+  triggerConsultationId String?
+  triggerMachineVisitId String?
+  /// "incurred" -> "paid" (settled by a payout) or "void" (written off).
+  status                String    @default("incurred")
+  paidAt                DateTime?
+  payoutId              String?
+  voidReason            String?
+  voidedByName          String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  client                Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  referrer              Referrer? @relation(fields: [referrerId], references: [id], onDelete: SetNull)
+  payout                ReferralPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([status, incurredAt])
+  @@index([referrerId])
+}
+
+/// One transfer of money actually paid TO a referrer, covering one or more
+/// incurred commissions. Records no Expense and no Payment: the expense was
+/// already recognized when each commission was incurred, and recognizing it again
+/// here would double-count it. This is a cash movement only.
+model ReferralPayout {
+  id                   String               @id @default(cuid())
+  referrerId           String?
+  referrerNameSnapshot String
+  /// USD actually transferred in this payout.
+  amount               Float
+  reference            String?
+  notes                String?
+  paidAt               DateTime             @default(now())
+  /// Replay guard: a double-clicked confirm resolves to the same payout.
+  idempotencyKey       String?              @unique
+  recordedById         String?
+  recordedByName       String?
+  createdAt            DateTime             @default(now())
+  referrer             Referrer?            @relation(fields: [referrerId], references: [id], onDelete: SetNull)
+  recordedBy           User?                @relation(fields: [recordedById], references: [id])
+  commissions          ReferralCommission[]
+
+  @@index([referrerId, paidAt])
 }
 
 model Counter {

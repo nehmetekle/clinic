@@ -35,21 +35,34 @@ export async function updateReferrer(id: string, input: UpdateReferrerInput): Pr
 }
 
 /**
- * The commission (USD) to freeze onto a patient when they're attributed to the
- * referrer named `referralSource`. Matches the LIVE Referrer.fee by the exact
- * snapshotted name (the same free-text name stored on the client), so the amount
- * is captured once, at registration, and never re-derived afterwards. Returns
- * null when there's no referrer match or the fee is 0 — i.e. nothing to owe.
+ * The referrer to ATTRIBUTE a patient to at registration.
+ *
+ * Attribution only — no money is resolved here and no obligation is created.
+ * Registering a patient commits the clinic to nothing; the commission is incurred
+ * when that patient's first visit completes, priced at the referrer's rate at
+ * THAT moment (see repositories/referralCommissions.ts). This is why there is no
+ * fee in the return value: freezing one here would lock a rate months before the
+ * obligation it prices exists.
+ *
+ * The identity IS frozen here, though, and deliberately: who referred the patient
+ * is settled at registration and must not follow a later correction to the
+ * editable `referralSource` field.
+ *
+ * Returns nulls for a patient who came organically (the reserved "None" choice)
+ * or whose named referrer is not in the catalog — there is nobody to attribute.
+ * A zero-fee referrer IS still attributed: the fee is read later, and a rate of 0
+ * at registration says nothing about the rate at the first visit.
  */
-export async function resolveReferralFee(
+export async function resolveReferralAttribution(
   referralSource: string | null | undefined,
-): Promise<number | null> {
+): Promise<{ referrerId: string | null; referrerName: string | null }> {
+  const none = { referrerId: null, referrerName: null };
   const name = referralSource?.trim();
-  // No referrer, or the explicit "None" (came organically) choice → never a cost.
-  if (!name || name === NONE_REFERRER) return null;
+  if (!name || name === NONE_REFERRER) return none;
+  // `Referrer.name` is unique, so this resolves to exactly one row or none.
   const referrer = await db.referrer.findFirst({ where: { name } });
-  const fee = referrer?.fee ?? 0;
-  return fee > 0 ? fee : null;
+  if (!referrer) return none;
+  return { referrerId: referrer.id, referrerName: referrer.name };
 }
 
 export async function deleteReferrer(id: string): Promise<void> {

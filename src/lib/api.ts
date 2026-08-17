@@ -3,6 +3,7 @@ import type {
   Appointment,
   AppointmentStatus,
   AuditEntry,
+  ReferralReport,
   BloodSample,
   BloodSampleFile,
   ClientBloodFile,
@@ -409,13 +410,31 @@ export const api = {
   listAudit: () => getJson<AuditEntry[]>("/api/audit"),
   // `range` scopes the flow figures (income, expenses, net profit) to [from, to];
   // omit it for all-time. Snapshot figures ignore it.
-  getDashboard: (range?: { from?: string; to?: string }) => {
+  // `dietitianId` additionally scopes the EARNED figures (revenue, COGS, gross
+  // profit, revenue by kind, bundles, the trend chart) to that dietitian's
+  // visits. Clinic-wide costs and cash balances are never scoped by it.
+  getDashboard: (range?: { from?: string; to?: string; dietitianId?: string }) => {
     const q = new URLSearchParams();
     if (range?.from) q.set("from", range.from);
     if (range?.to) q.set("to", range.to);
+    if (range?.dietitianId) q.set("dietitianId", range.dietitianId);
     const qs = q.toString();
     return getJson<DashboardSummary>(`/api/dashboard${qs ? `?${qs}` : ""}`);
   },
+
+  // Referral-commission ledger (admin only). `getReferrals` returns the three
+  // headline figures plus every commission and payout; recording a payout settles
+  // specific commissions and creates no expense (the expense was recognized when
+  // each commission was incurred).
+  getReferralLedger: () => getJson<ReferralReport>("/api/referrals"),
+  recordReferralPayout: (body: {
+    commissionIds: string[];
+    reference?: string;
+    notes?: string;
+    idempotencyKey?: string | null;
+  }) => postJson<{ id: string; amount: number; count: number }>("/api/referrals/payouts", body),
+  voidReferralCommission: (id: string, body: { reason: string }) =>
+    postJson<{ ok: true }>(`/api/referrals/commissions/${id}/void`, body),
 
   getSettings: () => getJson<ClinicSettings>("/api/settings"),
   updateSettings: (body: {

@@ -4,6 +4,7 @@ import { Card, CardBody } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/utils";
+import { NO_MACHINE_LABEL } from "@/lib/types";
 import type { MachineVisit } from "@/lib/types";
 
 /**
@@ -40,7 +41,7 @@ export function MachineVisitCard({
         <div className={voided ? "mt-3 space-y-1 text-sm text-slate-400 line-through" : "mt-3 space-y-1 text-sm text-slate-600"}>
           {visit.items.map((i) => (
             <p key={i.id}>
-              <span className="font-medium text-slate-700">{i.machine}</span> ×{i.sessions}
+              <span className="font-medium text-slate-700">{i.machine ?? NO_MACHINE_LABEL}</span> ×{i.sessions}
               {i.billedSessions > 0 && (
                 <span className="text-slate-400">
                   {" · "}

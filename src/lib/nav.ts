@@ -1,5 +1,6 @@
 import type { Role } from "./types";
 import {
+  Share2,
   LayoutDashboard,
   Users,
   CalendarDays,
@@ -36,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Expenses", short: "Expenses", href: "/expenses", icon: Receipt, roles: ["secretary", "admin"] },
   { label: "Reports", short: "Reports", href: "/reports", icon: BarChart3, roles: ["admin"] },
   { label: "Jessy", short: "Jessy", href: "/jessy", icon: HandCoins, roles: ["admin"] },
+  { label: "Referrals", short: "Referrals", href: "/referrals", icon: Share2, roles: ["admin"] },
   { label: "Pricing", short: "Pricing", href: "/pricing", icon: Tags, roles: ["admin"] },
   { label: "Staff", short: "Staff", href: "/staff", icon: UserCog, roles: ["admin"] },
   { label: "Audit Log", short: "Audit", href: "/audit", icon: ScrollText, roles: ["admin"] },

@@ -63,6 +63,9 @@ type EditItem = {
   // Kept so a "product" line's catalog link survives the edit — settlement
   // deducts inventory by the final settled quantity per product.
   productId?: string;
+  // Kept so a prepaid bundle line's package link survives the edit. Dropping it
+  // here would make the server read the bundle as removed from the basket.
+  clientPackageId?: string;
 };
 
 /**
@@ -107,6 +110,7 @@ export function VisitBasketSettlementModal({
       sent: true,
       sessionPlanId: i.sessionPlanId,
       productId: i.productId,
+      clientPackageId: i.clientPackageId,
     })),
   );
   const [discountOpen, setDiscountOpen] = useState(Boolean(basket.discountType));
@@ -169,13 +173,18 @@ export function VisitBasketSettlementModal({
   // any change to a plan line as well (updateVisitBasket) — this only keeps the
   // field from inviting the attempt. The money may still be deferred to a debt;
   // that settles the basket without changing what was sold.
-  const isLockedQuantity = (i: EditItem) => i.sent || Boolean(i.sessionPlanId);
+  const isLockedQuantity = (i: EditItem) =>
+    i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId);
 
   // Only lines the secretary added here (sent === false) can be removed. Every
   // dietitian-sent line is guarded at the handler too, not just hidden in the
   // card, so the removal path stays wired but can never drop a sent line.
   function removeItem(key: string) {
-    setItems((prev) => prev.filter((i) => !(i.key === key && !i.sent && !i.sessionPlanId)));
+    setItems((prev) =>
+      prev.filter(
+        (i) => !(i.key === key && !i.sent && !i.sessionPlanId && !i.clientPackageId),
+      ),
+    );
   }
 
   // Change an added line's quantity in place (a product the secretary rang up at
@@ -249,6 +258,7 @@ export function VisitBasketSettlementModal({
         covered: i.covered,
         sessionPlanId: i.sessionPlanId,
         productId: i.productId,
+        clientPackageId: i.clientPackageId,
       })),
       discountType: discountOpen && Number(discountValue) > 0 ? discountType : null,
       discountValue: discountOpen ? Number(discountValue) || 0 : 0,
@@ -601,7 +611,7 @@ export function VisitBasketSettlementModal({
             // (products/custom) stay editable and removable. Session-plan lines
             // are locked on both counts regardless — they're paid upfront in full.
             lockQuantity: isLockedQuantity(i),
-            lockRemove: i.sent || Boolean(i.sessionPlanId),
+            lockRemove: i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId),
           }))}
           discountOpen={discountOpen}
           discountType={discountType}

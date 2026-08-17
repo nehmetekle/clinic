@@ -24,12 +24,13 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Loading, ErrorState } from "@/components/ui/States";
 import {
   BreakdownDonut,
-  IncomeExpenseChart,
-  RevenueBarChart,
+  ProfitTrendChart,
+  TopMachinesChart,
 } from "@/components/charts/Charts";
 import { Input } from "@/components/ui/Field";
 import { ReferrerCostBreakdown } from "@/components/ReferrerCostBreakdown";
 import { PaymentMethodBreakdown } from "@/components/PaymentMethodBreakdown";
+import { RevenueKindBreakdown } from "@/components/RevenueKindBreakdown";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { todayIso } from "@/lib/config";
@@ -45,6 +46,7 @@ export function AdminDashboard() {
   const [openReferrer, setOpenReferrer] = useState<string | null>(null);
   const [showReferrerCost, setShowReferrerCost] = useState(false);
   const [showIncomeMethods, setShowIncomeMethods] = useState(false);
+  const [showRevenueKinds, setShowRevenueKinds] = useState(false);
   const range =
     period === "Custom"
       ? { from: customFrom, to: customTo }
@@ -103,18 +105,46 @@ export function AdminDashboard() {
       )}
 
       <p className="mb-3 text-sm text-slate-500">
-        Income, expenses and net profit for{" "}
+        Revenue, costs and profit earned in{" "}
         <span className="font-medium text-slate-700">{rangeLabel(range.from, range.to)}</span>. Outstanding debts are current.
       </p>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
-        <StatCard label="Total income" value={formatMoney(finance.totalIncome)} icon={DollarSign} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
-        <StatCard label="Total expenses" value={formatMoney(finance.totalExpenses)} icon={Wallet} tone="rose" />
+      {/* Revenue − COGS = Gross profit; then operating costs give Net profit. */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard label="Revenue" value={formatMoney(finance.revenue)} icon={DollarSign} tone="green" hint="What was earned →" onClick={() => setShowRevenueKinds(true)} />
+        <StatCard label="Cost of goods sold" value={formatMoney(finance.cogs)} icon={Wallet} tone="rose" />
+        <StatCard label="Gross profit" value={formatMoney(finance.grossProfit)} icon={TrendingUp} tone={finance.grossProfit >= 0 ? "brand" : "rose"} />
+        <StatCard
+          label="Gross margin"
+          value={finance.grossMarginPercent === null ? "—" : `${finance.grossMarginPercent}%`}
+          icon={TrendingUp}
+          tone={(finance.grossMarginPercent ?? 0) >= 0 ? "brand" : "rose"}
+        />
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard label="Operating expenses" value={formatMoney(finance.operatingExpenses)} icon={Wallet} tone="rose" />
         <StatCard label="Referrer cost" value={formatMoney(finance.referrerCost)} icon={HandCoins} tone="rose" hint="View breakdown →" onClick={() => setShowReferrerCost(true)} />
         <StatCard label="Net profit" value={formatMoney(finance.netProfit)} icon={PiggyBank} tone={finance.netProfit >= 0 ? "brand" : "rose"} />
-        <StatCard label="Gross margin" value={formatMoney(finance.grossMargin)} icon={TrendingUp} tone={finance.grossMargin >= 0 ? "brand" : "rose"} />
-        <StatCard label="Outstanding debts" value={formatMoney(finance.unpaidBalance)} icon={TrendingDown} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
+        <StatCard label="Discounts given" value={formatMoney(finance.discounts)} icon={TrendingDown} tone="amber" />
       </div>
+
+      {/* Cash and balances — deliberately separated from the profit figures above. */}
+      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard label="Collected" value={formatMoney(finance.totalIncome)} icon={DollarSign} tone="green" hint="By method →" onClick={() => setShowIncomeMethods(true)} />
+        <StatCard label="Owed by clients" value={formatMoney(finance.unpaidBalance)} icon={TrendingDown} tone="amber" hint="View who owes →" onClick={() => router.push("/clients?filter=owes")} />
+        <StatCard label="Owed by Jessy" value={formatMoney(finance.jessyOutstanding)} icon={HandCoins} tone="amber" hint="Open Jessy ledger →" onClick={() => router.push("/jessy")} />
+        <StatCard label="Owed to referrers" value={formatMoney(finance.referralOutstanding)} icon={HandCoins} tone="amber" hint="Open referral ledger →" onClick={() => router.push("/referrals")} />
+      </div>
+
+      <RevenueKindBreakdown
+        open={showRevenueKinds}
+        onClose={() => setShowRevenueKinds(false)}
+        periodLabel={rangeLabel(range.from, range.to)}
+        rows={finance.revenueByKind}
+        revenue={finance.revenue}
+        cogs={finance.cogs}
+      />
 
       <ReferrerCostBreakdown
         open={showReferrerCost}
@@ -126,7 +156,7 @@ export function AdminDashboard() {
       <PaymentMethodBreakdown
         open={showIncomeMethods}
         onClose={() => setShowIncomeMethods(false)}
-        title="Total income by method"
+        title="Collected by method"
         periodLabel={rangeLabel(range.from, range.to)}
         byMethod={finance.incomeByMethod}
         byTender={finance.incomeByTender}
@@ -141,7 +171,7 @@ export function AdminDashboard() {
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Bundles sold" value={data.packagesSold} icon={Package} tone="brand" />
+        <StatCard label="Bundles sold" value={data.packagesSold} icon={Package} tone="brand" hint="This period" />
         <StatCard label="Most popular bundle" value={data.mostPopularPackage} tone="blue" />
         <StatCard label="Today's appointments" value={data.todaysAppointments.length} tone="slate" />
         <StatCard label="No-shows today" value={noShows} tone="rose" />
@@ -149,15 +179,18 @@ export function AdminDashboard() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Income vs expenses" subtitle="Last 6 months" />
+          <CardHeader
+            title="Profit trend"
+            subtitle="Last 6 months, earned not collected — costs are COGS + operating expenses + referrer commissions"
+          />
           <CardBody>
-            <IncomeExpenseChart data={data.incomeExpenseSeries} />
+            <ProfitTrendChart data={data.profitSeries} />
           </CardBody>
         </Card>
         <Card>
-          <CardHeader title="Revenue by bundle" />
+          <CardHeader title="Most-used machines" subtitle="Top 5 by sessions delivered this period" />
           <CardBody>
-            <RevenueBarChart data={data.packageRevenue} />
+            <TopMachinesChart data={data.topMachines} />
           </CardBody>
         </Card>
       </div>

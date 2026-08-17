@@ -157,14 +157,58 @@ Legend: ✅ full · ✏️ limited · ❌ none.
 - Stored in object storage; DB holds metadata + reference. Access checked by role.
 
 ### 3.15 Automatic calculations (single source of truth)
+
+**Profitability is measured on an EARNED (accrual) basis; cash collection is a
+separate question and is never mixed into it.** A sale is recognized when the
+transaction is finalized — when the basket carrying it is settled — whether it was
+paid in cash or deferred to a debt. Collecting that debt later is a cash event and
+creates no revenue a second time.
+
+The hierarchy, in order:
+
+- **Revenue** = Σ (settled basket line: `unitPrice × quantity − discountAmount`),
+  excluding `covered` lines. A `covered` line is prepaid credit being consumed,
+  and its money was already recognized when that package or plan was bought.
+- **Cost of goods sold (COGS)** = Σ (`unitCost × quantity`) over the same lines.
+  Every figure comes from values frozen on the line at the sale, so no later
+  catalog, package or FX-rate edit can restate a closed period.
+- **Gross profit** = Revenue − COGS.
+- **Gross margin %** = Gross profit / Revenue × 100. Undefined (not 0%) when
+  revenue is 0.
+- **Operating expenses** = Σ `Expense.amount` where `kind = 'operating'`,
+  period-filtered. They sit BELOW the gross-profit line, never inside COGS.
+- **Referrer cost** = Σ `ReferralCommission.amount` incurred in the period. A
+  commission is incurred once, on a referred patient's first completed visit, at
+  the referrer's rate frozen at that moment. Paying it later is cash out and is
+  never recognized as an expense again.
+- **Net profit** = Revenue − (COGS + operating expenses + referrer commissions).
+
+A **prepaid package or session plan is recognized in full at purchase** — its
+whole frozen price and cost, on the day it is sold. Later session usage is
+fulfilment and recognizes nothing. Packages do not expire, and unused sessions are
+never recognized as breakage.
+
+**Card surcharge** is a pass-through fee, not service revenue: a $100 charge paid
+by card is $100 revenue, $3 surcharge and $103 collected.
+
+Cash figures, kept separate:
+
+- **Collected** = Σ payments in the period, each valued at the FX rate frozen on
+  it (`Payment.fxRate`), never today's rate.
+- **Owed by clients** = Σ still-outstanding tracked debt
+  (`amount − paidAmount`). A current balance, not a period figure.
+- **Owed by Jessy** / **Owed to referrers** — likewise current balances, never
+  windowed and never income.
+
+Other derived values:
+
 - **BMI** = weight(kg) / (height(m))².
-- **Remaining sessions** = total − used.
-- **Total income** = Σ payments.amount_paid (period-filtered).
-- **Total expenses** = Σ expenses.amount (period-filtered).
-- **Net profit** = income − expenses.
-- **Unpaid balance** (client) = Σ(package price) − Σ(payments for that client).
+- **Remaining sessions** = `sessionsPaid − sessionsUsed`, floored at 0.
 - **Age** = today − DOB.
 - **% to goal** = (start − current) / (start − goal).
+
+All period windows use **clinic-day boundaries** in the clinic's own timezone, not
+UTC.
 
 ---
 
@@ -187,4 +231,4 @@ Legend: ✅ full · ✏️ limited · ❌ none.
 - **Visit type** — purpose of an appointment (initial, follow-up, measurement-only).
 - **Client package** — a purchased instance of a catalog package, with its own session counters.
 - **Queue** — today's live board of clients moving from check-in to completed.
-- **Net profit** — income − expenses for the selected period.
+- **Net profit** — Revenue − (COGS + operating expenses + referrer commissions) for the selected period, on an earned basis. Not "money in minus money out" — see §3.15.
