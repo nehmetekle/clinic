@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -32,17 +32,22 @@ export default function ReferralsPage() {
   const { data, loading, error, refetch } = useApi(() => api.getReferralLedger());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [payoutOpen, setPayoutOpen] = useState(false);
-  const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [voidFor, setVoidFor] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState("");
+  const [referrerFilter, setReferrerFilter] = useState<string | null>(null);
+  const [expandedPayout, setExpandedPayout] = useState<string | null>(null);
 
   if (loading && !data) return <Loading />;
   if (error) return <ErrorState message={error} />;
   if (!data) return null;
 
-  const outstanding = data.commissions.filter((c) => c.status === "incurred");
+  const allOutstanding = data.commissions.filter((c) => c.status === "incurred");
+  const referrerNames = Array.from(new Set(allOutstanding.map((c) => c.referrerName))).sort();
+  const outstanding = referrerFilter
+    ? allOutstanding.filter((c) => c.referrerName === referrerFilter)
+    : allOutstanding;
   // A payout settles one referrer at a time — a single reference number can't
   // honestly describe money sent to two different people.
   const selectedRows = outstanding.filter((c) => selected.has(c.id));
@@ -61,8 +66,12 @@ export default function ReferralsPage() {
 
   function selectAllFor(referrerName: string) {
     setSelected(
-      new Set(outstanding.filter((c) => c.referrerName === referrerName).map((c) => c.id)),
+      new Set(allOutstanding.filter((c) => c.referrerName === referrerName).map((c) => c.id)),
     );
+  }
+
+  function filterByReferrer(referrerName: string) {
+    setReferrerFilter((prev) => (prev === referrerName ? null : referrerName));
   }
 
   async function submitPayout() {
@@ -71,7 +80,6 @@ export default function ReferralsPage() {
     try {
       const result = await api.recordReferralPayout({
         commissionIds: selectedRows.map((c) => c.id),
-        reference: reference.trim() || undefined,
         notes: notes.trim() || undefined,
         // One key per confirm, so a double-click resolves to the same payout
         // instead of paying the same commissions twice.
@@ -80,7 +88,6 @@ export default function ReferralsPage() {
       toast(`Recorded ${formatMoney(result.amount)} paid to ${selectedReferrer}`);
       setPayoutOpen(false);
       setSelected(new Set());
-      setReference("");
       setNotes("");
       refetch();
     } catch (e) {
@@ -146,10 +153,48 @@ export default function ReferralsPage() {
         <Card>
           <CardHeader
             title="Outstanding commissions"
-            subtitle={`${outstanding.length} unpaid`}
+            subtitle={
+              referrerFilter
+                ? `${outstanding.length} unpaid — filtered to ${referrerFilter}`
+                : `${outstanding.length} unpaid`
+            }
           />
+          {referrerNames.length > 1 && (
+            <div className="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-3 sm:px-6">
+              <button
+                onClick={() => setReferrerFilter(null)}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                  referrerFilter === null
+                    ? "border-brand-600 bg-brand-600 text-white"
+                    : "border-slate-200 text-slate-500 hover:border-brand-300 hover:text-brand-600"
+                }`}
+              >
+                All referrers
+              </button>
+              {referrerNames.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => filterByReferrer(name)}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                    referrerFilter === name
+                      ? "border-brand-600 bg-brand-600 text-white"
+                      : "border-slate-200 text-slate-500 hover:border-brand-300 hover:text-brand-600"
+                  }`}
+                >
+                  {name}
+                  <span className="ml-1 opacity-70">
+                    ({allOutstanding.filter((c) => c.referrerName === name).length})
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           {outstanding.length === 0 ? (
-            <CardBody className="text-sm text-slate-400">Nothing is owed to any referrer.</CardBody>
+            <CardBody className="text-sm text-slate-400">
+              {referrerFilter
+                ? `Nothing outstanding for ${referrerFilter}.`
+                : "Nothing is owed to any referrer."}
+            </CardBody>
           ) : (
             <Table>
               <THead>
@@ -177,6 +222,8 @@ export default function ReferralsPage() {
                     <TD className="font-medium">
                       <button
                         onClick={() => selectAllFor(c.referrerName)}
+                        onDoubleClick={() => filterByReferrer(c.referrerName)}
+                        title="Click to select all of this referrer's commissions, double-click to filter"
                         className="text-brand-600 hover:underline"
                       >
                         {c.referrerName}
@@ -214,21 +261,52 @@ export default function ReferralsPage() {
                   <TH>Paid</TH>
                   <TH>Referrer</TH>
                   <TH>Commissions</TH>
-                  <TH>Reference</TH>
                   <TH>Recorded by</TH>
                   <TH className="text-right">Amount</TH>
                 </TR>
               </THead>
               <TBody>
                 {data.payouts.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="text-slate-500">{formatDate(p.paidAt)}</TD>
-                    <TD className="font-medium">{p.referrerName}</TD>
-                    <TD className="text-slate-500">{p.commissionCount}</TD>
-                    <TD className="text-slate-500">{p.reference ?? "—"}</TD>
-                    <TD className="text-slate-500">{p.recordedByName ?? "—"}</TD>
-                    <TD className="text-right font-medium">{formatMoney(p.amount)}</TD>
-                  </TR>
+                  <Fragment key={p.id}>
+                    <TR
+                      className="cursor-pointer hover:bg-slate-50"
+                      onClick={() => setExpandedPayout((prev) => (prev === p.id ? null : p.id))}
+                    >
+                      <TD className="text-slate-500">{formatDate(p.paidAt)}</TD>
+                      <TD className="font-medium">{p.referrerName}</TD>
+                      <TD className="text-brand-600 hover:underline">
+                        {p.commissionCount} client{p.commissionCount === 1 ? "" : "s"}
+                      </TD>
+                      <TD className="text-slate-500">{p.recordedByName ?? "—"}</TD>
+                      <TD className="text-right font-medium">{formatMoney(p.amount)}</TD>
+                    </TR>
+                    {expandedPayout === p.id && (
+                      <TR key={`${p.id}-detail`}>
+                        <TD colSpan={5} className="whitespace-normal bg-slate-50">
+                          <div className="flex flex-col gap-1 py-1 text-sm">
+                            {p.notes && (
+                              <p className="mb-1 text-slate-500">
+                                <span className="font-medium text-slate-600">Notes: </span>
+                                {p.notes}
+                              </p>
+                            )}
+                            {p.clients.map((c) => (
+                              <div key={c.clientId} className="flex justify-between gap-4">
+                                <Link
+                                  href={`/clients/${c.clientId}`}
+                                  className="text-brand-600 hover:underline"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {c.clientName}
+                                </Link>
+                                <span className="text-slate-500">{formatMoney(c.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </TD>
+                      </TR>
+                    )}
+                  </Fragment>
                 ))}
               </TBody>
             </Table>
@@ -251,16 +329,9 @@ export default function ReferralsPage() {
       >
         <p className="mb-4 text-sm text-slate-500">
           Settling {selectedRows.length} commission{selectedRows.length === 1 ? "" : "s"} totalling{" "}
-          <strong>{formatMoney(selectedTotal)}</strong>. The amount is the sum of the
-          frozen commissions — it isn&apos;t entered here, so a payout can never disagree
-          with what it claims to pay. This records <strong>cash paid</strong>; the expense
-          was already recognized when each commission was incurred.
+          <strong>{formatMoney(selectedTotal)}</strong>.
         </p>
         <div className="flex flex-col gap-3">
-          <label className="text-xs font-medium text-slate-500">
-            Reference (cheque no., transfer id)
-            <Input value={reference} onChange={(e) => setReference(e.target.value)} className="mt-1" />
-          </label>
           <label className="text-xs font-medium text-slate-500">
             Notes
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} className="mt-1" />

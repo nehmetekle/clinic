@@ -320,6 +320,7 @@ export async function getReferralReport(): Promise<{
     paidAt: string;
     recordedByName?: string;
     commissionCount: number;
+    clients: { clientId: string; clientName: string; amount: number }[];
   }[];
 }> {
   const [summary, commissions, payouts] = await Promise.all([
@@ -329,7 +330,11 @@ export async function getReferralReport(): Promise<{
       orderBy: { incurredAt: "desc" },
     }),
     db.referralPayout.findMany({
-      include: { _count: { select: { commissions: true } } },
+      include: {
+        commissions: {
+          include: { client: { select: { firstName: true, lastName: true } } },
+        },
+      },
       orderBy: { paidAt: "desc" },
     }),
   ]);
@@ -355,7 +360,12 @@ export async function getReferralReport(): Promise<{
       notes: p.notes ?? undefined,
       paidAt: p.paidAt.toISOString(),
       recordedByName: p.recordedByName ?? undefined,
-      commissionCount: p._count.commissions,
+      commissionCount: p.commissions.length,
+      clients: p.commissions.map((c) => ({
+        clientId: c.clientId,
+        clientName: `${c.client.firstName} ${c.client.lastName}`,
+        amount: c.amount,
+      })),
     })),
   };
 }

@@ -1133,5 +1133,6 @@ export interface ReferralReport {
     paidAt: string;
     recordedByName?: string;
     commissionCount: number;
+    clients: { clientId: string; clientName: string; amount: number }[];
   }[];
 }
