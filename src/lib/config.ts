@@ -4,7 +4,7 @@ import { FxError } from "./money";
  * Clinic-wide configuration. In production these settings would come from the DB.
  */
 export const CLINIC = {
-  name: "NutriClinic",
+  name: "LAYAKA-Clinic Management",
   currency: "USD",
   // Fallback exchange rate; the live value is stored in the DB (Setting "usdToLbp")
   // and editable from the Settings page.

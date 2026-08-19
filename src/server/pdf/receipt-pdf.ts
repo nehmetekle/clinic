@@ -162,8 +162,8 @@ export async function renderReceiptPdf(data: ReceiptData): Promise<Buffer> {
 
   pdf.setTitle(`Receipt ${data.receiptNumber}`);
   pdf.setSubject("Payment receipt");
-  pdf.setProducer("NutriClinic");
-  pdf.setCreator("NutriClinic");
+  pdf.setProducer("LAYAKA-Clinic Management");
+  pdf.setCreator("LAYAKA-Clinic Management");
 
   const page = pdf.addPage([PAGE_W, PAGE_H]);
   page.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: PAGE_H, color: WHITE });

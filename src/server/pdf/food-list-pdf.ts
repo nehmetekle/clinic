@@ -745,8 +745,8 @@ export async function renderFoodListPdf(input: FoodListPdfInput): Promise<Buffer
 
   pdf.setTitle(foodListTitle(language));
   pdf.setSubject(foodListSubtitle(language));
-  pdf.setProducer("NutriClinic");
-  pdf.setCreator("NutriClinic");
+  pdf.setProducer("LAYAKA-Clinic Management");
+  pdf.setCreator("LAYAKA-Clinic Management");
 
   const page = pdf.addPage([PAGE_W, PAGE_H]);
   // PDF pages are transparent by default; paint the sheet white so the form looks

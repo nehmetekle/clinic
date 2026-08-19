@@ -30,7 +30,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
   if (!user) return null;
 
-  const sectionTitle = currentNav(user.role, pathname)?.label ?? "NutriClinic";
+  const sectionTitle = currentNav(user.role, pathname)?.label ?? "LAYAKA-Clinic Management";
 
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200/80 bg-white/90 px-4 shadow-[0_1px_0_rgba(15,23,42,0.02)] backdrop-blur-xl lg:px-6">

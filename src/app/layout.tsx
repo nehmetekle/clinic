@@ -4,8 +4,7 @@ import { SessionProvider } from "@/lib/session";
 import { ToastProvider } from "@/lib/toast";
 
 export const metadata: Metadata = {
-  title: "NutriClinic — Clinic Management",
-  description: "Clinic operating system for a nutrition / dietitian practice.",
+  title: "LAYAKA-Clinic Management",
 };
 
 export default function RootLayout({

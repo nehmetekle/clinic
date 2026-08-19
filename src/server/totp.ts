@@ -2,7 +2,7 @@ import { generateSecret, generateURI, verify } from "otplib";
 import QRCode from "qrcode";
 import { randomBytes, createHash } from "crypto";
 
-const ISSUER = "NutriClinic";
+const ISSUER = "LAYAKA-Clinic Management";
 const BACKUP_CODE_COUNT = 8;
 // No 0/O/1/I — avoids transcription mistakes when a user copies a code by hand.
 const BACKUP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
