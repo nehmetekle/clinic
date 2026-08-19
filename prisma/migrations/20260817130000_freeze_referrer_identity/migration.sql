@@ -37,16 +37,3 @@ ALTER TABLE "Client"
   ADD CONSTRAINT "Client_referrerId_fkey"
   FOREIGN KEY ("referrerId") REFERENCES "Referrer"("id")
   ON DELETE SET NULL ON UPDATE CASCADE;
-
--- The snapshot and the fee are one fact and must be written together: a frozen
--- fee with no frozen referrer is exactly the unattributable state F-07 describes.
--- Pre-cutover rows are exempt (both the fee and the snapshot predate the rule) —
--- the constraint only binds rows that carry a snapshot or were written after it.
--- Hand-written SQL Prisma cannot express: do not lose it in a migration squash.
-ALTER TABLE "Client"
-  ADD CONSTRAINT "Client_referrer_attribution_paired"
-  CHECK (
-    "referrerNameSnapshot" IS NOT NULL
-    OR "referralFee" IS NULL
-    OR "registeredAt" < TIMESTAMP '2026-08-17 13:00:00'
-  );
