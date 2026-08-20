@@ -660,8 +660,11 @@ function ConsultationEditor() {
   const prev = prevAll[prevAll.length - 1];
   const visitNumber = editingConsult ? editingConsult.visitNumber : prevAll.length + 1;
 
-  // Default height to the last recorded value once data arrives.
+  // Default height and goal weight to the last recorded value once data arrives
+  // — they rarely change visit to visit, unlike weight/waist/etc. Still just a
+  // default: typing overrides it via form.height/form.goalWeight as usual.
   const height = form.height || (prev?.heightCm ? String(prev.heightCm) : "");
+  const goalWeight = form.goalWeight || (prev?.goalWeightKg ? String(prev.goalWeightKg) : "");
 
   const bmi = useMemo(
     () => calcBmi(Number(form.weight) || undefined, Number(height) || undefined),
@@ -1257,7 +1260,7 @@ function ConsultationEditor() {
         hipsCm: num(form.hips),
         bodyFatPercent: num(form.bodyFat),
         muscleMassKg: num(form.muscle),
-        goalWeightKg: num(form.goalWeight),
+        goalWeightKg: num(goalWeight),
         clientGoals: form.clientGoals || undefined,
         notes: form.notes || undefined,
         recommendations: recommendationsText || undefined,
@@ -1496,7 +1499,7 @@ function ConsultationEditor() {
               <FormRow label="Hips (cm)"><Input type="number" value={form.hips} onChange={(e) => setForm({ ...form, hips: e.target.value })} /></FormRow>
               <FormRow label="Body fat (%)"><Input type="number" value={form.bodyFat} onChange={(e) => setForm({ ...form, bodyFat: e.target.value })} /></FormRow>
               <FormRow label="Muscle mass (kg)"><Input type="number" value={form.muscle} onChange={(e) => setForm({ ...form, muscle: e.target.value })} /></FormRow>
-              <FormRow label="Goal weight (kg)"><Input type="number" value={form.goalWeight} onChange={(e) => setForm({ ...form, goalWeight: e.target.value })} placeholder={prev?.goalWeightKg ? String(prev.goalWeightKg) : ""} /></FormRow>
+              <FormRow label="Goal weight (kg)"><Input type="number" value={goalWeight} onChange={(e) => setForm({ ...form, goalWeight: e.target.value })} placeholder="e.g. 65" /></FormRow>
           </SectionCard>
 
           <SectionCard tone="amber" icon={ClipboardList} title="Consultation notes" bodyClassName="space-y-4">
