@@ -69,6 +69,7 @@ const ITEM_TEXT = hex("273D3C"); // checkbox item labels
 const BOX_BORDER = hex("0A111D"); // item box outline (theme accent1 @ 15% shade)
 const RULE = hex("929292"); // the Name/Notes fill-in rules
 const WHITE = rgb(1, 1, 1);
+const CHECK_MARK = hex("D42E2E"); // the checkbox X mark
 
 function hex(h: string): RGB {
   const n = parseInt(h, 16);
@@ -670,10 +671,10 @@ function fitText(
 
 // ---- Drawing primitives --------------------------------------------------
 
-/** An empty checkbox, or a ticked one with a drawn checkmark.
+/** An empty checkbox, or a ticked one with a drawn X mark.
  *
  * The documents' ☐ comes from Segoe UI Symbol (a proprietary Windows font that
- * can't be embedded), so the box and its tick are drawn as vectors instead —
+ * can't be embedded), so the box and its mark are drawn as vectors instead —
  * which also renders more crisply than any substitute glyph would. */
 function drawCheckboxAt(page: PDFPage, x: number, baselineY: number, checked: boolean) {
   const y = baselineY - 0.5;
@@ -688,16 +689,16 @@ function drawCheckboxAt(page: PDFPage, x: number, baselineY: number, checked: bo
   if (!checked) return;
   const s = CHECKBOX_SIZE;
   page.drawLine({
-    start: { x: x + s * 0.2, y: y + s * 0.52 },
-    end: { x: x + s * 0.42, y: y + s * 0.24 },
+    start: { x: x + s * 0.18, y: y + s * 0.18 },
+    end: { x: x + s * 0.82, y: y + s * 0.82 },
     thickness: 1.3,
-    color: ITEM_TEXT,
+    color: CHECK_MARK,
   });
   page.drawLine({
-    start: { x: x + s * 0.4, y: y + s * 0.24 },
-    end: { x: x + s * 0.84, y: y + s * 0.82 },
+    start: { x: x + s * 0.18, y: y + s * 0.82 },
+    end: { x: x + s * 0.82, y: y + s * 0.18 },
     thickness: 1.3,
-    color: ITEM_TEXT,
+    color: CHECK_MARK,
   });
 }
 

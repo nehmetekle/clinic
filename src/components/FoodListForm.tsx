@@ -227,7 +227,12 @@ export function FoodListForm({
                         type="checkbox"
                         checked={selected.has(item.id)}
                         onChange={() => toggle(item.id)}
-                        className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-500/30"
+                        className="mt-0.5 h-4 w-4 shrink-0 appearance-none rounded border border-slate-300 bg-white bg-center bg-no-repeat checked:border-red-600 focus:ring-2 focus:ring-brand-500/30"
+                        style={{
+                          backgroundImage: selected.has(item.id)
+                            ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23dc2626' stroke-width='2' stroke-linecap='round'%3E%3Cline x1='4' y1='4' x2='12' y2='12'/%3E%3Cline x1='12' y1='4' x2='4' y2='12'/%3E%3C/svg%3E")`
+                            : undefined,
+                        }}
                       />
                       <span className="min-w-0 flex-1">{itemLabel(item, language)}</span>
                     </label>
