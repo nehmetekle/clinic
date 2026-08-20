@@ -56,3 +56,44 @@ export function useApi<T>(
   // (and preserve in-view state) instead of flashing the full-screen loader.
   return { data, loading, error, refetch: () => load(true) };
 }
+
+/**
+ * Polls `refetch` on an interval for near-real-time boards (e.g. the queue),
+ * without a push mechanism. Paused while the tab is hidden (Page Visibility
+ * API) so a backgrounded tab doesn't keep hitting the API, and resumed (with
+ * an immediate refetch) when it becomes visible again.
+ *
+ * `refetch` from `useApi` is already a background load — it never flips
+ * `loading` — so polling here doesn't introduce any spinner/flicker.
+ */
+export function useAutoRefetch(refetch: () => void, intervalMs: number): void {
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    function start() {
+      if (interval) return;
+      interval = setInterval(refetch, intervalMs);
+    }
+    function stop() {
+      clearInterval(interval);
+      interval = undefined;
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stop();
+      } else {
+        refetch();
+        start();
+      }
+    }
+
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalMs]);
+}

@@ -32,7 +32,7 @@ import {
   RescheduleAppointmentModal,
 } from "@/components/ScheduleAppointmentModal";
 import { useSession } from "@/lib/session";
-import { useApi } from "@/lib/use-api";
+import { useApi, useAutoRefetch } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { clinicDay, todayIso } from "@/lib/config";
@@ -188,6 +188,15 @@ export default function QueuePage() {
   // Outstanding debts, so a client's old balance can be auto-suggested in their
   // basket at settlement and collected alongside today's charges.
   const { data: debtData, refetch: refetchDebts } = useApi(() => api.listOutstandingDebts());
+
+  // Near-real-time board: poll the three queue-critical sources (appointment
+  // status, payment baskets, outstanding debts) so a check-in, a bill sent for
+  // payment, or a settlement made on another screen shows up here without a
+  // manual refresh. Background refetches never flip `loading`, so this is
+  // silent — no spinner/flicker on each tick.
+  useAutoRefetch(refetch, 4000);
+  useAutoRefetch(refetchBaskets, 4000);
+  useAutoRefetch(refetchDebts, 4000);
   // The selected day's open (in-progress) visits, so a "With dietitian" card can
   // link straight back to the one the dietitian already started. Fetched
   // date+status-filtered (not the whole table) and refetched when the date changes.
