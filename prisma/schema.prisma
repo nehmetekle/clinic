@@ -265,12 +265,23 @@ model Appointment {
   // ~24h before, and ~1–2h before.
   reminder24hSentAt DateTime?
   reminder2hSentAt  DateTime?
+  // Mirror of `clientId|dietitianId|date|time`, set only while the booking is
+  // ACTIVE (scheduled/checked_in/with_dietitian) and only when a dietitian is
+  // assigned — null otherwise. With the unique index below this is what makes
+  // "the same client can't be booked twice with the same dietitian at the same
+  // time" impossible in the DATABASE, not just the UI: Postgres treats NULLs as
+  // distinct, so completed/cancelled/no-show rows and unassigned bookings are
+  // unconstrained. Always set through `activeSlotKey()` in
+  // repositories/appointments.ts — never by hand.
+  activeSlotKey     String?
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
   client            Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dietitian         User?          @relation(fields: [dietitianId], references: [id])
   machineVisits     MachineVisit[]
   consultations     Consultation[]
+
+  @@unique([activeSlotKey])
 }
 
 model Consultation {

@@ -162,7 +162,9 @@ async function resolveAppointmentTx(
     }
     await tx.appointment.updateMany({
       where: { id: appt.id, status: { in: LIVE_APPOINTMENT_STATUSES } },
-      data: { status: "completed", completedAt: new Date() },
+      // Clears activeSlotKey: "completed" is terminal, so the slot stops being
+      // occupied (see repositories/appointments.ts).
+      data: { status: "completed", completedAt: new Date(), activeSlotKey: null },
     });
     return appt.id;
   }
@@ -174,7 +176,7 @@ async function resolveAppointmentTx(
   if (live.length !== 1) return null; // ambiguous or absent — never guess
   await tx.appointment.updateMany({
     where: { id: live[0].id, status: { in: ["checked_in", "with_dietitian"] } },
-    data: { status: "completed", completedAt: new Date() },
+    data: { status: "completed", completedAt: new Date(), activeSlotKey: null },
   });
   return live[0].id;
 }

@@ -1169,8 +1169,10 @@ async function completeLinkedAppointmentTx(
     await tx.appointment.updateMany({
       where: { id: appointmentId, clientId, status: { in: LIVE_APPOINTMENT_STATUSES } },
       // Stamp when it finished so the queue's "Done" list can key on the close time
-      // (today), not the appointment's originally-scheduled date.
-      data: { status: "completed", completedAt: new Date() },
+      // (today), not the appointment's originally-scheduled date. Clears
+      // activeSlotKey: "completed" is terminal, so the slot stops being occupied
+      // (see repositories/appointments.ts).
+      data: { status: "completed", completedAt: new Date(), activeSlotKey: null },
     });
     return;
   }
@@ -1182,7 +1184,7 @@ async function completeLinkedAppointmentTx(
   if (live.length !== 1) return;
   await tx.appointment.updateMany({
     where: { id: live[0].id, status: { in: LIVE_APPOINTMENT_STATUSES } },
-    data: { status: "completed", completedAt: new Date() },
+    data: { status: "completed", completedAt: new Date(), activeSlotKey: null },
   });
 }
 
