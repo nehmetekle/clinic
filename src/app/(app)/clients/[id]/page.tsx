@@ -56,7 +56,6 @@ import {
 import { NO_MACHINE_LABEL } from "@/lib/types";
 import {
   age,
-  bmiCategory,
   cardSurchargeAmount,
   cn,
   formatDate,
@@ -245,7 +244,7 @@ export default function ClientProfilePage() {
     "Treatments",
     "Appointments",
     "Blood Tests",
-    ...(isDietitian ? ["Visits", "Measurements", "Progress"] : []),
+    ...(isDietitian ? ["Visits", "Progress"] : []),
     ...(canHandleMoney ? ["Payments"] : []),
     ...(isDietitian ? ["Notes"] : []),
     // Files is open to the secretary too — she hands the generated Food List PDF
@@ -584,23 +583,11 @@ export default function ClientProfilePage() {
 
             {active === "Treatments" && (
               <div className="space-y-6">
-                {(canHandleMoney || canLogMachineVisit) && (
+                {canHandleMoney && (
                   <div className="flex justify-end gap-2">
-                    {canHandleMoney && (
-                      <Button variant="outline" onClick={() => setSellSessionsOpen(true)}>
-                        Sell sessions
-                      </Button>
-                    )}
-                    {canLogMachineVisit && (
-                      <Button
-                        onClick={() => {
-                          setMachineVisitPreselect(undefined);
-                          setMachineVisitOpen(true);
-                        }}
-                      >
-                        Log machine visit
-                      </Button>
-                    )}
+                    <Button variant="outline" onClick={() => setSellSessionsOpen(true)}>
+                      Sell sessions
+                    </Button>
                   </div>
                 )}
                 <Card>
@@ -827,29 +814,6 @@ export default function ClientProfilePage() {
                   );
                 })}
               </div>
-            )}
-
-            {active === "Measurements" && isDietitian && (
-              <Card>
-                <Table>
-                  <THead><TR>
-                    <TH>Visit</TH><TH>Date</TH><TH>Weight</TH><TH>BMI</TH><TH>Category</TH><TH>Waist</TH><TH>Body fat</TH>
-                  </TR></THead>
-                  <TBody>
-                    {consults.map((c) => (
-                      <TR key={c.id}>
-                        <TD className="font-medium">#{c.visitNumber}</TD>
-                        <TD className="text-slate-500">{formatDate(c.date)}</TD>
-                        <TD>{c.weightKg ? `${c.weightKg} kg` : "—"}</TD>
-                        <TD>{c.bmi ?? "—"}</TD>
-                        <TD className="text-slate-500">{bmiCategory(c.bmi)}</TD>
-                        <TD>{c.waistCm ? `${c.waistCm} cm` : "—"}</TD>
-                        <TD>{c.bodyFatPercent ? `${c.bodyFatPercent}%` : "—"}</TD>
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              </Card>
             )}
 
             {active === "Progress" && isDietitian && (

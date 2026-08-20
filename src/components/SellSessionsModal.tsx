@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Input, Label, Select } from "@/components/ui/Field";
+import { Label, Select } from "@/components/ui/Field";
+import { Stepper } from "@/components/ui/Stepper";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { formatMoney } from "@/lib/utils";
@@ -96,22 +97,17 @@ export function SellSessionsModal({
             ))}
           </Select>
         </div>
-        <div>
-          <Label htmlFor="sell-sessions">Sessions</Label>
-          <Input
-            id="sell-sessions"
-            type="number"
-            min={1}
-            max={1000}
-            value={sessions}
-            onChange={(e) => setSessions(e.target.value)}
-          />
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5">
+          <div>
+            <Label htmlFor="sell-sessions">Sessions</Label>
+            {selected && count > 0 ? (
+              <p className="text-sm font-semibold text-slate-800">{formatMoney(total, selected.currency)}</p>
+            ) : (
+              <p className="text-sm text-slate-400">Pick a treatment first</p>
+            )}
+          </div>
+          <Stepper tone="slate" min={1} used={count} onChange={(next) => setSessions(String(next))} />
         </div>
-        {selected && count > 0 && (
-          <p className="text-sm text-slate-600">
-            Total <span className="font-semibold">{formatMoney(total, selected.currency)}</span>
-          </p>
-        )}
         {error && <p className="text-sm text-rose-600">{error}</p>}
       </div>
     </Modal>

@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Stepper as QuickAddStepper } from "@/components/ui/Stepper";
 import { Modal } from "@/components/ui/Modal";
 import { FormRow, Input, Select, Textarea } from "@/components/ui/Field";
 import { Loading, ErrorState } from "@/components/ui/States";
@@ -578,23 +579,33 @@ function ConsultationEditor() {
     setTreatments((prev) => prev.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
   }
 
-  // Side shortcut: draw a session from a remaining-balance package. Repeated
+  // How many sessions have already been quick-added from a given package/plan,
+  // so the stepper can show the current count and refuse to go past the balance.
+  function packageQuickAddCount(pkgId: string) {
+    const t = treatments.find((t) => t.clientPackageId === pkgId && !t.applyPackageId);
+    return t ? toCount(t.sessionsUsed, 0) : 0;
+  }
+  function sessionPlanQuickAddCount(planId: string) {
+    const t = treatments.find((t) => t.sessionPlan && t.sessionPlanId === planId);
+    return t ? toCount(t.sessionsUsed, 0) : 0;
+  }
+
+  // Side shortcut: draw sessions from a remaining-balance package. Repeated
   // clicks stack onto the same treatment (one line, session count grows) rather
-  // than adding duplicate rows — coverage is then capped at the package balance,
-  // and any sessions beyond it are charged at the per-session price.
-  function addTreatmentFromPackage(pkg: ClientPackage) {
+  // than adding duplicate rows — capped at the package balance so you can never
+  // quick-add more than what's actually available.
+  function setTreatmentFromPackage(pkg: ClientPackage, count: number) {
     const remaining = pkg.totalSessions - pkg.usedSessions;
+    const next = Math.max(0, Math.min(count, remaining));
     setTreatments((prev) => {
       const existingIndex = prev.findIndex(
         (t) => t.clientPackageId === pkg.id && !t.applyPackageId,
       );
       if (existingIndex >= 0) {
-        return prev.map((t, idx) =>
-          idx === existingIndex
-            ? { ...t, sessionsUsed: String(toCount(t.sessionsUsed, 0) + 1) }
-            : t,
-        );
+        if (next === 0) return prev.filter((_, idx) => idx !== existingIndex);
+        return prev.map((t, idx) => (idx === existingIndex ? { ...t, sessionsUsed: String(next) } : t));
       }
+      if (next === 0) return prev;
       return [
         ...prev,
         {
@@ -602,28 +613,27 @@ function ConsultationEditor() {
           machine: pkg.machine ?? "",
           clientPackageId: pkg.id,
           sessionPlan: false,
+          sessionsUsed: String(next),
           sessionsNeeded: String(Math.max(1, remaining)),
         },
       ];
     });
     setTreatmentsOpen(true);
-    toast(`${pkg.machine ?? NO_MACHINE_LABEL} session added — adjust it below`);
   }
 
-  // Quick-add a treatment drawing from a session plan (separate from packages).
-  // Stacks onto an existing row for the same plan; sessions the patient already
-  // owns cover what they can and any newly prescribed ones are sold at the plan's
-  // price.
-  function addTreatmentFromSessionPlan(plan: SessionPlan) {
+  // Quick-add sessions drawing from a session plan (separate from packages).
+  // Stacks onto an existing row for the same plan, capped at what's available —
+  // sessions the patient already owns cover what they can and any newly
+  // prescribed ones are sold at the plan's price.
+  function setTreatmentFromSessionPlan(plan: SessionPlan, count: number) {
+    const next = Math.max(0, Math.min(count, plan.sessionsAvailable));
     setTreatments((prev) => {
       const existingIndex = prev.findIndex((t) => t.sessionPlan && t.sessionPlanId === plan.id);
       if (existingIndex >= 0) {
-        return prev.map((t, idx) =>
-          idx === existingIndex
-            ? { ...t, sessionsUsed: String(toCount(t.sessionsUsed, 0) + 1) }
-            : t,
-        );
+        if (next === 0) return prev.filter((_, idx) => idx !== existingIndex);
+        return prev.map((t, idx) => (idx === existingIndex ? { ...t, sessionsUsed: String(next) } : t));
       }
+      if (next === 0) return prev;
       return [
         ...prev,
         {
@@ -631,12 +641,12 @@ function ConsultationEditor() {
           machine: plan.machine ?? "",
           sessionPlan: true,
           sessionPlanId: plan.id,
+          sessionsUsed: String(next),
           sessionsNeeded: String(Math.max(1, plan.sessionsNeeded)),
         },
       ];
     });
     setTreatmentsOpen(true);
-    toast(`${plan.machine ?? NO_MACHINE_LABEL} session added — adjust it below`);
   }
 
   function updateProduct(i: number, patch: Partial<ProductForm>) {
@@ -2076,26 +2086,33 @@ function ConsultationEditor() {
                 subtitle="Remaining balances — quick-add to this visit"
                 bodyClassName="space-y-2"
               >
-                  {creditPlans.map((plan) => (
-                    <div
-                      key={plan.id}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-slate-700">
-                          {plan.machine ?? NO_MACHINE_LABEL} <span className="text-xs font-normal text-slate-400">· pay-as-you-go</span>
-                        </p>
-                        <p className="text-xs text-emerald-700">
-                          {plan.sessionsAvailable} session{plan.sessionsAvailable === 1 ? "" : "s"} available
-                        </p>
+                  {creditPlans.map((plan) => {
+                    const used = sessionPlanQuickAddCount(plan.id);
+                    return (
+                      <div
+                        key={plan.id}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-700">
+                            {plan.machine ?? NO_MACHINE_LABEL}
+                          </p>
+                          <p className="text-xs text-emerald-700">
+                            {plan.sessionsAvailable} session{plan.sessionsAvailable === 1 ? "" : "s"} available
+                          </p>
+                        </div>
+                        <QuickAddStepper
+                          tone="emerald"
+                          used={used}
+                          max={plan.sessionsAvailable}
+                          onChange={(next) => setTreatmentFromSessionPlan(plan, next)}
+                        />
                       </div>
-                      <Button size="sm" variant="outline" onClick={() => addTreatmentFromSessionPlan(plan)}>
-                        <Plus className="h-3.5 w-3.5" /> Use
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {sessionPackages.map((p) => {
                     const remaining = p.totalSessions - p.usedSessions;
+                    const used = packageQuickAddCount(p.id);
                     return (
                       <div
                         key={p.id}
@@ -2109,9 +2126,12 @@ function ConsultationEditor() {
                             {remaining} of {p.totalSessions} left
                           </p>
                         </div>
-                        <Button size="sm" variant="outline" onClick={() => addTreatmentFromPackage(p)}>
-                          <Plus className="h-3.5 w-3.5" /> Use
-                        </Button>
+                        <QuickAddStepper
+                          tone="slate"
+                          used={used}
+                          max={remaining}
+                          onChange={(next) => setTreatmentFromPackage(p, next)}
+                        />
                       </div>
                     );
                   })}

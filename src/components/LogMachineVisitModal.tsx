@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Field";
+import { Stepper } from "@/components/ui/Stepper";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { NO_MACHINE_LABEL } from "@/lib/types";
@@ -160,24 +161,15 @@ export function LogMachineVisitModal({
                 key={s.key}
                 className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2"
               >
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300"
-                  checked={count > 0}
-                  onChange={(e) => setCount(s.key, e.target.checked ? 1 : 0, s.available)}
-                />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-800">{s.machine}</p>
                   <p className="text-xs text-slate-500">Available: {s.available}</p>
                 </div>
-                <Input
-                  type="number"
-                  min={0}
+                <Stepper
+                  tone="slate"
+                  used={count}
                   max={s.available}
-                  value={count || ""}
-                  placeholder="0"
-                  onChange={(e) => setCount(s.key, Number(e.target.value), s.available)}
-                  className="h-8 w-16 text-center"
+                  onChange={(next) => setCount(s.key, next, s.available)}
                 />
               </div>
             );
