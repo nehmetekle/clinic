@@ -6,6 +6,7 @@ import type {
   ReferralReport,
   BloodSample,
   BloodSampleFile,
+  BotoxItem,
   ClientBloodFile,
   ClientConsultationFile,
   ConsultationFile,
@@ -38,6 +39,7 @@ import type {
 import type {
   AdjustProductStockInput,
   CreateAppointmentInput,
+  CreateBotoxItemInput,
   CreateClientInput,
   CreateConsultationInput,
   CreateExpenseInput,
@@ -51,6 +53,7 @@ import type {
   CreateMachineVisitInput,
   VoidMachineVisitInput,
   CreateStaffInput,
+  UpdateBotoxItemInput,
   UpdateStaffInput,
   MedicalHistoryInput,
   RecordJessySettlementInput,
@@ -487,4 +490,10 @@ export const api = {
     postJson<ServicePrice>("/api/service-prices", body),
   updateServicePrice: (id: string, body: UpdateServicePriceInput) =>
     putJson<ServicePrice>(`/api/service-prices/${id}`, body),
+
+  listBotoxItems: () => getJson<BotoxItem[]>("/api/botox-items"),
+  createBotoxItem: (body: CreateBotoxItemInput) => postJson<BotoxItem>("/api/botox-items", body),
+  updateBotoxItem: (id: string, body: UpdateBotoxItemInput) =>
+    putJson<BotoxItem>(`/api/botox-items/${id}`, body),
+  deleteBotoxItem: (id: string) => deleteJson(`/api/botox-items/${id}`),
 };

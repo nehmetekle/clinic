@@ -108,6 +108,19 @@ export interface Product {
   lowStockThreshold: number;
 }
 
+// Admin-managed Botox catalog: a name and a default/base price. The base price
+// is only ever a STARTING POINT for a visit line — the doctor sets the actual
+// charged price per patient (see ConsultationBotoxItem). `cost` is the clinic's
+// own cost, admin-only — omitted from responses to other roles, like Product.
+export interface BotoxItem {
+  id: string;
+  name: string;
+  price: number;
+  cost?: number;
+  currency: Currency;
+  active: boolean;
+}
+
 // Admin-editable referrer (who sent the patient). The chosen name is snapshotted
 // onto Client.referralSource, so this list only drives the selection dropdown.
 export interface Referrer {
@@ -169,6 +182,10 @@ export interface StaffUser {
   // dietitian runs the consultation. Undefined = no fee set. A client-facing price
   // (not clinic cost), so it's returned to every role.
   consultationFee?: number;
+  // Admin-granted: this dietitian may see/use the Botox section in the
+  // consultation editor. Always true in effect for an admin (checked
+  // server-side by role, not this flag) and irrelevant for a secretary.
+  canOfferBotox?: boolean;
   createdAt: string;
   lastLoginAt?: string;
 }
@@ -373,6 +390,25 @@ export interface ConsultationProduct {
   notes?: string;
 }
 
+// A Botox charge on one visit. Unlike a treatment or product, its price is set
+// by the doctor per patient rather than fixed from the catalog — `basePrice` is
+// the admin's catalog default at the moment this line was (last) priced,
+// carried for reference/audit only; `chargedPrice` is the actual, authoritative
+// amount billed. `paid` marks a line that has already been settled — once true
+// the editor must treat botoxItemId/chargedPrice/quantity as locked, since this
+// app has no refund/reversal concept (see docs/known-issues.md).
+export interface ConsultationBotoxItem {
+  id?: string;
+  botoxItemId?: string;
+  name: string;
+  basePrice: number;
+  chargedPrice: number;
+  quantity: number;
+  currency?: Currency;
+  notes?: string;
+  paid: boolean;
+}
+
 export type ConsultationStatus = "open" | "closed";
 
 export interface Consultation {
@@ -415,6 +451,7 @@ export interface Consultation {
   consultationFeeWaived?: boolean;
   treatments?: ConsultationTreatment[];
   products?: ConsultationProduct[];
+  botoxItems?: ConsultationBotoxItem[];
   // The Nutrient-Rich Foods List filled in on this visit, if the doctor opened it.
   foodList?: ConsultationFoodList;
 }
@@ -511,7 +548,9 @@ export type VisitBasketItemKind =
   // an anonymous custom line could be neither.
   | "package"
   | "custom"
-  | "consultation_fee";
+  | "consultation_fee"
+  // A Botox charge, doctor-priced per visit. See ConsultationBotoxItem.
+  | "botox";
 
 export interface VisitBasketItem {
   id?: string;
@@ -535,6 +574,9 @@ export interface VisitBasketItem {
   productId?: string;
   // The prepaid bundle this line sells.
   clientPackageId?: string;
+  // Set on a "botox" line — the ConsultationBotoxItem this charge belongs to,
+  // which is what the paid-line lock keys on. Absent otherwise.
+  consultationBotoxItemId?: string;
 }
 
 export interface VisitBasket {

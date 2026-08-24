@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, ForbiddenError, NotFoundError } from "../http";
+import type { ConsultationBotoxLineInput } from "./botoxLines";
+import { buildBotoxLinesTx, unpaidBotoxBasketItemsTx } from "./botoxLines";
 import { calcBmi, discountAmount } from "@/lib/utils";
 import { allocateCoverage } from "@/lib/coverage";
 import { clinicDayRange } from "@/lib/config";
@@ -41,6 +43,13 @@ export const consultationInclude = {
   dietitian: true,
   treatments: { include: { clientPackage: true }, orderBy: { createdAt: "asc" } },
   products: { orderBy: { createdAt: "asc" } },
+  // The nested basket/status join is what lets toConsultation report `paid`
+  // per line — the paid-line lock (see repositories/botoxLines.ts) and every
+  // reader of a saved visit need to agree on which lines are already settled.
+  botoxItems: {
+    orderBy: { createdAt: "asc" },
+    include: { basketItems: { include: { basket: { select: { status: true } } } } },
+  },
   foodList: true,
 } satisfies Prisma.ConsultationInclude;
 
@@ -222,6 +231,17 @@ export function toConsultation(c: ConsultationRow): Consultation {
       currency: asCurrency(p.currency),
       notes: p.notes ?? undefined,
     })),
+    botoxItems: c.botoxItems.map((b) => ({
+      id: b.id,
+      botoxItemId: b.botoxItemId ?? undefined,
+      name: b.name,
+      basePrice: b.basePrice,
+      chargedPrice: b.chargedPrice,
+      quantity: b.quantity,
+      currency: asCurrency(b.currency),
+      notes: b.notes ?? undefined,
+      paid: b.basketItems.some((bi) => bi.basket.status === "paid"),
+    })),
     foodList: c.foodList
       ? {
           language: c.foodList.language as FoodListLanguage,
@@ -314,6 +334,14 @@ export type ConsultationInput = {
     quantity?: number;
     notes?: string;
   }[];
+  // Botox charges. `undefined` (key omitted) leaves any existing lines
+  // untouched — the same "absent = don't touch" rule as `foodList` below, and
+  // for the same reason: unlike treatments/products (whose form is always
+  // rendered and always resent in full), the Botox section is invisible to an
+  // unauthorized dietitian, so their save must not read as "clear it out."
+  // Present (even `[]`) is authoritative. See repositories/botoxLines.ts for
+  // the paid-line lock this goes through.
+  botoxItems?: ConsultationBotoxLineInput[];
   // Nutrient-Rich Foods List. Omitted = the card was never opened on this save;
   // any stored form is left untouched (see buildConsultationContentTx).
   foodList?: {
@@ -467,6 +495,10 @@ async function buildConsultationContentTx(
     // Acting user, threaded through so a blood-test removal/cancellation on this
     // save is attributed to whoever made it in the audit log (accountability).
     actor?: { name?: string | null; email?: string | null };
+    // Resolved once at the route from the verified session (server/auth.ts
+    // canOfferBotox) — never trust a client-supplied flag for this. Only
+    // consulted when `input.botoxItems` is actually present.
+    actorCanOfferBotox?: boolean;
   },
 ): Promise<void> {
   const treatments = input.treatments ?? [];
@@ -480,7 +512,7 @@ async function buildConsultationContentTx(
   // The dietitian may waive it for this specific visit.
   const consultRow = await tx.consultation.findUnique({
     where: { id: consultationId },
-    select: { consultationFee: true, dietitian: { select: { fullName: true } } },
+    select: { consultationFee: true, visitNumber: true, dietitian: { select: { fullName: true } } },
   });
   const consultationFee = consultRow?.consultationFee ?? 0;
   const consultationFeeWaived = input.waiveConsultationFee ?? false;
@@ -562,6 +594,23 @@ async function buildConsultationContentTx(
     }
     throw new ConflictError("Product not found in catalog.");
   });
+
+  // Botox charges. Absent `botoxItems` (key omitted) means the doctor's save
+  // never touched the section — leave whatever is already there alone (see the
+  // ConsultationInput comment). `botoxBasketItems` carries only what's still
+  // UNPAID and needs charging; an already-settled line contributes nothing new
+  // (see buildBotoxLinesTx for the paid-line lock this goes through).
+  const botoxBasketItems: BasketItemInput[] =
+    input.botoxItems !== undefined
+      ? await buildBotoxLinesTx(tx, consultationId, input.botoxItems, {
+          actorCanOfferBotox: opts.actorCanOfferBotox ?? false,
+          actor: opts.actor,
+          visitNumber: consultRow?.visitNumber ?? 0,
+        })
+      : // Untouched section: don't validate/audit/mutate anything, but the
+        // basket rebuild below still needs to know what's already unpaid, or
+        // this unrelated save would silently drop it from what's owed.
+        await unpaidBotoxBasketItemsTx(tx, consultationId);
 
   // F10: every pre-existing package a treatment draws coverage from (or links to)
   // must belong to THIS visit's client — the same ownership check session plans
@@ -757,6 +806,9 @@ async function buildConsultationContentTx(
   }
   for (const b of bundleByIndex.values()) addMoney(serviceSubtotals, b.currency, b.price);
   for (const p of products) addMoney(serviceSubtotals, p.currency, p.amount);
+  for (const b of botoxBasketItems) {
+    addMoney(serviceSubtotals, b.currency ?? "USD", (b.unitPrice ?? 0) * (b.quantity ?? 1));
+  }
   const serviceTotals = applyDiscount({
     subtotals: serviceSubtotals,
     discountType: input.visitDiscountType,
@@ -946,6 +998,10 @@ async function buildConsultationContentTx(
       // quantity in the basket — see settleVisitBasket in visitBaskets.ts.
       productId: p.productId,
     })),
+    // Already excludes any paid line (buildBotoxLinesTx) — nothing left to
+    // charge for those. consultationBotoxItemId is what makes an unpaid line
+    // price-protected at checkout, same role as productId/clientPackageId above.
+    ...botoxBasketItems,
   ];
 
   // Delta basket = what's newly added and not yet paid on THIS consultation.
@@ -1279,7 +1335,12 @@ async function freezeVisitHistoryNamesTx(
  */
 export async function createConsultation(
   input: ConsultationInput,
-  opts: { close?: boolean; actorName?: string | null; actorEmail?: string | null } = {},
+  opts: {
+    close?: boolean;
+    actorName?: string | null;
+    actorEmail?: string | null;
+    actorCanOfferBotox?: boolean;
+  } = {},
 ): Promise<Consultation> {
   const priorVisits = await db.consultation.count({ where: { clientId: input.clientId } });
   const { id, closeBlocked } = await db.$transaction(async (tx) => {
@@ -1337,6 +1398,7 @@ export async function createConsultation(
     await buildConsultationContentTx(tx, created.id, input, {
       allowBundles: true,
       actor: { name: opts.actorName, email: opts.actorEmail },
+      actorCanOfferBotox: opts.actorCanOfferBotox,
     });
     if (opts.close) {
       // A visit with billable charges can't be closed on first save — its basket
@@ -1389,6 +1451,7 @@ export async function updateConsultation(
     actorName?: string | null;
     actorEmail?: string | null;
     actorRole?: string | null;
+    actorCanOfferBotox?: boolean;
   } = {},
 ): Promise<Consultation> {
   await db.$transaction(async (tx) => {
@@ -1437,6 +1500,7 @@ export async function updateConsultation(
       allowBundles: false,
       priorProducts,
       actor: { name: opts.actorName, email: opts.actorEmail },
+      actorCanOfferBotox: opts.actorCanOfferBotox,
     });
   });
   return getConsultationById(id);

@@ -1,5 +1,6 @@
 import type {
   AuditLog as PAuditLog,
+  BotoxItem as PBotoxItem,
   ClientPackage as PClientPackage,
   Expense as PExpense,
   Package as PPackage,
@@ -14,6 +15,7 @@ import { isTenderCurrency, type TenderCurrency } from "@/lib/money";
 import type {
   AppointmentStatus,
   AuditEntry,
+  BotoxItem,
   ClientPackage,
   Currency,
   Expense,
@@ -173,6 +175,17 @@ function parseBodyParts(json: string | null): string[] | undefined {
   }
 }
 
+export function toBotoxItem(b: PBotoxItem): BotoxItem {
+  return {
+    id: b.id,
+    name: b.name,
+    price: b.price,
+    cost: b.cost,
+    currency: asCurrency(b.currency),
+    active: b.active,
+  };
+}
+
 export function toReferrer(r: PReferrer): Referrer {
   return { id: r.id, name: r.name, active: r.active, fee: r.fee };
 }
@@ -223,6 +236,7 @@ export function toStaff(u: PUser): StaffUser {
     status: u.status as StaffUser["status"],
     supplements: parseStringList(u.supplements),
     consultationFee: u.consultationFee ?? undefined,
+    canOfferBotox: u.canOfferBotox,
     createdAt: dateOnly(u.createdAt)!,
     lastLoginAt: iso(u.lastLoginAt),
   };

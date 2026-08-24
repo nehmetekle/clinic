@@ -9,6 +9,7 @@ const KIND_LABELS: Record<string, string> = {
   treatment: "Treatments & sessions",
   package: "Prepaid packages",
   product: "Products",
+  botox: "Botox",
   blood_test: "Blood tests",
   custom: "Other charges",
 };

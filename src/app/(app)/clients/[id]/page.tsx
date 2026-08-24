@@ -779,6 +779,7 @@ export default function ClientProfilePage() {
                       {(c.bloodCollection ||
                         c.nurseRequired ||
                         (c.treatments && c.treatments.length > 0) ||
+                        (c.botoxItems && c.botoxItems.length > 0) ||
                         (c.products && c.products.length > 0)) && (
                         <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-3 text-sm text-slate-600">
                           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Visit services</p>
@@ -799,6 +800,13 @@ export default function ClientProfilePage() {
                                 <span className="text-slate-400"> · {formatMoney(t.price, t.currency)}</span>
                               )}
                               <span className="text-slate-400"> · {t.sessionsUsed} session{t.sessionsUsed !== 1 ? "s" : ""} used{t.packageName ? ` (${t.packageName})` : t.sessionPlanId ? " (session plan)" : ""}</span>
+                            </p>
+                          ))}
+                          {c.botoxItems?.map((b) => (
+                            <p key={b.id}>
+                              <span className="font-medium text-slate-700">Botox: </span>
+                              {b.name} ×{b.quantity} · {formatMoney(b.chargedPrice * b.quantity, b.currency)}
+                              {b.notes && <span className="text-slate-400"> · {b.notes}</span>}
                             </p>
                           ))}
                           {c.products?.map((p) => (

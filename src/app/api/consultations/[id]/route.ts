@@ -5,7 +5,7 @@ import {
 } from "@/server/repositories/consultations";
 import { createConsultationSchema } from "@/lib/validation";
 import { ensureFoodListPdf } from "@/server/services/foodListPdf";
-import { actingUser, canViewClinical } from "@/server/auth";
+import { actingUser, canOfferBotox, canViewClinical } from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
 // Edit an open consultation (evolving draft). `close: true` also finalizes it,
@@ -23,6 +23,7 @@ export async function PATCH(
       actorName: actor.name,
       actorEmail: actor.email,
       actorRole: actor.role,
+      actorCanOfferBotox: await canOfferBotox(req),
     });
     if (close) {
       result = await closeConsultation(id, {

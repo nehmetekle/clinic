@@ -38,6 +38,9 @@ export interface ResolvedUser {
   name: string;
   email: string;
   totpEnabled: boolean;
+  // Admin-granted, per-doctor Botox access — see canOfferBotox in server/auth.ts.
+  // Meaningless for non-dietitian roles (an admin is always allowed by role).
+  canOfferBotox: boolean;
 }
 
 function hashToken(token: string): string {
@@ -108,6 +111,7 @@ export async function resolveSessionToken(token: string | null): Promise<Resolve
     name: session.user.fullName,
     email: session.user.email,
     totpEnabled: session.user.totpEnabled,
+    canOfferBotox: session.user.canOfferBotox,
   };
 }
 
@@ -194,6 +198,7 @@ export async function resolvePendingTwoFactor(
       name: pending.user.fullName,
       email: pending.user.email,
       totpEnabled: pending.user.totpEnabled,
+      canOfferBotox: pending.user.canOfferBotox,
     },
   };
 }

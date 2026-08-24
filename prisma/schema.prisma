@@ -21,6 +21,10 @@ model User {
   lockedUntil         DateTime?
   supplements         String             @default("[]")
   consultationFee     Float?
+  // Admin-granted, per-doctor: this dietitian may see and use the Botox section
+  // in the consultation editor. Ignored for admin (always allowed) and
+  // secretary (never allowed) — see canOfferBotox in server/auth.ts.
+  canOfferBotox       Boolean            @default(false)
   lastLoginAt         DateTime?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
@@ -76,26 +80,26 @@ model Session {
 }
 
 model Client {
-  id                  String            @id @default(cuid())
-  firstName           String
-  lastName            String
-  phone               String
-  email               String?
-  dateOfBirth         DateTime?
-  gender              String?
-  address             String?
-  emergencyContact    String?
-  medicalNotes        String?
-  allergies           String?
-  passportNumber      String?
-  country             String?
-  maritalStatus       String?
+  id                   String              @id @default(cuid())
+  firstName            String
+  lastName             String
+  phone                String
+  email                String?
+  dateOfBirth          DateTime?
+  gender               String?
+  address              String?
+  emergencyContact     String?
+  medicalNotes         String?
+  allergies            String?
+  passportNumber       String?
+  country              String?
+  maritalStatus        String?
   /// The referrer as the front desk currently believes it — EDITABLE (a check-in
   /// or profile correction rewrites it). Because it is mutable it must never be
   /// the key a financial figure is grouped by; use `referrerNameSnapshot` for
   /// that. Kept as the live display value and the input to `resolveReferralFee`
   /// at registration.
-  referralSource      String?
+  referralSource       String?
   /// The referrer this patient is ATTRIBUTED to. Follows `referralSource` on
   /// every edit (registration, check-in correction, or adding one after the
   /// fact) right up until a `ReferralCommission` row exists for this client —
@@ -109,32 +113,32 @@ model Client {
   /// name cannot disambiguate (two referrers, one renamed into the other's old
   /// name). Nulls out if that referrer is later deleted, which is exactly why the
   /// NAME is snapshotted separately and is the durable field.
-  referrerId          String?
-  firstTimePatient    Boolean           @default(false)
-  intakeComplete      Boolean           @default(true)
-  registeredAt        DateTime          @default(now())
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  assignedDietitianId String?
-  createdById         String?
+  referrerId           String?
+  firstTimePatient     Boolean             @default(false)
+  intakeComplete       Boolean             @default(true)
+  registeredAt         DateTime            @default(now())
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  assignedDietitianId  String?
+  createdById          String?
   // Whether this patient gets WhatsApp appointment reminders. Default on; staff
   // can opt a patient out (see consent checkbox at registration/check-in).
-  whatsappOptIn       Boolean           @default(true)
-  appointments        Appointment[]
-  bloodSamples        BloodSample[]
-  assignedDietitian   User?             @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
-  referrer            Referrer?         @relation(fields: [referrerId], references: [id], onDelete: SetNull)
-  referralCommission  ReferralCommission?
-  createdBy           User?             @relation("CreatedByUser", fields: [createdById], references: [id])
-  debts               ClientDebt[]
-  packages            ClientPackage[]
-  consultations       Consultation[]
-  jessyReceivables    JessyReceivable[]
-  medicalHistory      MedicalHistory?
-  payments            Payment[]
-  sessionPlans        SessionPlan[]
-  visitBaskets        VisitBasket[]
-  machineVisits       MachineVisit[]
+  whatsappOptIn        Boolean             @default(true)
+  appointments         Appointment[]
+  bloodSamples         BloodSample[]
+  assignedDietitian    User?               @relation("AssignedDietitian", fields: [assignedDietitianId], references: [id])
+  referrer             Referrer?           @relation(fields: [referrerId], references: [id], onDelete: SetNull)
+  referralCommission   ReferralCommission?
+  createdBy            User?               @relation("CreatedByUser", fields: [createdById], references: [id])
+  debts                ClientDebt[]
+  packages             ClientPackage[]
+  consultations        Consultation[]
+  jessyReceivables     JessyReceivable[]
+  medicalHistory       MedicalHistory?
+  payments             Payment[]
+  sessionPlans         SessionPlan[]
+  visitBaskets         VisitBasket[]
+  machineVisits        MachineVisit[]
 }
 
 model SessionPlan {
@@ -345,6 +349,7 @@ model Consultation {
   jessyReceivables      JessyReceivable[]
   products              ConsultationProduct[]
   treatments            ConsultationTreatment[]
+  botoxItems            ConsultationBotoxItem[]
   visitBaskets          VisitBasket[]
 
   @@index([appointmentId])
@@ -498,6 +503,72 @@ model ConsultationProduct {
   consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
 }
 
+// ---- Botox ----
+// Admin-managed catalog of Botox services (name + default/base price), and the
+// per-visit lines that draw on it. Deliberately its own catalog rather than a
+// third ServicePrice `kind` or a Product: unlike either, a Botox line's
+// CHARGED price is set by the doctor per visit (not fixed from the catalog),
+// so it needs its own frozen `basePrice`/`chargedPrice` split — see
+// ConsultationBotoxItem below.
+model BotoxItem {
+  id                String                  @id @default(cuid())
+  name              String
+  price             Float                   @default(0)
+  // The clinic's own cost, admin-only — mirrors Product.cost/ServicePrice.cost.
+  // Never serialized to a non-admin caller.
+  cost              Float                   @default(0)
+  currency          String                  @default("USD")
+  active            Boolean                 @default(true)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @default(now()) @updatedAt
+  consultationLines ConsultationBotoxItem[]
+}
+
+// A Botox charge on one visit. Unlike ConsultationTreatment/ConsultationProduct
+// (deleted and fully rebuilt on every draft save), a Botox line has a STABLE id
+// that the client round-trips, because its price is doctor-editable and must be
+// tracked per line rather than netted by a kind+label+price signature (see
+// docs/known-issues.md and the paid-line lock below).
+//
+// `basePrice` is the admin's catalog default, resolved server-side and kept
+// only for reference/audit — re-derived from the live catalog on every save
+// WHILE the line is unpaid. `chargedPrice` is what the doctor actually set and
+// is the sole authority for the basket, payment, settlement and visit totals.
+//
+// PAID-LINE LOCK: once any VisitBasketItem referencing this line sits in a
+// `paid` basket, the line is immutable — buildConsultationContentTx refuses to
+// change its botoxItemId/chargedPrice/quantity, or to drop it, on any later
+// save. This app has no refund concept, so a line that has already been
+// charged can never be silently repriced by a later edit; see the comment on
+// `remainingUnpaidItems` in visitBaskets.ts for why the generic
+// price-in-signature netting used by treatments/products is unsafe here.
+model ConsultationBotoxItem {
+  id             String            @id @default(cuid())
+  consultationId String
+  // Permanent catalog reference. Nullable: survives the catalog item being
+  // deleted (name/basePrice already carry their own frozen snapshot, exactly
+  // like ConsultationProduct.productId).
+  botoxItemId    String?
+  // Frozen catalog name at the moment this line was (last) priced from it —
+  // survives a later rename or deletion of the catalog item.
+  name           String
+  basePrice      Float             @default(0)
+  chargedPrice   Float             @default(0)
+  quantity       Int               @default(1)
+  currency       String            @default("USD")
+  // Clinic cost per unit, frozen from BotoxItem.cost at the same moment as
+  // basePrice — admin-only, never serialized. Mirrors unitCost everywhere else.
+  unitCost       Float             @default(0)
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @default(now()) @updatedAt
+  consultation   Consultation      @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  botoxItem      BotoxItem?        @relation(fields: [botoxItemId], references: [id])
+  basketItems    VisitBasketItem[]
+
+  @@index([consultationId])
+}
+
 model Payment {
   id                  String           @id @default(cuid())
   clientId            String?
@@ -642,21 +713,21 @@ model VisitBasket {
 }
 
 model VisitBasketItem {
-  id            String       @id @default(cuid())
-  basketId      String
-  kind          String       @default("custom")
-  label         String
-  detail        String?
-  quantity      Int          @default(1)
-  unitPrice     Float        @default(0)
-  currency      String       @default("USD")
-  covered       Boolean      @default(false)
+  id                      String                 @id @default(cuid())
+  basketId                String
+  kind                    String                 @default("custom")
+  label                   String
+  detail                  String?
+  quantity                Int                    @default(1)
+  unitPrice               Float                  @default(0)
+  currency                String                 @default("USD")
+  covered                 Boolean                @default(false)
   /// The clinic's own cost for this line, per unit, FROZEN when the line was
   /// built — the cost counterpart of `unitPrice`. COGS for the line is
   /// `unitCost * quantity`. 0 for lines that have no cost of goods (a
   /// consultation fee is the doctor's time, which is an operating expense).
   /// Admin-only: never serialized to a client.
-  unitCost      Float        @default(0)
+  unitCost                Float                  @default(0)
   /// The line's allocated share of the bill-level discount, in the basket's
   /// currency, FROZEN at settlement.
   ///
@@ -666,22 +737,30 @@ model VisitBasketItem {
   /// `unitPrice * quantity - discountAmount`, and the allocation is computed so
   /// these sum EXACTLY to the amount charged to the client — no residual cent can
   /// appear between the sum of the lines and the basket total.
-  discountAmount Float       @default(0)
-  sessionPlanId String?
+  discountAmount          Float                  @default(0)
+  sessionPlanId           String?
   // Permanent catalog reference for a "product" line (survives rename/delete,
   // like ConsultationProduct.productId) — lets settlement deduct inventory by
   // the exact final quantity sitting in the basket. Null for non-product lines.
-  productId     String?
+  productId               String?
   /// The prepaid bundle this line SELLS. Without it a bundle line was an
   /// untraceable "custom" row: nothing connected the money on the bill to the
   /// ClientPackage it created, so the package's real agreed price could not be
   /// established once a bill-level discount was involved. It is also what lets
   /// the line be price-protected like any other catalog-backed item.
-  clientPackageId String?
-  createdAt     DateTime     @default(now())
-  basket        VisitBasket  @relation(fields: [basketId], references: [id], onDelete: Cascade)
-  sessionPlan   SessionPlan? @relation(fields: [sessionPlanId], references: [id])
-  clientPackage ClientPackage? @relation(fields: [clientPackageId], references: [id])
+  clientPackageId         String?
+  // Durable reference to the ConsultationBotoxItem this line sells — unlike
+  // every other kind (matched by signature, see remainingUnpaidItems), a Botox
+  // line's price can move, so its paid-lock check needs a stable id rather than
+  // a kind+label+price match. Null for every non-botox line.
+  consultationBotoxItemId String?
+  createdAt               DateTime               @default(now())
+  basket                  VisitBasket            @relation(fields: [basketId], references: [id], onDelete: Cascade)
+  sessionPlan             SessionPlan?           @relation(fields: [sessionPlanId], references: [id])
+  clientPackage           ClientPackage?         @relation(fields: [clientPackageId], references: [id])
+  consultationBotoxItem   ConsultationBotoxItem? @relation(fields: [consultationBotoxItemId], references: [id])
+
+  @@index([consultationBotoxItemId])
 }
 
 model ClientDebt {
@@ -887,12 +966,12 @@ model Setting {
 }
 
 model Referrer {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-  fee       Float    @default(0)
+  id              String               @id @default(cuid())
+  name            String               @unique
+  active          Boolean              @default(true)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @default(now()) @updatedAt
+  fee             Float                @default(0)
   /// Patients attributed to THIS referrer. Deleting a referrer nulls the link
   /// (SetNull) rather than cascading — a commission that was incurred must
   /// survive the referrer being removed from the dropdown.
@@ -918,33 +997,33 @@ model Referrer {
 /// expense — a ReferralPayout writes no Expense and no Payment, exactly as a
 /// Jessy settlement writes no Payment.
 model ReferralCommission {
-  id                    String    @id @default(cuid())
+  id                    String          @id @default(cuid())
   /// One commission per patient, EVER — enforced by the unique constraint below
   /// rather than by convention, so two visits completing concurrently cannot both
   /// mint one. A recurring-referral model would widen this to
   /// @@unique([clientId, periodKey]); nothing else in the design would move.
-  clientId              String    @unique
+  clientId              String          @unique
   referrerId            String?
   /// Durable attribution: survives the referrer being renamed or deleted.
   referrerNameSnapshot  String
   /// USD, frozen from the referrer's rate at the instant this was incurred.
   amount                Float
   /// When the clinic became liable = when the first visit completed.
-  incurredAt            DateTime  @default(now())
+  incurredAt            DateTime        @default(now())
   /// Which visit crystallized it. Exactly one of these is set.
   triggerType           String
   triggerConsultationId String?
   triggerMachineVisitId String?
   /// "incurred" -> "paid" (settled by a payout) or "void" (written off).
-  status                String    @default("incurred")
+  status                String          @default("incurred")
   paidAt                DateTime?
   payoutId              String?
   voidReason            String?
   voidedByName          String?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
-  client                Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  referrer              Referrer? @relation(fields: [referrerId], references: [id], onDelete: SetNull)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  client                Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  referrer              Referrer?       @relation(fields: [referrerId], references: [id], onDelete: SetNull)
   payout                ReferralPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([status, incurredAt])

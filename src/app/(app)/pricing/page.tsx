@@ -18,7 +18,7 @@ import {
   formatFxRate,
   type FxSuspicion,
 } from "@/lib/money";
-import type { Currency, Package, Product, Referrer, ServicePrice, StaffUser } from "@/lib/types";
+import type { BotoxItem, Currency, Package, Product, Referrer, ServicePrice, StaffUser } from "@/lib/types";
 
 /**
  * Central pricing hub (admin only). One place to manage every price on the
@@ -43,6 +43,7 @@ export default function PricingPage() {
         </div>
         <div className="grid gap-6 lg:grid-cols-2">
           <ProductsCard />
+          <BotoxCard />
           <ExchangeRateCard />
           <ReferrersCard />
         </div>
@@ -997,6 +998,164 @@ function StockAdjustModal({
         </FormRow>
       </div>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Botox
+// ---------------------------------------------------------------------------
+
+/**
+ * The Botox catalog: name + a default/base price the doctor sees when picking
+ * an item in a consultation. That price is only a starting point — the doctor
+ * freely sets what a given visit actually charges (no bound, either way), so
+ * this card is the "default," not a hard price the patient must pay. Which
+ * doctors may even see the Botox section is set on the Staff page, not here.
+ */
+function BotoxCard() {
+  const { toast } = useToast();
+  const items = useApi(() => api.listBotoxItems());
+  const [newName, setNewName] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newCost, setNewCost] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  async function addItem() {
+    const price = parseNumberInput(newPrice);
+    const cost = parseNumberInput(newCost);
+    if (!newName.trim()) {
+      toast("Enter a Botox item name");
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.createBotoxItem({
+        name: newName.trim(),
+        price: price > 0 ? price : 0,
+        cost: cost > 0 ? cost : 0,
+      });
+      toast("Botox item added");
+      setNewName("");
+      setNewPrice("");
+      setNewCost("");
+      items.refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function removeItem(id: string) {
+    try {
+      await api.deleteBotoxItem(id);
+      toast("Botox item removed");
+      items.refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Botox"
+        subtitle="Default price shown to the doctor when picking an item. USD only. Cost stays owner-only."
+      />
+      <CardBody className="space-y-4">
+        <div className="space-y-2">
+          {(items.data ?? []).length === 0 && (
+            <p className="text-sm text-slate-400">No Botox items yet.</p>
+          )}
+          {(items.data ?? []).map((b) => (
+            <BotoxRow key={b.id} item={b} onChanged={() => items.refetch()} onRemove={() => removeItem(b.id)} />
+          ))}
+        </div>
+
+        <div className="border-t border-slate-100 pt-4">
+          <p className="mb-2 text-xs font-medium text-slate-500">Add a Botox item</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <FormRow label="Name"><Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Forehead" /></FormRow>
+            <FormRow label="Default price (USD)"><MoneyInput value={newPrice} onValueChange={setNewPrice} placeholder="0" /></FormRow>
+            <FormRow label="Cost"><MoneyInput value={newCost} onValueChange={setNewCost} placeholder="0" /></FormRow>
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Button size="sm" onClick={addItem} disabled={adding}>{adding ? "Adding…" : "Add item"}</Button>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+function BotoxRow({
+  item,
+  onChanged,
+  onRemove,
+}: {
+  item: BotoxItem;
+  onChanged: () => void;
+  onRemove: () => void;
+}) {
+  const { toast } = useToast();
+  const [price, setPrice] = useState(String(item.price));
+  const [cost, setCost] = useState(String(item.cost ?? 0));
+  const [active, setActive] = useState(item.active);
+  const [saving, setSaving] = useState(false);
+  const dirty =
+    parseNumberInput(price) !== item.price ||
+    parseNumberInput(cost) !== (item.cost ?? 0) ||
+    active !== item.active;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.updateBotoxItem(item.id, {
+        price: parseNumberInput(price),
+        cost: parseNumberInput(cost),
+        active,
+      });
+      toast("Botox item updated");
+      onChanged();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium text-slate-700">{item.name}</p>
+            {!item.active && <Badge tone="gray">Inactive</Badge>}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-slate-400 hover:text-rose-600"
+          aria-label="Remove Botox item"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <FormRow label="Default price" className="flex-1"><MoneyInput value={price} onValueChange={setPrice} /></FormRow>
+        <FormRow label="Cost" className="flex-1"><MoneyInput value={cost} onValueChange={setCost} /></FormRow>
+        <FormRow label="Status" className="flex-1">
+          <Select value={active ? "active" : "inactive"} onChange={(e) => setActive(e.target.value === "active")}>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </Select>
+        </FormRow>
+        <Button size="sm" variant="outline" onClick={save} disabled={saving || !dirty}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </div>
   );
 }
 

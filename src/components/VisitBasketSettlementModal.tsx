@@ -66,6 +66,10 @@ type EditItem = {
   // Kept so a prepaid bundle line's package link survives the edit. Dropping it
   // here would make the server read the bundle as removed from the basket.
   clientPackageId?: string;
+  // Kept so a Botox line's ConsultationBotoxItem link survives the edit — the
+  // doctor set this price in the consultation editor, so it's locked here the
+  // same way a session-plan/bundle line is (see isLockedQuantity below).
+  consultationBotoxItemId?: string;
 };
 
 /**
@@ -111,6 +115,7 @@ export function VisitBasketSettlementModal({
       sessionPlanId: i.sessionPlanId,
       productId: i.productId,
       clientPackageId: i.clientPackageId,
+      consultationBotoxItemId: i.consultationBotoxItemId,
     })),
   );
   const [discountOpen, setDiscountOpen] = useState(Boolean(basket.discountType));
@@ -167,14 +172,15 @@ export function VisitBasketSettlementModal({
   // (products/custom) stay editable and removable. Extra quantity is added as a
   // new line, not by re-typing a sent line's count.
   //
-  // A session-plan line is locked unconditionally, sent or not: its settled
-  // quantity is what UNLOCKS sessions on the plan, so retyping it here would hand
-  // the patient a different number of sessions than was sold. The server refuses
-  // any change to a plan line as well (updateVisitBasket) — this only keeps the
-  // field from inviting the attempt. The money may still be deferred to a debt;
-  // that settles the basket without changing what was sold.
+  // A session-plan or Botox line is locked unconditionally, sent or not: a
+  // plan line's settled quantity is what UNLOCKS sessions on the plan, and a
+  // Botox line's price is the doctor's own decision made in the consultation —
+  // retyping either here would disagree with what was actually sold/charged.
+  // The server refuses any change to either as well (updateVisitBasket) — this
+  // only keeps the field from inviting the attempt. The money may still be
+  // deferred to a debt; that settles the basket without changing what was sold.
   const isLockedQuantity = (i: EditItem) =>
-    i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId);
+    i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId) || Boolean(i.consultationBotoxItemId);
 
   // Only lines the secretary added here (sent === false) can be removed. Every
   // dietitian-sent line is guarded at the handler too, not just hidden in the
@@ -182,7 +188,8 @@ export function VisitBasketSettlementModal({
   function removeItem(key: string) {
     setItems((prev) =>
       prev.filter(
-        (i) => !(i.key === key && !i.sent && !i.sessionPlanId && !i.clientPackageId),
+        (i) =>
+          !(i.key === key && !i.sent && !i.sessionPlanId && !i.clientPackageId && !i.consultationBotoxItemId),
       ),
     );
   }
@@ -259,6 +266,7 @@ export function VisitBasketSettlementModal({
         sessionPlanId: i.sessionPlanId,
         productId: i.productId,
         clientPackageId: i.clientPackageId,
+        consultationBotoxItemId: i.consultationBotoxItemId,
       })),
       discountType: discountOpen && Number(discountValue) > 0 ? discountType : null,
       discountValue: discountOpen ? Number(discountValue) || 0 : 0,
@@ -611,7 +619,8 @@ export function VisitBasketSettlementModal({
             // (products/custom) stay editable and removable. Session-plan lines
             // are locked on both counts regardless — they're paid upfront in full.
             lockQuantity: isLockedQuantity(i),
-            lockRemove: i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId),
+            lockRemove:
+              i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId) || Boolean(i.consultationBotoxItemId),
           }))}
           discountOpen={discountOpen}
           discountType={discountType}
