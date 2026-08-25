@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type Product as ProductRow } from "@prisma/client";
 import { db } from "../db";
 import { toProduct } from "../serialize";
 import { NotFoundError } from "../http";
@@ -87,14 +87,24 @@ export async function adjustProductStockTx(
   const { delta, type } = params;
   if (delta === 0) return null;
 
-  const existing = await tx.product.findUnique({ where: { id: params.productId } });
-  if (!existing) return null;
-
-  const newStock = existing.stock + delta;
-  const row = await tx.product.update({
-    where: { id: params.productId },
-    data: { stock: newStock },
-  });
+  // A single guarded UPDATE — the database computes the new stock from the
+  // row's own current value in one statement, so two concurrent adjustments
+  // (e.g. two desks settling different baskets that both sell this product at
+  // nearly the same moment) can't both read the same starting count and
+  // silently overwrite each other's decrement — the classic lost-update race
+  // under Postgres's default Read Committed isolation. Stock is allowed to go
+  // negative (oversold) by design (see the schema comment), so there's no
+  // WHERE-clause guard on the resulting value — only on the atomicity of the
+  // read-and-increment itself. Mirrors the guarded-update pattern in
+  // sessionCounters.ts.
+  const rows = await tx.$queryRaw<ProductRow[]>`
+    UPDATE "Product"
+       SET "stock" = "stock" + ${delta}, "updatedAt" = NOW()
+     WHERE "id" = ${params.productId}
+     RETURNING *`;
+  const row = rows[0];
+  if (!row) return null;
+  const newStock = row.stock;
 
   const action =
     type === "sale"
@@ -106,7 +116,7 @@ export async function adjustProductStockTx(
         : "Stock corrected";
   const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
   const suffix = type === "sale" ? params.context : params.reason || "no reason given";
-  const entityLabel = `${existing.name} ${deltaStr} → stock ${newStock}${suffix ? ` — ${suffix}` : ""}`;
+  const entityLabel = `${row.name} ${deltaStr} → stock ${newStock}${suffix ? ` — ${suffix}` : ""}`;
 
   const userId =
     params.actorUserId !== undefined ? params.actorUserId : await userIdByEmail(params.actorEmail ?? undefined);

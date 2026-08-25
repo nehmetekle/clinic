@@ -549,20 +549,34 @@ export async function updateVisitBasket(
   for (const i of input.items) {
     if (!isSourced(i)) continue;
     const original = sourcedPrices.get(priceKey(i));
-    // A newly added sourced line normally prices itself from its own catalog —
-    // EXCEPT a Botox line, which has no such fallback: its price is the
-    // doctor's own decision made in the consultation editor, not something
-    // `updateVisitBasket` (the secretary's screen) is allowed to originate.
-    // A "botox" line reaching here that wasn't already on this basket means the
-    // caller tried to invent a Botox charge outside the consultation flow —
-    // refuse it outright, regardless of role.
+    // A brand-new sourced line. Only a reference to a REAL catalog/consultation
+    // row needs protecting here — that's what "sourced" is supposed to mean:
+    // something with a price that could disagree with reality, or that unlocks
+    // real consumption downstream (inventory, a bundle, a session plan, a
+    // doctor-priced Botox charge). A line that only matched SOURCED_KINDS by
+    // its `kind` NAME (e.g. a desk-added "product"/"treatment" line with no
+    // catalog id at all) has no such row to disagree with and triggers no
+    // consumption — settleVisitBasket only touches inventory/plans/bundles via
+    // productId/sessionPlanId/clientPackageId, never via `kind` alone — so it's
+    // priced like a "custom" line, same as always.
+    //
+    // A newly added PRODUCT line is re-priced from the catalog below
+    // (withCatalogPriceAndCost), never trusted from the request — that closes
+    // the actual theft vector (ring up a real product at a fabricated price
+    // while settlement still deducts the real quantity from stock). A
+    // session-plan/bundle reference is caught by the dedicated fingerprint
+    // checks elsewhere in this function (planLineFingerprint above,
+    // packageFingerprint below) — both key off the FK itself, not `kind`. A
+    // Botox reference is refused outright here, checked off the FK
+    // (`consultationBotoxItemId`) as well as `kind`, so a request can't dodge
+    // this by mislabeling `kind` on a line that still carries a real Botox id.
     if (original === undefined) {
-      if (i.kind === "botox") {
+      if (i.kind === "botox" || i.consultationBotoxItemId) {
         throw new ConflictError(
           `"${i.label}" can't be added here — Botox charges are set by the doctor in the consultation, not at checkout.`,
         );
       }
-      continue; // a newly added sourced line (product/package/etc.) prices itself
+      continue;
     }
     if ((i.unitPrice ?? 0) !== original) {
       throw new ConflictError(
@@ -615,29 +629,45 @@ export async function updateVisitBasket(
   // as pure margin. Each surviving line carries its own cost forward from the row
   // the dietitian sent; a line the secretary adds here resolves its cost
   // server-side from the catalog, the same way its price is resolved.
+  //
+  // PRICE for a brand-new product line is ALSO resolved here, from the same
+  // catalog row, rather than trusted from the request — the loop above only
+  // refused a new sourced line that ISN'T a plain product; this is what
+  // actually prices the product lines it let through. Without this, a request
+  // could ring up a real product at any `unitPrice` it likes (a clean
+  // under-ringing / inventory-theft vector, since settlement still deducts the
+  // full quantity from stock regardless of what was charged for it).
   const sourcedCosts = new Map<string, number>();
   for (const i of existing.items) sourcedCosts.set(priceKey(i), i.unitCost);
   const addedProductIds = [
     ...new Set(
       input.items
-        .filter((i) => i.productId && sourcedCosts.get(priceKey(i)) === undefined)
+        .filter((i) => i.productId && sourcedPrices.get(priceKey(i)) === undefined)
         .map((i) => i.productId as string),
     ),
   ];
-  const addedProductCost = new Map<string, number>();
+  const addedProductCatalog = new Map<string, { price: number; cost: number }>();
   if (addedProductIds.length > 0) {
     const rows = await db.product.findMany({
       where: { id: { in: addedProductIds } },
-      select: { id: true, cost: true },
+      select: { id: true, price: true, cost: true },
     });
-    for (const r of rows) addedProductCost.set(r.id, r.cost);
+    for (const r of rows) addedProductCatalog.set(r.id, { price: r.price, cost: r.cost });
   }
-  const withFrozenCost = (i: BasketItemInput): BasketItemInput => ({
-    ...i,
-    unitCost:
-      sourcedCosts.get(priceKey(i)) ??
-      (i.productId ? addedProductCost.get(i.productId) ?? 0 : 0),
-  });
+  const withCatalogPriceAndCost = (i: BasketItemInput): BasketItemInput => {
+    const existingCost = sourcedCosts.get(priceKey(i));
+    if (existingCost !== undefined) return { ...i, unitCost: existingCost };
+    if (i.productId) {
+      const cat = addedProductCatalog.get(i.productId);
+      if (!cat) throw new ConflictError(`"${i.label}" is not a known product.`);
+      return { ...i, unitPrice: cat.price, unitCost: cat.cost };
+    }
+    return { ...i, unitCost: 0 };
+  };
+  // Computed once and reused for both the stored rows and the discount audit
+  // line below, so the two can't ever disagree about what a new product line
+  // actually costs.
+  const correctedItems = input.items.map(withCatalogPriceAndCost);
 
   await db.$transaction(async (tx) => {
     await tx.visitBasketItem.deleteMany({ where: { basketId: id } });
@@ -648,7 +678,7 @@ export async function updateVisitBasket(
         discountValue: nextValue,
         discountReason: nextReason,
         currency: input.currency ?? "USD",
-        items: { create: input.items.map(withFrozenCost).map(itemCreate) },
+        items: { create: correctedItems.map(itemCreate) },
       },
     });
 
@@ -679,7 +709,7 @@ export async function updateVisitBasket(
     if (discountApplied && discountChanged) {
       const rate = existing.usdToLbp > 0 ? existing.usdToLbp : CLINIC.defaultUsdToLbp;
       const money = basketTotals(
-        input.items.map((i) => ({
+        correctedItems.map((i) => ({
           quantity: Math.max(1, Math.floor(i.quantity ?? 1)),
           unitPrice: Math.max(0, i.unitPrice ?? 0),
           covered: i.covered ?? false,

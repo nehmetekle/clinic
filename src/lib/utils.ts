@@ -367,8 +367,23 @@ export function initials(first: string, last: string) {
   return `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();
 }
 
-/** Builds a CSV from an array of records and triggers a browser download. */
-const csvEscape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+/**
+ * Builds a CSV from an array of records and triggers a browser download.
+ *
+ * A leading `= + - @` (or tab) makes Excel/Sheets/LibreOffice read the cell as
+ * a formula when the file is opened — CSV/formula injection (CWE-1236) — and
+ * quoting alone does NOT stop it, spreadsheet apps evaluate formulas in quoted
+ * fields too. Patient/referrer names are free text with no character
+ * allowlist (a name like `=HYPERLINK(...)` passes validation fine), so any
+ * cell could carry one. Prefixing a bare `'` neutralizes it the standard
+ * (OWASP) way: Excel shows the literal text instead of evaluating it.
+ */
+const FORMULA_TRIGGER = /^[=+\-@\t]/;
+const csvEscape = (v: unknown) => {
+  let s = String(v ?? "");
+  if (FORMULA_TRIGGER.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+};
 
 function csvBlock(rows: Record<string, unknown>[]): string[] {
   if (rows.length === 0) return [];

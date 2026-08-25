@@ -41,6 +41,15 @@ export class NotFoundError extends Error {
   }
 }
 
+/** Thrown when a caller has retried a sensitive action too many times in too
+ * short a window (e.g. re-triggering 2FA setup). Maps to 429. */
+export class TooManyAttemptsError extends Error {
+  constructor(message = "Too many attempts. Please try again later.") {
+    super(message);
+    this.name = "TooManyAttemptsError";
+  }
+}
+
 export const json = (data: unknown, status = 200) =>
   NextResponse.json(data, { status });
 
@@ -119,6 +128,9 @@ export function handleError(err: unknown): NextResponse {
   }
   if (err instanceof NotFoundError) {
     return json({ error: err.message }, 404);
+  }
+  if (err instanceof TooManyAttemptsError) {
+    return json({ error: err.message }, 429);
   }
   console.error(err);
   return json({ error: "Internal server error" }, 500);

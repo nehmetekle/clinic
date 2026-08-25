@@ -94,12 +94,28 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
     ];
 
     // 1h reminder takes priority in the final stretch.
+    //
+    // CLAIMED before sending, not just checked: the initial query above reads a
+    // stale snapshot, so two overlapping runs (nothing stops concurrent calls to
+    // this endpoint once CRON_SECRET is known) could both see the same
+    // appointment as "not yet reminded" and both send. The conditional update —
+    // `updateMany` guarded on the stamp still being null — claims the slot
+    // atomically; only the run that actually flips it from null proceeds to
+    // send. A send failure releases the claim so a later run retries.
     if (!a.reminder2hSentAt && hoursUntil <= 1) {
+      const claim = await db.appointment.updateMany({
+        where: { id: a.id, reminder2hSentAt: null },
+        data: { reminder2hSentAt: now },
+      });
+      if (claim.count === 0) { result.skipped++; continue; } // claimed by a concurrent run
       const r = await sendReminderTemplate(phone, params);
       if (r.ok) {
-        await db.appointment.update({ where: { id: a.id }, data: { reminder2hSentAt: now } });
         result.sent1h++;
       } else {
+        await db.appointment.updateMany({
+          where: { id: a.id, reminder2hSentAt: now },
+          data: { reminder2hSentAt: null },
+        });
         result.errors.push(`1h ${a.id}: ${r.error}`);
       }
       continue;
@@ -107,11 +123,19 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
 
     // 24h reminder: once, any time within a day of the visit but before the 1h window.
     if (!a.reminder24hSentAt && hoursUntil > 1 && hoursUntil <= 24) {
+      const claim = await db.appointment.updateMany({
+        where: { id: a.id, reminder24hSentAt: null },
+        data: { reminder24hSentAt: now },
+      });
+      if (claim.count === 0) { result.skipped++; continue; } // claimed by a concurrent run
       const r = await sendReminderTemplate(phone, params);
       if (r.ok) {
-        await db.appointment.update({ where: { id: a.id }, data: { reminder24hSentAt: now } });
         result.sent24h++;
       } else {
+        await db.appointment.updateMany({
+          where: { id: a.id, reminder24hSentAt: now },
+          data: { reminder24hSentAt: null },
+        });
         result.errors.push(`24h ${a.id}: ${r.error}`);
       }
     }
