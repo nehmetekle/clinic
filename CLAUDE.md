@@ -158,7 +158,7 @@ Still open:
   once, tracked by the `reminderNNSentAt` columns). Rescheduling nulls both
   stamps so a moved patient is reminded about the new slot — see
   [docs/known-issues.md](docs/known-issues.md) §12.
-- **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (double-booking, phone/email dedup, name-based stats, per-year receipt numbering, …).
+- **Open bugs / edge cases** — tracked in [docs/known-issues.md](docs/known-issues.md) (phone/email dedup, name-based stats, per-year receipt numbering, …).
 
 ## Sessions, bundles & billing — settle before use
 The rule, in the words the front desk uses:
@@ -281,10 +281,15 @@ endpoint. **Secretary/admin only** — enforced by `canManageAppointments`, not
 just hidden. Offered on the client profile, Appointments & history, and the queue
 board (including the otherwise read-only other-day board). `isReschedulable` in
 `components/ScheduleAppointmentModal.tsx` is the single eligibility predicate
-shared by every surface and mirrors the server guard. **There is no
-double-booking protection** — not for rescheduling and not for booking; see
-[docs/known-issues.md](docs/known-issues.md) §6 and §12 before assuming a slot is
-exclusive.
+shared by every surface and mirrors the server guard. **A client can't be
+double-booked at the same date/time** — assigned or not, and even split across
+two different dietitians — enforced in Postgres via `Appointment.activeSlotKey`
+(a `clientId|date|time` mirror, unique while the booking is ACTIVE; see
+`activeSlotKey()` in `src/server/repositories/appointments.ts`). This does
+**not** stop two *different* clients being booked into the same
+dietitian/date/time — it's a one-client-one-slot guarantee, not doctor-capacity
+enforcement; see [docs/known-issues.md](docs/known-issues.md) §12 ("Appointment
+slot uniqueness") for detail.
 
 ## Jessy (third-party payer)
 A prepaid/third-party payer: the patient settles through Jessy, Jessy transfers
