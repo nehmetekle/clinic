@@ -29,6 +29,7 @@ import {
   foodListTitle,
   isRtl,
   itemLabel,
+  type FoodListCategory,
   type FoodListLanguage,
 } from "@/lib/food-list";
 
@@ -146,6 +147,19 @@ type LayoutSpec = {
    */
   itemLineHeightPt?: number;
   itemAscentPt?: number;
+  /**
+   * Extra vertical gap (inches) between a category's box and the one stacked
+   * above it in the same printed column, measured off the original documents.
+   * Only categories that sit BELOW another one in their column need an entry —
+   * the first category in each column keeps its own hand-measured `box.y`. See
+   * `layoutColumn` for how this turns into an actual position: since the item
+   * catalog now grows over time (foods that used to share one paper-form line,
+   * e.g. "Chicken / Duck", are separate rows so each is loggable on its own),
+   * box heights are computed from real content and stacked using this gap
+   * instead of the old fixed `box.y`/`box.h` pairs, which would either clip
+   * a tall box or leave the page looking sparse for a short one.
+   */
+  gapBefore: Partial<Record<string, number>>;
   categories: Record<string, CategoryGeometry>;
   /** Name / Notes rows. `labelAnchorX` is the label's left edge in LTR and its
    * right edge in RTL; the rule runs between ruleX0..ruleX1 in both. */
@@ -182,6 +196,12 @@ const LAYOUT_EN: LayoutSpec = {
     carbohydrates: 1, // single
     "eggs-and-dairy": 276 / 240, // 1.15
     "other-foods": 276 / 240, // 1.15
+  },
+  gapBefore: {
+    "nuts-and-seeds": 0.39, // below fruits
+    "plant-based-proteins": 0.58, // below animal proteins
+    carbohydrates: 0.39, // below plant-based proteins
+    "other-foods": 0.29, // below eggs and dairy
   },
   categories: {
     vegetables: { box: { x: 0.35, y: 2.5, w: 1.85, h: 7.05 }, leafX: 0.48, headingBaseline: 2.37 },
@@ -251,6 +271,15 @@ const LAYOUT_AR: LayoutSpec = {
   },
   itemLineHeightPt: 19.8,
   itemAscentPt: 13,
+  gapBefore: {
+    // Fruits/nuts is the tightest column post-split (both categories grew and
+    // this column is under the Name/Notes rule) — trimmed from the
+    // hand-measured 0.32 to keep it off the floor font size at 107 items.
+    "nuts-and-seeds": 0.2, // below fruits
+    "plant-based-proteins": 0.34, // below animal proteins
+    carbohydrates: 0.34, // below plant-based proteins
+    "other-foods": 0.37, // below eggs and dairy
+  },
   categories: {
     vegetables: { box: { x: 6.4, y: 2.39, w: 1.7, h: 6.99 }, leafX: 8.1, headingBaseline: 2.28 },
     fruits: { box: { x: 4.38, y: 2.38, w: 1.7, h: 5.84 }, leafX: 6.08, headingBaseline: 2.28 },
@@ -857,6 +886,143 @@ function drawTitleBlock(
   });
 }
 
+/**
+ * How far down the page (inches from top) a column's last box may reach.
+ * Always bounded by the footer bar; ALSO bounded by the Name/Notes row above
+ * it (`fields.nameBaseline`, ~10.05in) for any column whose x-range actually
+ * sits under that row's answer rule — which varies by language and column.
+ * English's rule (x 1.31–6.09) passes under the vegetables/fruits/proteins/
+ * carbs columns but not eggs-and-dairy/other-foods (x 6.2+); Arabic's rule (x
+ * 1.04–6.8) is wider and catches nearly every column instead. Applying the
+ * tighter fields-row limit to a column it doesn't actually run under (as an
+ * earlier version of this did) just forces needless, ugly shrinking.
+ */
+function columnBottomLimit(categories: FoodListCategory[], layout: LayoutSpec): number {
+  const footerLimit = FOOTER.y - 0.15;
+  const geo = layout.categories[categories[0].id];
+  const f = layout.fields;
+  const overlapsFieldsRow = geo.box.x < f.ruleX1 && geo.box.x + geo.box.w > f.ruleX0;
+  if (!overlapsFieldsRow) return footerLimit;
+  return Math.min(footerLimit, f.nameBaseline - 0.3);
+}
+const ITEM_SIZE_MIN = 9;
+const ITEM_SIZE_STEP = 0.25;
+
+/** Item line pitch/ascent at a given size, honoring the layout's overrides (see
+ * `itemLineHeightPt` doc) scaled proportionally when the item size is shrunk. */
+function itemMetrics(
+  layout: LayoutSpec,
+  body: FontPair,
+  size: number,
+): { lineHeight: number; ascent: number } {
+  if (layout.itemLineHeightPt) {
+    const scale = size / SZ_ITEM;
+    return {
+      lineHeight: layout.itemLineHeightPt * scale,
+      ascent: (layout.itemAscentPt ?? layout.itemLineHeightPt) * scale,
+    };
+  }
+  return {
+    lineHeight: body.rtl.heightAtSize(size, { descender: true }),
+    ascent: body.rtl.heightAtSize(size, { descender: false }),
+  };
+}
+
+type CategoryRow = { item: FoodListCategory["items"][number]; lines: string[] };
+
+/** Wraps one category's item labels and returns the box height (pt) they need,
+ * independent of where the box actually ends up sitting on the page. */
+function measureCategoryItems(
+  category: FoodListCategory,
+  geo: CategoryGeometry,
+  layout: LayoutSpec,
+  language: FoodListLanguage,
+  rtl: boolean,
+  body: FontPair,
+  size: number,
+): { rows: CategoryRow[]; boxH: number; pitch: number; ascent: number } {
+  const { box } = geo;
+  const { lineHeight, ascent } = itemMetrics(layout, body, size);
+  const pitch = lineHeight * (layout.lineSpacing[category.id] ?? 1);
+
+  const checkboxX = rtl
+    ? pt(box.x + box.w - BOX_INSET_X) - CHECKBOX_SIZE
+    : pt(box.x + BOX_INSET_X);
+  const labelAnchor = rtl ? checkboxX - CHECKBOX_GAP : checkboxX + CHECKBOX_SIZE + CHECKBOX_GAP;
+  const farEdge = rtl ? pt(box.x + BOX_INSET_X) : pt(box.x + box.w - BOX_INSET_X);
+  const firstLineW = Math.abs(farEdge - labelAnchor);
+  const restLineW = pt(box.w) - pt(BOX_INSET_X) * 2;
+
+  const rows = category.items.map((item) => ({
+    item,
+    lines: wrapText(itemLabel(item, language), body, size, firstLineW, rtl, restLineW),
+  }));
+  const totalLines = rows.reduce((n, r) => n + r.lines.length, 0);
+  const contentH = pt(BOX_INSET_Y) + (totalLines - 1) * pitch + lineHeight + pt(BOX_INSET_Y);
+  // English keeps the documents' own minimum box height even when content now
+  // falls short of it (Math.max), matching the original paper form as closely
+  // as possible. Arabic drops that floor and hugs its content exactly instead:
+  // its columns are the tight ones post-split, and a box padded out past what
+  // it needs (e.g. Fruits, once its font shrinks to fit the column) only
+  // starves the box stacked under it of room it could otherwise use.
+  const boxH = rtl ? contentH : Math.max(pt(box.h), contentH);
+  return { rows, boxH, pitch, ascent };
+}
+
+type ColumnLayout = {
+  size: number;
+  perCategory: Map<
+    string,
+    { rows: CategoryRow[]; boxH: number; pitch: number; ascent: number; boxY: number; headingBaseline: number }
+  >;
+};
+
+/**
+ * Stacks a printed column's categories top to bottom: the first keeps its
+ * hand-measured `box.y`/`headingBaseline`, and each one after it starts at the
+ * previous box's bottom plus `layout.gapBefore`. If the column still runs past
+ * `contentBottomLimit` — the catalog keeps growing as paper-form lines that
+ * used to share a checkbox split into one row per food — the item type size for
+ * the WHOLE column steps down until it fits, rather than letting a box crowd
+ * the Name/Notes row, the footer, or the one below it. Columns that already fit
+ * at the nominal size (the common case) are untouched.
+ */
+function layoutColumn(
+  categories: FoodListCategory[],
+  layout: LayoutSpec,
+  language: FoodListLanguage,
+  rtl: boolean,
+  body: FontPair,
+): ColumnLayout {
+  for (let size = SZ_ITEM; ; size = Math.max(ITEM_SIZE_MIN, size - ITEM_SIZE_STEP)) {
+    const perCategory = new Map<
+      string,
+      { rows: CategoryRow[]; boxH: number; pitch: number; ascent: number; boxY: number; headingBaseline: number }
+    >();
+    let prevBottomIn: number | null = null;
+    for (const category of categories) {
+      const geo = layout.categories[category.id];
+      const measured = measureCategoryItems(category, geo, layout, language, rtl, body, size);
+      const heightIn = measured.boxH / IN;
+      let boxY: number;
+      let headingBaseline: number;
+      if (prevBottomIn === null) {
+        boxY = geo.box.y;
+        headingBaseline = geo.headingBaseline;
+      } else {
+        const gap = layout.gapBefore[category.id] ?? 0.3;
+        boxY = prevBottomIn + gap;
+        headingBaseline = geo.headingBaseline + (boxY - geo.box.y);
+      }
+      perCategory.set(category.id, { ...measured, boxY, headingBaseline });
+      prevBottomIn = boxY + heightIn;
+    }
+    if ((prevBottomIn ?? 0) <= columnBottomLimit(categories, layout) || size <= ITEM_SIZE_MIN) {
+      return { size, perCategory };
+    }
+  }
+}
+
 function drawCategories(
   page: PDFPage,
   {
@@ -875,16 +1041,32 @@ function drawCategories(
     rtl: boolean;
   },
 ) {
+  const columns = new Map<number, FoodListCategory[]>();
+  for (const category of FOOD_LIST_CATEGORIES) {
+    if (!layout.categories[category.id]) continue;
+    const list = columns.get(category.column) ?? [];
+    list.push(category);
+    columns.set(category.column, list);
+  }
+  const columnLayouts = new Map<number, ColumnLayout>();
+  for (const [col, categories] of columns) {
+    columnLayouts.set(col, layoutColumn(categories, layout, language, rtl, body));
+  }
+
   for (const category of FOOD_LIST_CATEGORIES) {
     const geo = layout.categories[category.id];
     if (!geo) continue;
     const { box } = geo;
+    const { size } = columnLayouts.get(category.column)!;
+    const { rows, boxH, pitch, ascent, boxY, headingBaseline } = columnLayouts
+      .get(category.column)!
+      .perCategory.get(category.id)!;
 
     // Leaf-bulleted heading, sitting above its box. In RTL the leaf is on the
     // right of the heading and the text runs leftwards from it.
     page.drawImage(leaf, {
       x: pt(rtl ? geo.leafX - LEAF_SIZE : geo.leafX),
-      y: yFromTop(geo.headingBaseline) - 1,
+      y: yFromTop(headingBaseline) - 1,
       width: pt(LEAF_SIZE),
       height: pt(LEAF_SIZE),
     });
@@ -901,7 +1083,7 @@ function drawCategories(
     headingLines.forEach((line, i) => {
       drawLine(page, line, {
         anchorX: pt(i === 0 ? headingAnchor : rtl ? box.x + box.w : box.x),
-        baselineY: yFromTop(geo.headingBaseline + i * 0.24),
+        baselineY: yFromTop(headingBaseline + i * 0.24),
         size: SZ_HEADING,
         fonts: body,
         color: TEAL_TEXT,
@@ -909,36 +1091,17 @@ function drawCategories(
       });
     });
 
-    // Lay the items out first: the box is then drawn tall enough to contain them
-    // with the document's bottom inset intact, so a label can never be clipped by
-    // or crowd against the border.
-    const lineHeight =
-      layout.itemLineHeightPt ?? body.rtl.heightAtSize(SZ_ITEM, { descender: true });
-    const pitch = lineHeight * (layout.lineSpacing[category.id] ?? 1);
-    const ascent = layout.itemAscentPt ?? body.rtl.heightAtSize(SZ_ITEM, { descender: false });
-
     // Checkbox hugs the box's leading edge — left in LTR, right in RTL — and the
     // label starts one gap inboard of it.
     const checkboxX = rtl
       ? pt(box.x + box.w - BOX_INSET_X) - CHECKBOX_SIZE
       : pt(box.x + BOX_INSET_X);
     const labelAnchor = rtl ? checkboxX - CHECKBOX_GAP : checkboxX + CHECKBOX_SIZE + CHECKBOX_GAP;
-    const farEdge = rtl ? pt(box.x + BOX_INSET_X) : pt(box.x + box.w - BOX_INSET_X);
-    const firstLineW = Math.abs(farEdge - labelAnchor);
-    const restLineW = pt(box.w) - pt(BOX_INSET_X) * 2;
     const restAnchor = rtl ? pt(box.x + box.w - BOX_INSET_X) : pt(box.x + BOX_INSET_X);
-
-    const rows = category.items.map((item) => ({
-      item,
-      lines: wrapText(itemLabel(item, language), body, SZ_ITEM, firstLineW, rtl, restLineW),
-    }));
-    const totalLines = rows.reduce((n, r) => n + r.lines.length, 0);
-    const contentH = pt(BOX_INSET_Y) + (totalLines - 1) * pitch + lineHeight + pt(BOX_INSET_Y);
-    const boxH = Math.max(pt(box.h), contentH);
 
     page.drawRectangle({
       x: pt(box.x),
-      y: yFromTop(box.y) - boxH,
+      y: yFromTop(boxY) - boxH,
       width: pt(box.w),
       height: boxH,
       borderColor: BOX_BORDER,
@@ -946,7 +1109,7 @@ function drawCategories(
     });
 
     // First baseline sits one ascender below the box's top inset.
-    const firstBaselineY = yFromTop(box.y) - pt(BOX_INSET_Y) - ascent;
+    const firstBaselineY = yFromTop(boxY) - pt(BOX_INSET_Y) - ascent;
     let line = 0;
     for (const { item, lines } of rows) {
       drawCheckboxAt(page, checkboxX, firstBaselineY - line * pitch, ticked.has(item.id));
@@ -954,7 +1117,7 @@ function drawCategories(
         drawLine(page, text, {
           anchorX: i === 0 ? labelAnchor : restAnchor,
           baselineY: firstBaselineY - (line + i) * pitch,
-          size: SZ_ITEM,
+          size,
           fonts: body,
           color: ITEM_TEXT,
           baseRtl: rtl,

@@ -38,7 +38,7 @@ const ITEM_TEXT = "#273D3C";
  * The language gate shown when the card is first opened. Both editions reproduce
  * the clinic's paper form; the choice is stored on the visit and decides which
  * labels are shown here and which layout the PDF prints (the Arabic sheet is a
- * mirrored, right-to-left version of the same 94 items).
+ * mirrored, right-to-left version of the same 107 items).
  */
 export function FoodListLanguagePicker({
   onSelect,

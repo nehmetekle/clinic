@@ -354,7 +354,7 @@ near-identical ones. The audit log records each (re)generation.
 
 ## 10. Food List — the Arabic edition
 
-The Arabic form ("Patient paper 1.docx") is the same 94 items as the English one,
+The Arabic form ("Patient paper 1.docx") is the same 107 items as the English one,
 mirrored right-to-left. Both editions share one renderer
 (`src/server/pdf/food-list-pdf.ts`); everything language-specific lives in the
 `LAYOUTS` table, so a drawing change applies to both and English can't silently
@@ -378,7 +378,7 @@ mixed in — 46 × Farsi Yeh (`ی` U+06CC) and 6 × Heh Doachashmee (`ھ` U+06BE
 verbatim these render as broken, disconnected letters and break search, copy/paste
 and screen readers. The catalog therefore stores NFKC-normalised standard Arabic
 with `ی→ي` and `ھ→ه` folded. `ى` (alef maksura) is deliberately left alone — it is
-correct in words like `أخرى`. The 94 labels were reviewed and approved before
+correct in words like `أخرى`. The 107 labels were reviewed and approved before
 shipping; **if labels are ever re-extracted from the .docx, they must be
 re-normalised the same way.**
 

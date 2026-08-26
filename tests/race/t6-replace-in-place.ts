@@ -24,7 +24,7 @@ async function main() {
         "vegetables.artichoke",
         "fruits.apple",
         "eggs-and-dairy.cows-milk",
-        "nuts-and-seeds.almonds-walnuts-pistachios",
+        "nuts-and-seeds.almonds",
       ]),
     },
   });

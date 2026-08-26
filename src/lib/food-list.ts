@@ -16,6 +16,14 @@
 // 1" margins). The PDF reproduces that exactly; the on-screen form reflows
 // responsively instead, because four columns of checkboxes are unusable inside
 // the editor card on a narrow screen.
+//
+// The paper form crammed several distinct foods onto one line ("Chicken / Duck",
+// "Tea / Matcha", "Almonds / Walnuts / Pistachios", …) as a single checkbox. Those
+// are split into one item per food below so each is loggable independently; the
+// PDF renderer lays each category's box out to whatever height its item count
+// needs (see `drawCategories` in food-list-pdf.ts), so this list can keep growing
+// without hand-remeasuring coordinates. "Cream / Ashta" was left alone — ashta is
+// just the Arabic name for the same clotted cream, not a second food.
 
 /** One tickable food item. `id` is stable and is what gets persisted. */
 export type FoodListItem = {
@@ -81,7 +89,8 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
       ["eggplant", "Eggplant", "باذنجان"],
       ["chicory", "Chicory", "هندباء"],
       ["peas", "Peas", "بازلاء"],
-      ["garlic-onion", "Garlic / Onion", "ثوم/ بصل"],
+      ["garlic", "Garlic", "ثوم"],
+      ["onion", "Onion", "بصل"],
       ["lettuce", "Lettuce", "خس"],
       ["mushrooms", "Mushrooms", "فطر"],
       ["pumpkin", "Pumpkin", "يقطين"],
@@ -110,7 +119,8 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
       ["dates", "Dates", "تمر"],
       ["figs", "Figs", "تين"],
       ["grapes", "Grapes", "عنب"],
-      ["melon-watermelon", "Melon / Watermelon", "شمام / بطيخ"],
+      ["melon", "Melon", "شمام"],
+      ["watermelon", "Watermelon", "بطيخ"],
       ["kiwi", "Kiwi", "كيوي"],
       ["orange", "Orange", "برتقال"],
       ["lemon", "Lemon", "ليمون"],
@@ -129,7 +139,9 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
     titleAr: "مكسرات وبذور",
     column: 2,
     items: items("nuts-and-seeds", [
-      ["almonds-walnuts-pistachios", "Almonds / Walnuts / Pistachios", "لوز/ جوز/ فستق"],
+      ["almonds", "Almonds", "لوز"],
+      ["walnuts", "Walnuts", "جوز"],
+      ["pistachios", "Pistachios", "فستق"],
       ["peanuts", "Peanuts", "فول سوداني"],
       ["other-nuts", "Other Nuts", "مكسرات أخرى"],
       ["chia-seeds", "Chia Seeds", "بذور الشيا"],
@@ -141,11 +153,13 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
     titleAr: "بروتينات",
     column: 3,
     items: items("animal-proteins", [
-      ["chicken-duck", "Chicken / Duck", "دجاج / بط"],
+      ["chicken", "Chicken", "دجاج"],
+      ["duck", "Duck", "بط"],
       ["turkey", "Turkey", "ديك رومي"],
       ["beef", "Beef", "لحم بقري"],
       ["veal", "Veal", "عجل"],
-      ["lamb-mutton", "Lamb / Mutton", "خروف / لحم غنم"],
+      ["lamb", "Lamb", "خروف"],
+      ["mutton", "Mutton", "لحم غنم"],
       ["goat-meat", "Goat Meat", "ماعز"],
       ["pork", "Pork", "لحم خنزير"],
       ["fish", "Fish", "سمك"],
@@ -159,7 +173,8 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
     column: 3,
     items: items("plant-based-proteins", [
       ["lentils", "Lentils", "عدس"],
-      ["chickpeas-fava-beans", "Chickpeas / Fava Beans", "حمص / فول"],
+      ["chickpeas", "Chickpeas", "حمص"],
+      ["fava-beans", "Fava Beans", "فول"],
       ["beans", "Beans", "فاصولياء"],
       ["soybeans", "Soybeans", "فول الصويا"],
       ["edamame", "Edamame", "إدامامي"],
@@ -174,7 +189,9 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
       ["quinoa", "Quinoa", "كينوا"],
       ["whole-wheat", "Whole Wheat", "قمحة كاملة"],
       ["oats", "Oats", "شوفان"],
-      ["pasta-pizza-flour", "Pasta / Pizza / Flour", "معكرونة/بيتزا/طحين"],
+      ["pasta", "Pasta", "معكرونة"],
+      ["pizza", "Pizza", "بيتزا"],
+      ["flour", "Flour", "طحين"],
       ["rice", "Rice", "أرز"],
       ["potatoes", "Potatoes", "بطاطا"],
       ["bran", "Bran", "نخالة"],
@@ -190,8 +207,10 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
       ["eggs", "Eggs", "بيض"],
       ["cows-milk", "Cow's Milk", "حليب بقري"],
       ["goats-milk", "Goat's Milk", "حليب ماعز"],
-      ["yogurt", "Regular / Greek Yogurt", "لبن عادي/ يوناني"],
-      ["labneh-white-cheese", "Labneh / White Cheese", "لبنة / جبنة بيضاء"],
+      ["regular-yogurt", "Regular Yogurt", "لبن عادي"],
+      ["greek-yogurt", "Greek Yogurt", "لبن يوناني"],
+      ["labneh", "Labneh", "لبنة"],
+      ["white-cheese", "White Cheese", "جبنة بيضاء"],
       ["yellow-cheese", "Yellow Cheese", "جبنة صفراء"],
       ["cream-ashta", "Cream / Ashta", "قشطة"],
       ["butter", "Butter", "زبدة"],
@@ -204,13 +223,15 @@ export const FOOD_LIST_CATEGORIES: readonly FoodListCategory[] = [
     titleAr: "أطعمة أخرى",
     column: 4,
     items: items("other-foods", [
-      ["tea-matcha", "Tea / Matcha", "شاي / ماتشا"],
+      ["tea", "Tea", "شاي"],
+      ["matcha", "Matcha", "ماتشا"],
       ["black-coffee", "Black Coffee", "قهوة سوداء"],
       ["alcoholic-beverages", "Alcoholic Beverages", "مشروبات كحولية"],
       ["carbonated-beverages", "Carbonated Beverages", "مشروبات غازية"],
       ["canderel", "Canderel sweetener", "كاندريل"],
       ["honey", "Honey", "عسل"],
-      ["tahini-sesame", "Tahini / Sesame", "طحينة / سمسم"],
+      ["tahini", "Tahini", "طحينة"],
+      ["sesame", "Sesame", "سمسم"],
       ["dark-chocolate", "Dark Chocolate", "شوكولاتة داكنة"],
       ["milk-chocolate", "Milk Chocolate", "شوكولاتة بالحليب"],
       ["olives", "Olives", "زيتون"],
@@ -227,7 +248,7 @@ export const FOOD_LIST_ITEM_IDS: ReadonlySet<string> = new Set(
   FOOD_LIST_CATEGORIES.flatMap((c) => c.items.map((i) => i.id)),
 );
 
-/** Total tickable items on the form (94) — used in the editor's summary line. */
+/** Total tickable items on the form — used in the editor's summary line. */
 export const FOOD_LIST_ITEM_COUNT = FOOD_LIST_ITEM_IDS.size;
 
 /**

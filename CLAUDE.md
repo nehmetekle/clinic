@@ -344,7 +344,7 @@ the money to the clinic later.
 A web + PDF reproduction of Layaka's paper intake form, used to record what a
 patient actually eats.
 - **Catalog** — [`src/lib/food-list.ts`](src/lib/food-list.ts) is the single source
-  of truth: 8 categories, 94 items, stable ids (`"vegetables.artichoke"`), plus
+  of truth: 8 categories, 107 items, stable ids (`"vegetables.artichoke"`), plus
   the printed column each category sits in. The editor card and the PDF renderer
   both read it, so they can't drift. Labels are verbatim from the paper form —
   don't "tidy" the inconsistent capitalisation.
@@ -403,7 +403,7 @@ patient actually eats.
   `updateClientSchema`. Use that one — not `isValidPhone`, which stays lax for the
   input field — anywhere a number actually gets dialled.
 - **Both languages are built.** English reproduces "Patient paper english.docx";
-  Arabic reproduces "Patient paper 1.docx" — the same 94 items, mirrored
+  Arabic reproduces "Patient paper 1.docx" — the same 107 items, mirrored
   right-to-left (Vegetables is the rightmost column, checkbox to the right of its
   label, Name/Notes bottom-right). Item ids are **shared**, so selections are
   language-independent: a form ticked in English prints unchanged in Arabic and
