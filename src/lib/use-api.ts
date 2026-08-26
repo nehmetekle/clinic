@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface ApiState<T> {
   data: T | undefined;
@@ -65,14 +65,25 @@ export function useApi<T>(
  *
  * `refetch` from `useApi` is already a background load — it never flips
  * `loading` — so polling here doesn't introduce any spinner/flicker.
+ *
+ * The timer is deliberately NOT re-created when `refetch` changes identity (that
+ * would restart the interval on every render); instead the latest one is read
+ * from a ref at fire time. Calling the captured first-render closure forever is
+ * a trap for any `useApi` with deps: a fetcher keyed on the session (e.g.
+ * `scope: "mine"`, which resolves a tick after mount) would keep polling the
+ * pre-session request and overwrite the correctly-scoped data with it.
  */
 export function useAutoRefetch(refetch: () => void, intervalMs: number): void {
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+
   useEffect(() => {
+    const fire = () => refetchRef.current();
     let interval: ReturnType<typeof setInterval> | undefined;
 
     function start() {
       if (interval) return;
-      interval = setInterval(refetch, intervalMs);
+      interval = setInterval(fire, intervalMs);
     }
     function stop() {
       clearInterval(interval);
@@ -83,7 +94,7 @@ export function useAutoRefetch(refetch: () => void, intervalMs: number): void {
       if (document.hidden) {
         stop();
       } else {
-        refetch();
+        fire();
         start();
       }
     }

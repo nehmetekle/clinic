@@ -290,6 +290,11 @@ export const api = {
   // Edit an open (in-progress) consultation; pass close:true in the body to finalize.
   updateConsultation: (id: string, body: CreateConsultationInput) =>
     patchJson<Consultation>(`/api/consultations/${id}`, body),
+  // Finalize an open consultation from a list, where there is no form to send —
+  // `updateConsultation(..., {close:true})` stays the editor's path (it saves the
+  // doctor's edits first). Same server guards either way.
+  closeConsultation: (id: string) =>
+    postJson<Consultation>(`/api/consultations/${id}/close`, {}),
   // Delete an open consultation opened by mistake (dietitian on own visit, or admin).
   deleteConsultation: (id: string) => deleteJson(`/api/consultations/${id}`),
 
