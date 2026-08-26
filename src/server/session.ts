@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { db } from "./db";
 import type { Role } from "@/lib/types";
 import { SESSION_COOKIE_NAME } from "./session-constants";
+import { TooManyAttemptsError } from "./http";
 
 export { SESSION_COOKIE_NAME };
 
@@ -27,10 +28,28 @@ const ABSOLUTE_TTL_MS = 31 * 24 * 60 * 60 * 1000; // 31 days
 const LASTUSED_THROTTLE_MS = 60 * 1000;
 
 export const MAX_FAILED_LOGIN_ATTEMPTS = 5;
-export const LOCKOUT_DURATION_MS = 2 * 60 * 1000;
+// Restored to the documented 15 min (CLAUDE.md's "Hardening pass" section) —
+// this had drifted to 2 min in code, a 7.5x weaker brute-force lockout than
+// what's stated as the design decision. If 2 min was actually intentional
+// (e.g. to bound how long front-desk staff get locked out during normal work),
+// change it back here and update CLAUDE.md to match — don't let the two drift
+// again.
+export const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 
 const PENDING_2FA_TTL_MS = 5 * 60 * 1000; // 5 min
 export const MAX_2FA_ATTEMPTS = 5;
+
+// Caps how many pending-2FA windows a correct password can open. Each window is
+// its own 5-attempt/5-minute TOTP-guessing budget (MAX_2FA_ATTEMPTS above) — but
+// nothing stopped an attacker who already has the password (phished, reused
+// leaked credentials) from calling /api/auth/login again and again, since a
+// correct password never touches the failedLoginAttempts lockout counter. Each
+// call minted a brand-new token with its own fresh 5-attempt budget, so the
+// TOTP-guessing surface was effectively unlimited. This caps total pending
+// windows opened per account in a rolling period, independent of the per-window
+// attempt cap.
+const PENDING_2FA_CREATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
+export const MAX_PENDING_2FA_CREATIONS = 5;
 
 export interface ResolvedUser {
   id: string;
@@ -165,6 +184,14 @@ export async function getServerUser(): Promise<ResolvedUser | null> {
 /** Creates a pending-2FA record after a password check succeeds for a user
  * with totpEnabled, and returns the raw token to hand to the client. */
 export async function createPendingTwoFactor(userId: string): Promise<string> {
+  const windowStart = new Date(Date.now() - PENDING_2FA_CREATE_WINDOW_MS);
+  const recent = await db.pendingTwoFactor.count({
+    where: { userId, createdAt: { gte: windowStart } },
+  });
+  if (recent >= MAX_PENDING_2FA_CREATIONS) {
+    throw new TooManyAttemptsError("Too many sign-in attempts. Try again in a few minutes.");
+  }
+
   const token = randomBytes(32).toString("base64url");
   await db.pendingTwoFactor.create({
     data: {

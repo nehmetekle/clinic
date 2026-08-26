@@ -125,6 +125,30 @@ function toClient(c: ClientRow): Client {
   };
 }
 
+/**
+ * Applies the same role-based redaction every read path uses, so a single
+ * definition of "what this role may see" can't drift between them. Non-clinical
+ * roles never get `medicalNotes`/`allergies`; a plain dietitian (not admin) also
+ * loses the front-desk contact/identity fields — mirrors the narrowed Personal
+ * tab in the client profile UI.
+ */
+function redactClientForRole(client: Client, role: Role, includeClinical: boolean): Client {
+  let view = includeClinical ? client : { ...client, medicalNotes: undefined, allergies: undefined };
+  if (role === "dietitian") {
+    view = {
+      ...view,
+      phone: "",
+      email: undefined,
+      address: undefined,
+      emergencyContact: undefined,
+      passportNumber: undefined,
+      country: undefined,
+      maritalStatus: undefined,
+    };
+  }
+  return view;
+}
+
 export async function listClients(
   opts: { q?: string; includeClinical?: boolean } = {},
 ): Promise<Client[]> {
@@ -231,30 +255,13 @@ export async function getClientDetail(
     .filter((d) => d.status === "outstanding")
     .reduce((sum, d) => sum + d.outstandingAmount, 0);
 
-  const mapped = toClient(client);
   // Non-clinical roles (secretary) get contact + visit/package + payment data,
   // but no medical notes/allergies and no consultation records (weight, BMI,
-  // measurements, clinical notes). Enforced here so the data never leaves the server.
-  let clientView = includeClinical
-    ? mapped
-    : { ...mapped, medicalNotes: undefined, allergies: undefined };
-
-  // A plain doctor (dietitian, not admin) only needs a narrow slice of the
-  // personal record — name, gender, referrer, age (dateOfBirth) and first-time
-  // status. Drop the rest here so it never leaves the server, matching the
-  // narrowed Personal tab in the client profile UI.
-  if (role === "dietitian") {
-    clientView = {
-      ...clientView,
-      phone: "",
-      email: undefined,
-      address: undefined,
-      emergencyContact: undefined,
-      passportNumber: undefined,
-      country: undefined,
-      maritalStatus: undefined,
-    };
-  }
+  // measurements, clinical notes). A plain doctor (dietitian, not admin) only
+  // needs a narrow slice of the personal record — name, gender, referrer, age
+  // (dateOfBirth) and first-time status. Enforced here so the data never
+  // leaves the server; see redactClientForRole.
+  const clientView = redactClientForRole(toClient(client), (role ?? "secretary") as Role, includeClinical);
 
   return {
     client: clientView,
@@ -517,5 +524,10 @@ export async function updateClient(
     });
   }
 
-  return toClient(row);
+  // The response must be redacted exactly like every read path (getClientDetail,
+  // listClients) — otherwise an ordinary, permitted edit becomes a side-channel
+  // read of fields this role is blocked from ever seeing (a secretary editing a
+  // phone number getting medicalNotes/allergies back, or a dietitian editing
+  // medicalNotes getting phone/email/address/passportNumber back).
+  return redactClientForRole(toClient(row), role, role === "dietitian" || role === "admin");
 }

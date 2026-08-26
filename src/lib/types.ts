@@ -129,7 +129,9 @@ export interface Referrer {
   active: boolean;
   // Admin-set per-referral commission in USD (0 = no fee). The LIVE rate; the
   // amount owed for a given patient is frozen onto the client at registration.
-  fee: number;
+  // Admin-only, like every other cost/margin figure — omitted from responses
+  // to other roles (see withoutFee).
+  fee?: number;
 }
 
 // Admin-managed prices for blood tests and treatment services. `cost` is the

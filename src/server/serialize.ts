@@ -215,6 +215,18 @@ export function withoutCost<T extends { cost?: number }>(row: T): Omit<T, "cost"
   return rest;
 }
 
+/**
+ * Strips the admin-only `fee` field from a referrer row. The commission rate is
+ * business-sensitive the same way `cost` is (redacted everywhere it's aggregated
+ * — the dashboard's "Referrer cost" card, the admin-only referrals ledger) —
+ * this closes the one catalog list that used to hand it to every signed-in role.
+ */
+export function withoutFee<T extends { fee?: number }>(row: T): Omit<T, "fee"> {
+  const { fee: _fee, ...rest } = row;
+  void _fee;
+  return rest;
+}
+
 /** Tolerant parse of a JSON-encoded string[] column (e.g. a user's supplements). */
 function parseStringList(json: string | null): string[] {
   if (!json) return [];

@@ -238,8 +238,8 @@ export const createConsultationSchema = z.object({
       z.object({
         machine: z.string().min(1),
         bodyParts: z.array(z.string()).optional(),
-        sessionsNeeded: z.coerce.number().int().min(0).optional(),
-        sessionsUsed: z.coerce.number().int().min(0).optional(),
+        sessionsNeeded: z.coerce.number().int().min(0).max(1000).optional(),
+        sessionsUsed: z.coerce.number().int().min(0).max(1000).optional(),
         clientPackageId: z.string().nullish(),
         // Catalog bundle to start for the patient on this visit (charged once).
         applyPackageId: z.string().nullish(),
@@ -601,7 +601,12 @@ export const updateProductSchema = z.object({
 // automatically by the consultation save path (see consultations.ts); this
 // schema is for the two manual kinds an admin triggers from the Pricing page.
 export const adjustProductStockSchema = z.object({
-  delta: z.coerce.number().int().refine((n) => n !== 0, "Amount can't be zero"),
+  delta: z.coerce
+    .number()
+    .int()
+    .min(-1_000_000)
+    .max(1_000_000)
+    .refine((n) => n !== 0, "Amount can't be zero"),
   type: z.enum(["restock", "correction"]),
   reason: z.string().trim().max(500).optional(),
 });

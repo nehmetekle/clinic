@@ -7,9 +7,10 @@ project grows. Item numbers match the codebase health-check audit. Nothing here
 is fixed yet — these are logged on purpose.
 
 Already fixed (for reference, not open): receipt-number collisions (#2), basket
-settlement double-charge (#3), missing permission checks (#1), and recurring-cost
+settlement double-charge (#3), missing permission checks (#1), recurring-cost
 history freezing (#4, which also incidentally fixed the currency-switch stale-rate
-concern — a currency change now re-snapshots the exchange rate for the new period).
+concern — a currency change now re-snapshots the exchange rate for the new period),
+and double-booking (#6 — see "Appointment slot uniqueness" below).
 
 **Upfront plan billing / `SessionPlan` (implemented, wired into the UI):**
 pay-as-you-go clients (NOT on a fixed-price package) have a `SessionPlan` tracking
@@ -54,18 +55,6 @@ loader. ([use-api.ts](../src/lib/use-api.ts).)
 
 
 Each item: what's wrong · where it lives · severity.
-
-### ⚠️ #6 — Appointments can be double-booked (booking **and** rescheduling)
-Nothing stops two appointments from occupying the same dietitian/date/time; there
-is no slot-conflict check anywhere, and no DB uniqueness backing it (the
-`Appointment` table has only its primary key and two foreign keys — verified with
-`\d "Appointment"`). Both write paths are affected:
-- **Where:** [appointments.ts `createAppointment`](../src/server/repositories/appointments.ts) — no validation before create; and `rescheduleAppointment` in the same file — a reschedule can move a booking straight onto an occupied slot.
-- **Verified:** creating twice into `2026-08-21 12:00` for one dietitian returned `201` both times; rescheduling a 16:00 booking onto an existing 08:00 booking returned `200`, leaving two `scheduled` rows on the identical slot.
-- **Effect:** Two clients booked into one slot; discovered only when both arrive.
-- **Note:** rescheduling *inherits* this gap rather than introducing it. Any fix
-  belongs in one shared slot-conflict check called by both paths, not bolted onto
-  one of them.
 
 ### ⚠️ #7 — Duplicate patient / staff-email edge cases
 Patient de-duplication compares phone numbers in JavaScript with no database
@@ -593,10 +582,29 @@ not. Left as-is rather than silently tightening a pre-existing endpoint — but 
 booking is meant to be front-desk-only, `POST /api/appointments` should move to
 `canManageAppointments` too.
 
-### No schema change
-The feature reuses existing columns; no migration was added. Confirmed against
-the live database — `Appointment` still carries only its primary key and the
-client/dietitian foreign keys.
+### Appointment slot uniqueness (closes #6)
+**Stale note removed**: this section used to say "no schema change" / "no DB
+uniqueness backing it" — that's no longer true. `Appointment.activeSlotKey`
+(`prisma/schema.prisma`) is a mirror of `clientId|date|time`, set only while a
+booking is ACTIVE (`scheduled`/`checked_in`/`with_dietitian`), and carries a
+`@@unique` index. A client can't be double-booked at the same date/time whether
+unassigned, assigned to one dietitian, or split across two different
+dietitians — the same key collides in all three cases. Every write that can
+change status, date or time (`createAppointment`, `updateAppointmentStatus`,
+`rescheduleAppointment`, all in
+[appointments.ts](../src/server/repositories/appointments.ts)) recomputes the
+key through the shared `activeSlotKey()` helper and translates the resulting
+Postgres `P2002` into a `409` ("This client already has an appointment at this
+date and time.") — never a raw 500. Terminal statuses (`completed`, `cancelled`,
+`no_show`) null the key out, so history and rebooking a freed slot are
+unaffected. Two *different* clients can still be booked into the same
+dietitian/date/time — this only protects one client from being in two places at
+once, it is not a doctor-capacity check. First introduced (dietitian-scoped
+only) in migration `20260820120000_one_active_appointment_per_slot`; widened to
+also cover unassigned and cross-dietitian collisions in
+`20260825120000_appointment_slot_key_drops_dietitian`, which also cancels any
+pre-existing duplicate bookings it finds under the new rule (non-destructive —
+duplicates stay in history, just no longer occupying the slot).
 
 ## 13. Food List PDF — concurrency (audit fixes #1, #2, #3, #5)
 

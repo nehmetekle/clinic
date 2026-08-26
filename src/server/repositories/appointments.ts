@@ -54,7 +54,7 @@ export function toAppointment(
 export async function expirePastScheduledAppointments(): Promise<void> {
   // Also clears activeSlotKey: "no_show" is a terminal status, so the slot must
   // stop being occupied — otherwise the stale key would permanently block
-  // rebooking the same client/dietitian/date/time.
+  // rebooking the same client/date/time.
   await db.appointment.updateMany({
     where: { status: "scheduled", date: { lt: clinicDayRange(todayIso()).gte } },
     data: { status: "no_show", activeSlotKey: null },
@@ -64,25 +64,23 @@ export async function expirePastScheduledAppointments(): Promise<void> {
 const ACTIVE_APPOINTMENT_STATUSES = ["scheduled", "checked_in", "with_dietitian"];
 
 /**
- * The value of `Appointment.activeSlotKey` for a given status/dietitian — the
- * column the `activeSlotKey` unique index enforces. Set on EVERY write that
- * can change status, dietitianId, date or time. Null whenever the booking
- * isn't actually occupying a slot (terminal status, or no dietitian assigned
- * yet), so any number of such rows can coexist — see the schema comment.
+ * The value of `Appointment.activeSlotKey` for a given status — the column
+ * the `activeSlotKey` unique index enforces. Set on EVERY write that can
+ * change status, date or time, regardless of dietitian assignment. Null
+ * whenever the booking isn't actually occupying a slot (terminal status), so
+ * any number of such rows can coexist — see the schema comment.
  */
 function activeSlotKey(
   status: string,
   clientId: string,
-  dietitianId: string | null,
   dateIso: string,
   time: string,
 ): string | null {
-  if (!ACTIVE_APPOINTMENT_STATUSES.includes(status) || !dietitianId) return null;
-  return `${clientId}|${dietitianId}|${dateIso}|${time}`;
+  if (!ACTIVE_APPOINTMENT_STATUSES.includes(status)) return null;
+  return `${clientId}|${dateIso}|${time}`;
 }
 
-const DOUBLE_BOOKED_MESSAGE =
-  "This client already has an appointment with this dietitian at this date and time.";
+const DOUBLE_BOOKED_MESSAGE = "This client already has an appointment at this date and time.";
 
 export async function listAppointments(
   date?: string,
@@ -129,13 +127,7 @@ export async function createAppointment(
         status: "scheduled",
         visitType: input.visitType,
         notes: input.notes,
-        activeSlotKey: activeSlotKey(
-          "scheduled",
-          input.clientId,
-          input.dietitianId ?? null,
-          input.date,
-          input.time,
-        ),
+        activeSlotKey: activeSlotKey("scheduled", input.clientId, input.date, input.time),
       },
       include,
     });
@@ -161,10 +153,9 @@ export async function updateAppointmentStatus(
 ): Promise<Appointment> {
   const existing = await db.appointment.findUnique({
     where: { id },
-    select: { clientId: true, dietitianId: true, date: true, time: true },
+    select: { clientId: true, date: true, time: true },
   });
   if (!existing) throw new NotFoundError("Appointment not found");
-  const dietitianId = opts.dietitianId !== undefined ? opts.dietitianId : existing.dietitianId;
   try {
     const row = await db.appointment.update({
       where: { id },
@@ -175,7 +166,7 @@ export async function updateAppointmentStatus(
         status,
         completedAt: status === "completed" ? new Date() : null,
         ...(opts.dietitianId !== undefined ? { dietitianId: opts.dietitianId } : {}),
-        activeSlotKey: activeSlotKey(status, existing.clientId, dietitianId, dateOnly(existing.date)!, existing.time),
+        activeSlotKey: activeSlotKey(status, existing.clientId, dateOnly(existing.date)!, existing.time),
       },
       include,
     });
@@ -234,13 +225,7 @@ export async function rescheduleAppointment(
         // both reminders for the slot they were actually moved to.
         reminder24hSentAt: null,
         reminder2hSentAt: null,
-        activeSlotKey: activeSlotKey(
-          "scheduled",
-          existing.clientId,
-          input.dietitianId ?? null,
-          input.date,
-          input.time,
-        ),
+        activeSlotKey: activeSlotKey("scheduled", existing.clientId, input.date, input.time),
       },
       include,
     });
