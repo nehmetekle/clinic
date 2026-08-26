@@ -738,6 +738,7 @@ export interface Client {
   assignedDietitianId?: string;
   registeredAt: string;
   packages: ClientPackage[];
+  sessionPlans: SessionPlan[];
 }
 
 // ---- Medical history ----

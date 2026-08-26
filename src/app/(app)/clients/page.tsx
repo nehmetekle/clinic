@@ -122,7 +122,6 @@ function ClientsList() {
                 <TH>Client</TH>
                 <TH>Phone</TH>
                 <TH>Age</TH>
-                <TH>Bundle</TH>
                 <TH>Sessions</TH>
                 {canHandleMoney && <TH>Owes</TH>}
                 <TH>Status</TH>
@@ -131,7 +130,18 @@ function ClientsList() {
             </THead>
             <TBody>
               {rows.map((c) => {
-                const cp = c.packages[0];
+                // Progress through the courses the patient is still on: sessions
+                // attended out of sessions prescribed. Completed/cancelled plans
+                // and finished bundles are past treatment, not outstanding work,
+                // so they're left out of both sides of the ratio.
+                const activePlans = c.sessionPlans.filter((p) => p.status === "active");
+                const activeBundles = c.packages.filter((p) => p.status === "active");
+                const sessionsUsed =
+                  activePlans.reduce((s, p) => s + p.sessionsUsed, 0) +
+                  activeBundles.reduce((s, p) => s + p.usedSessions, 0);
+                const sessionsPrescribed =
+                  activePlans.reduce((s, p) => s + p.sessionsNeeded, 0) +
+                  activeBundles.reduce((s, p) => s + p.totalSessions, 0);
                 return (
                   <TR key={c.id} onClick={() => router.push(`/clients/${c.id}`)}>
                     <TD>
@@ -149,8 +159,7 @@ function ClientsList() {
                     </TD>
                     <TD className="text-slate-500">{c.phone}</TD>
                     <TD>{age(c.dateOfBirth) ?? "—"}</TD>
-                    <TD className="text-slate-500">{cp?.packageName ?? "—"}</TD>
-                    <TD>{cp ? `${cp.usedSessions}/${cp.totalSessions}` : "—"}</TD>
+                    <TD>{sessionsPrescribed > 0 ? `${sessionsUsed}/${sessionsPrescribed}` : "—"}</TD>
                     {canHandleMoney && (
                       <TD>
                         {owingClientIds.has(c.id) ? (
@@ -175,7 +184,7 @@ function ClientsList() {
               })}
               {rows.length === 0 && (
                 <TR>
-                  <TD colSpan={canHandleMoney ? 8 : 7} className="py-8 text-center text-slate-400">
+                  <TD colSpan={canHandleMoney ? 7 : 6} className="py-8 text-center text-slate-400">
                     No clients match your search.
                   </TD>
                 </TR>

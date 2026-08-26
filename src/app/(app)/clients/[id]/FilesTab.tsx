@@ -1,14 +1,16 @@
 "use client";
 
-import { Download, FileText, FlaskConical, MessageCircle, Printer, Salad } from "lucide-react";
+import { useState } from "react";
+import { Download, Eye, FileText, FlaskConical, Loader2, Salad } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { useApi } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { formatDate } from "@/lib/utils";
+import { useToast } from "@/lib/toast";
+import { cn, formatDate } from "@/lib/utils";
 import { formatFileSize } from "@/lib/files";
-import { SendViaWhatsAppButton, WHATSAPP_ATTACH_HINT } from "@/components/SendViaWhatsAppButton";
+import { SendViaWhatsAppButton } from "@/components/SendViaWhatsAppButton";
 
 /**
  * The client profile's Files tab.
@@ -39,6 +41,12 @@ export function FilesTab({
 }) {
   const { user } = useSession();
   const isClinical = user?.role === "dietitian" || user?.role === "admin";
+  // Only doctor/admin can regenerate (`POST .../food-list-pdf` is clinical-only)
+  // — matches `isClinical`, named separately since the two checks mean different
+  // things here (one gates *seeing* labs, the other gates *fixing* a stale PDF).
+  const canRegenerate = isClinical;
+  const { toast } = useToast();
+  const [printRegeneratingId, setPrintRegeneratingId] = useState<string | null>(null);
 
   const consultationFiles = useApi(
     () => api.listClientConsultationFiles(clientId),
@@ -52,6 +60,15 @@ export function FilesTab({
   if (consultationFiles.loading || bloodFiles.loading) return <Loading />;
   const error = consultationFiles.error ?? bloodFiles.error;
   if (error) return <ErrorState message={error} />;
+
+  // Regenerates a row's PDF and refreshes the listing so its `stale`/`createdAt`
+  // catch up — used by both Print (below) and the Download/Send button's
+  // `onRegenerate`.
+  async function regenerate(consultationId: string) {
+    const file = await api.generateFoodListPdf(consultationId);
+    consultationFiles.refetch();
+    return file;
+  }
 
   const docs = consultationFiles.data ?? [];
   const labs = bloodFiles.data ?? [];
@@ -99,14 +116,48 @@ export function FilesTab({
                       handed to the patient at the desk. Opens the PDF inline in
                       a new tab — the browser's viewer owns the print dialog —
                       and stays a real link, so "Save as" is still one
-                      right-click away for anyone who wants the file. */}
+                      right-click away for anyone who wants the file. If it's
+                      stale and this role can regenerate, the click reserves the
+                      tab synchronously (so the pop-up blocker leaves it alone),
+                      regenerates, then points the reserved tab at the fresh copy. */}
                   <a
                     href={api.consultationFilePrintUrl(f.id)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+                    aria-disabled={printRegeneratingId === f.id}
+                    onClick={
+                      canRegenerate && f.stale
+                        ? (e) => {
+                            e.preventDefault();
+                            if (printRegeneratingId) return;
+                            const win = window.open("", "_blank");
+                            setPrintRegeneratingId(f.id);
+                            void (async () => {
+                              try {
+                                const file = await regenerate(f.consultationId);
+                                if (win) win.location.href = api.consultationFilePrintUrl(file.id);
+                                else toast("Couldn't open the print tab — check your pop-up blocker.");
+                              } catch (e) {
+                                win?.close();
+                                toast((e as Error).message);
+                              } finally {
+                                setPrintRegeneratingId(null);
+                              }
+                            })();
+                          }
+                        : undefined
+                    }
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50",
+                      printRegeneratingId === f.id && "pointer-events-none opacity-50",
+                    )}
                   >
-                    <Printer className="h-4 w-4" /> Print
+                    {printRegeneratingId === f.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                    {printRegeneratingId === f.id ? "Regenerating…" : "View"}
                   </a>
                   {/* Food List forms are what gets sent on to the patient; a lab
                       result is clinical and is never WhatsApp'd from here. */}
@@ -117,6 +168,8 @@ export function FilesTab({
                       phone={clientPhone}
                       firstName={clientFirstName}
                       stale={f.stale}
+                      role={user?.role}
+                      onRegenerate={canRegenerate ? () => regenerate(f.consultationId) : undefined}
                     />
                   )}
                 </span>
@@ -151,17 +204,6 @@ export function FilesTab({
             ))}
           </ul>
         )}
-        {docs.some((f) => f.kind === "food-list") && (
-          <p className="mt-4 flex items-start gap-1.5 rounded-lg bg-emerald-50/70 px-3 py-2 text-xs text-emerald-800">
-            <MessageCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            {WHATSAPP_ATTACH_HINT}
-          </p>
-        )}
-        <p className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-400">
-          Uploading general (non blood-test) documents arrives in Version 4. Blood-test
-          results are uploaded from the Blood tests tab or the Blood Samples board; the
-          Food List PDF is generated from the consultation editor.
-        </p>
       </CardBody>
     </Card>
   );

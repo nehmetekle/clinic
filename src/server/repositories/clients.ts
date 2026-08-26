@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, DuplicatePhoneError, ForbiddenError, NotFoundError } from "../http";
-import { dateOnly, toClientPackage } from "../serialize";
+import { dateOnly, toClientPackage, toSessionPlan } from "../serialize";
 import { expirePastScheduledAppointments, toAppointment } from "./appointments";
 import { writeAudit } from "./audit";
 import { listClientDebts } from "./clientDebts";
@@ -122,6 +122,7 @@ function toClient(c: ClientRow): Client {
     assignedDietitianId: c.assignedDietitian?.id,
     registeredAt: dateOnly(c.registeredAt)!,
     packages: c.packages.map(toClientPackage),
+    sessionPlans: c.sessionPlans.map((p) => toSessionPlan(p)),
   };
 }
 

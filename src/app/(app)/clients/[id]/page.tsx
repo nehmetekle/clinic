@@ -591,60 +591,19 @@ export default function ClientProfilePage() {
                   </div>
                 )}
                 <Card>
-                  <CardHeader title="Bundles" subtitle="Fixed-price treatment bundles" />
-                  <Table>
-                    <THead><TR>
-                      <TH>Bundle</TH><TH>Treatment</TH><TH>Price</TH><TH>Sessions</TH><TH>Start</TH><TH>Status</TH>
-                      {canLogMachineVisit && <TH> </TH>}
-                    </TR></THead>
-                    <TBody>
-                      {client.packages.map((p) => (
-                        <TR key={p.id}>
-                          <TD className="font-medium">{p.packageName}</TD>
-                          <TD className="text-slate-500">{p.machine ?? "—"}</TD>
-                          <TD>{formatMoney(p.price, p.currency)}</TD>
-                          <TD>{p.usedSessions}/{p.totalSessions}</TD>
-                          <TD className="text-slate-500">{formatDate(p.startDate)}</TD>
-                          <TD><Badge tone={p.status === "active" ? "green" : "gray"}>{p.status}</Badge></TD>
-                          {canLogMachineVisit && (
-                            <TD>
-                              {p.status === "active" && p.totalSessions - p.usedSessions > 0 && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    setMachineVisitPreselect(`pkg:${p.id}`);
-                                    setMachineVisitOpen(true);
-                                  }}
-                                >
-                                  Log visit
-                                </Button>
-                              )}
-                            </TD>
-                          )}
-                        </TR>
-                      ))}
-                      {client.packages.length === 0 && (
-                        <TR><TD colSpan={canLogMachineVisit ? 7 : 6} className="py-6 text-center text-slate-400">No bundles.</TD></TR>
-                      )}
-                    </TBody>
-                  </Table>
-                </Card>
-
-                <Card>
-                  <CardHeader title="Sessions" subtitle="Purchased per session" />
-                  {sessionPlans.length === 0 ? (
+                  <CardHeader title="Sessions" subtitle="Purchased per session or bundle" />
+                  {sessionPlans.length === 0 && client.packages.length === 0 ? (
                     <CardBody className="text-sm text-slate-400">No sessions.</CardBody>
                   ) : (
                     <Table>
                       <THead><TR>
-                        <TH>Treatment</TH><TH>Unit price</TH><TH>Prescribed</TH><TH>Purchased</TH><TH>Used</TH><TH>Available</TH><TH>Status</TH>
-                        {canLogMachineVisit && <TH> </TH>}
+                        <TH>Treatment</TH><TH>Type</TH><TH>Unit price</TH><TH>Prescribed</TH><TH>Purchased</TH><TH>Used</TH><TH>Available</TH><TH>Status</TH>
                       </TR></THead>
                       <TBody>
                         {sessionPlans.map((p) => (
                           <TR key={p.id}>
                             <TD className="font-medium">{p.machine ?? NO_MACHINE_LABEL}</TD>
+                            <TD className="text-slate-500">Session</TD>
                             <TD>{formatMoney(p.unitPrice, p.currency)}</TD>
                             <TD>{p.sessionsNeeded}</TD>
                             <TD>{p.sessionsPaid}</TD>
@@ -655,22 +614,22 @@ export default function ClientProfilePage() {
                               </span>
                             </TD>
                             <TD><Badge tone={p.status === "active" ? "green" : p.status === "completed" ? "gray" : "red"}>{p.status}</Badge></TD>
-                            {canLogMachineVisit && (
-                              <TD>
-                                {p.status === "active" && p.sessionsAvailable > 0 && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => {
-                                      setMachineVisitPreselect(`plan:${p.id}`);
-                                      setMachineVisitOpen(true);
-                                    }}
-                                  >
-                                    Log visit
-                                  </Button>
-                                )}
-                              </TD>
-                            )}
+                          </TR>
+                        ))}
+                        {client.packages.map((p) => (
+                          <TR key={p.id}>
+                            <TD className="font-medium">{p.packageName}{p.machine ? ` (${p.machine})` : ""}</TD>
+                            <TD className="text-slate-500">Bundle</TD>
+                            <TD>{formatMoney(p.price, p.currency)}</TD>
+                            <TD>{p.totalSessions}</TD>
+                            <TD>{p.totalSessions}</TD>
+                            <TD>{p.usedSessions}</TD>
+                            <TD>
+                              <span className={p.totalSessions - p.usedSessions > 0 ? "font-medium text-emerald-600" : "text-slate-500"}>
+                                {p.totalSessions - p.usedSessions}
+                              </span>
+                            </TD>
+                            <TD><Badge tone={p.status === "active" ? "green" : "gray"}>{p.status}</Badge></TD>
                           </TR>
                         ))}
                       </TBody>

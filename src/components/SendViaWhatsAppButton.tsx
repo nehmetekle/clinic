@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, MessageCircle } from "lucide-react";
+import { AlertTriangle, Download, Loader2, MessageCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import type { ConsultationFile, Role } from "@/lib/types";
 import {
   foodListMessage,
   whatsAppChatUrl,
@@ -34,6 +35,11 @@ import {
  * Open to every role — the secretary hands the form over at the desk as often as
  * the doctor does. Only *generating* the PDF is clinical-only.
  *
+ * Pass `role` so a dietitian facing an undialable number gets a Download
+ * fallback instead of the "check patient's phone" notice (see below); other
+ * roles keep the notice, since only the dietitian can fix the phone or
+ * regenerate the sheet.
+ *
  * Freshness is checked twice. `stale` (the form was edited after this PDF was
  * made) hides the button, but that flag is only as current as the listing it came
  * from — a Files tab left open while the doctor edits the form elsewhere still
@@ -41,11 +47,13 @@ import {
  * `?intent=send`, and the server refuses a superseded sheet; the flag is the
  * affordance, the server is the guarantee.
  *
- * `stale` blocks the send instead of regenerating on the way out: regenerating means awaiting the server, and the
- * moment this handler yields the pop-up blocker eats the chat window — the same
- * one-gesture constraint that already rules out generating on demand here. So the
- * button turns into a "regenerate first" notice, which also keeps the doctor (not
- * a background request) in charge of what the patient receives.
+ * `stale` used to just block the send with a "regenerate first" notice — that
+ * was the safe default when regenerating had to be a separate button press.
+ * Now, when the caller passes `onRegenerate` (only doctor/admin can — they're
+ * the ones `POST .../food-list-pdf` allows), a stale file regenerates
+ * transparently on click instead: the button stays live, just shows a spinner
+ * while the fresh PDF renders, then sends/downloads that instead of the old
+ * one. Callers that can't regenerate (no `onRegenerate`) still get the notice.
  */
 export function SendViaWhatsAppButton({
   fileId,
@@ -53,6 +61,8 @@ export function SendViaWhatsAppButton({
   phone,
   firstName,
   stale = false,
+  role,
+  onRegenerate,
   className,
 }: {
   fileId: string;
@@ -61,17 +71,45 @@ export function SendViaWhatsAppButton({
   firstName: string;
   /** This PDF no longer matches the saved form (see `isFoodListPdfStale`). */
   stale?: boolean;
+  /** The dietitian gets a Download fallback instead of the "check patient's
+   * phone" notice when the number can't be dialled — a plain download still
+   * gets the sheet into their hands even when WhatsApp can't. */
+  role?: Role;
+  /** Regenerates the PDF and resolves the fresh file. Only pass this when the
+   * signed-in role is actually allowed to generate (doctor/admin) — a stale
+   * file then refreshes itself on click instead of blocking. */
+  onRegenerate?: () => Promise<ConsultationFile | null | undefined>;
   className?: string;
 }) {
   const chatUrl = whatsAppChatUrl(phone, foodListMessage(firstName));
   const { toast } = useToast();
   // Set when the server turns the send down — the listing this button was drawn
-  // from is out of date, so flip it to the same notice a stale file gets.
+  // from is out of date, so flip it to the same "needs a fresh copy" state a
+  // stale file starts in.
   const [refused, setRefused] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const needsFreshCopy = stale || refused;
 
-  // The form moved on after this sheet was printed: sending it would hand the
-  // patient answers the doctor has already changed.
-  if (stale || refused) {
+  // Resolves the file to actually act on: regenerates first when the current
+  // copy is superseded and the caller is allowed to (`onRegenerate` given).
+  async function resolveFile(): Promise<{ id: string; filename: string } | null> {
+    if (!needsFreshCopy) return { id: fileId, filename };
+    if (!onRegenerate) return null;
+    setRegenerating(true);
+    try {
+      const file = await onRegenerate();
+      if (!file) return null; // onRegenerate already reported why
+      setRefused(false);
+      return { id: file.id, filename: file.filename };
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  // The form moved on after this sheet was printed, and nobody here can
+  // regenerate it: sending it would hand the patient answers the doctor has
+  // already changed, so show what to do instead of a dead button.
+  if (needsFreshCopy && !onRegenerate) {
     return (
       <span
         title={WHATSAPP_STALE_MESSAGE}
@@ -88,8 +126,50 @@ export function SendViaWhatsAppButton({
   }
 
   // No dialable number: rather than guess a country code (or dial an impossible
-  // one) and risk opening a chat with a stranger, show what to fix.
+  // one) and risk opening a chat with a stranger, show what to fix. The
+  // dietitian gets a plain Download instead — the sheet still needs to reach
+  // the patient somehow, and a downloaded PDF doesn't depend on the phone
+  // field at all. Every other role keeps the phone-fix notice, since they
+  // can't generate a replacement if the download turns out to be stale later.
   if (!chatUrl) {
+    if (role === "dietitian") {
+      return (
+        <a
+          href={api.consultationFileUrl(fileId)}
+          download={filename}
+          title="This patient's phone number isn't set up for WhatsApp — download the PDF instead."
+          aria-disabled={regenerating}
+          onClick={(e) => {
+            if (!needsFreshCopy) return; // plain link, let the browser download it
+            e.preventDefault();
+            if (regenerating) return;
+            void (async () => {
+              const file = await resolveFile();
+              if (!file) {
+                toast("Couldn't regenerate the PDF.");
+                return;
+              }
+              const a = document.createElement("a");
+              a.href = api.consultationFileUrl(file.id);
+              a.download = file.filename;
+              a.click();
+            })();
+          }}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50",
+            regenerating && "pointer-events-none opacity-50",
+            className,
+          )}
+        >
+          {regenerating ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+          {regenerating ? "Regenerating…" : "Download"}
+        </a>
+      );
+    }
     return (
       <span
         title={WHATSAPP_BAD_PHONE_MESSAGE}
@@ -108,12 +188,12 @@ export function SendViaWhatsAppButton({
   /**
    * Fetches the PDF for sending and hands it to the browser as a download.
    * A 409 means the form moved on since this file was rendered (another tab, or
-   * this listing is simply old): no bytes are written, and the button becomes the
-   * "regenerate first" notice.
+   * this listing is simply old): no bytes are written, and — for callers that
+   * can't regenerate — the button becomes the "regenerate first" notice.
    */
-  async function sendDownload() {
+  async function sendDownload(id: string, name: string) {
     try {
-      const res = await fetch(api.consultationFileSendUrl(fileId));
+      const res = await fetch(api.consultationFileSendUrl(id));
       if (res.status === 409) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         setRefused(true);
@@ -127,7 +207,7 @@ export function SendViaWhatsAppButton({
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename;
+      a.download = name;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -138,23 +218,42 @@ export function SendViaWhatsAppButton({
   return (
     <a
       // Kept as a real link (middle-click, right-click "Save as") — the click
-      // handler takes over so a refusal can be reported instead of dumping the
-      // error JSON into the browser as a download.
+      // handler takes over so a refusal (or a needed regenerate) can be
+      // handled instead of dumping the error JSON into the browser as a download.
       href={api.consultationFileUrl(fileId)}
       download={filename}
+      aria-disabled={regenerating}
       onClick={(e) => {
+        if (regenerating) {
+          e.preventDefault();
+          return;
+        }
         // Opening the chat must stay in the gesture — an await here and the
-        // pop-up blocker eats the window. The download follows asynchronously.
+        // pop-up blocker eats the window. Regenerating (if needed) and the
+        // download both follow asynchronously.
         window.open(chatUrl, "_blank", "noopener,noreferrer");
         e.preventDefault();
-        void sendDownload();
+        void (async () => {
+          const file = await resolveFile();
+          if (!file) {
+            toast("Couldn't regenerate the PDF.");
+            return;
+          }
+          await sendDownload(file.id, file.filename);
+        })();
       }}
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-50",
+        regenerating && "pointer-events-none opacity-50",
         className,
       )}
     >
-      <MessageCircle className="h-4 w-4" /> Send via WhatsApp
+      {regenerating ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <MessageCircle className="h-4 w-4" />
+      )}
+      {regenerating ? "Regenerating…" : "Send via WhatsApp"}
     </a>
   );
 }

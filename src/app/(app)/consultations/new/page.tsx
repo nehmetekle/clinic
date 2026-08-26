@@ -1443,7 +1443,7 @@ function ConsultationEditor() {
       // changes — otherwise the doctor would print a stale sheet. Silent: this
       // save is a means to an end, and must leave the doctor in the editor.
       const id = await save(false, { silent: true });
-      if (!id) return; // save() already explained why it was rejected
+      if (!id) return null; // save() already explained why it was rejected
       const file = await api.generateFoodListPdf(id);
       setFoodListFile(file);
       // Rendered from the form as just saved, so the two are in step again.
@@ -1462,8 +1462,10 @@ function ConsultationEditor() {
         router.replace(`/consultations/new?client=${clientId}&consultation=${id}`, { scroll: false });
       }
       refetch();
+      return file;
     } catch (e) {
       toast((e as Error).message);
+      return null;
     } finally {
       setGeneratingPdf(false);
     }
@@ -1700,6 +1702,7 @@ function ConsultationEditor() {
                 canGenerate={!busy}
                 patientPhone={client.phone}
                 patientFirstName={client.firstName}
+                role={user?.role}
               />
             ) : (
               <FoodListLanguagePicker onSelect={setFoodListLanguage} />

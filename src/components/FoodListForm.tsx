@@ -1,6 +1,7 @@
 "use client";
 
-import { AlertTriangle, FileText, Languages, Loader2, Printer } from "lucide-react";
+import { useState } from "react";
+import { Eye, FileText, Languages, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Field";
 import {
@@ -16,7 +17,7 @@ import {
   itemLabel,
   type FoodListLanguage,
 } from "@/lib/food-list";
-import type { ConsultationFile } from "@/lib/types";
+import type { ConsultationFile, Role } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { SendViaWhatsAppButton, WHATSAPP_ATTACH_HINT } from "@/components/SendViaWhatsAppButton";
 
@@ -96,12 +97,13 @@ export function FoodListForm({
   canGenerate,
   patientPhone,
   patientFirstName,
+  role,
 }: {
   draft: FoodListDraft;
   language: FoodListLanguage;
   onChange: (next: FoodListDraft) => void;
   onChangeLanguage: () => void;
-  onGeneratePdf: () => void;
+  onGeneratePdf: () => Promise<ConsultationFile | null | undefined>;
   generating: boolean;
   generatedFile?: ConsultationFile;
   /** The form has moved on since `generatedFile` was made — includes edits not
@@ -111,9 +113,12 @@ export function FoodListForm({
   /** The patient this visit belongs to — for the WhatsApp hand-off below. */
   patientPhone: string;
   patientFirstName: string;
+  role?: Role;
 }) {
   const rtl = isRtl(language);
   const fieldLabels = FOOD_LIST_FIELD_LABELS[language];
+  const canRegenerate = role === "dietitian" || role === "admin";
+  const [printRegenerating, setPrintRegenerating] = useState(false);
   const selected = new Set(draft.selections);
   const toggle = (id: string) =>
     onChange({
@@ -265,14 +270,7 @@ export function FoodListForm({
               when you close the visit if you don&apos;t generate it here.
             </p>
           )}
-          {generatedFile && pdfStale && (
-            <p className="mt-1 flex items-start gap-1 text-xs font-medium text-amber-600">
-              <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-              This PDF was generated before your latest changes — regenerate it before
-              sending or printing.
-            </p>
-          )}
-          {generatedFile && !pdfStale && (
+          {generatedFile && (
             <p className="mt-1 text-xs text-emerald-700">{WHATSAPP_ATTACH_HINT}</p>
           )}
         </div>
@@ -281,14 +279,50 @@ export function FoodListForm({
             <>
               {/* Opens the PDF inline in a new tab so the browser's viewer can
                   print it — the form exists to be handed to the patient on
-                  paper. Still a link, so "Save as" remains available. */}
+                  paper. Still a link, so "Save as" remains available. When the
+                  PDF is stale, the click regenerates first (reserving the tab
+                  synchronously so the pop-up blocker doesn't eat it) and opens
+                  the fresh copy instead. */}
               <a
                 href={`/api/consultation-files/${generatedFile.id}?disposition=inline`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+                aria-disabled={printRegenerating}
+                onClick={
+                  canRegenerate && pdfStale
+                    ? (e) => {
+                        e.preventDefault();
+                        if (printRegenerating) return;
+                        const win = window.open("", "_blank");
+                        setPrintRegenerating(true);
+                        void (async () => {
+                          try {
+                            const file = await onGeneratePdf();
+                            if (!file) {
+                              win?.close();
+                              return;
+                            }
+                            if (win) {
+                              win.location.href = `/api/consultation-files/${file.id}?disposition=inline`;
+                            }
+                          } finally {
+                            setPrintRegenerating(false);
+                          }
+                        })();
+                      }
+                    : undefined
+                }
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50",
+                  printRegenerating && "pointer-events-none opacity-50",
+                )}
               >
-                <Printer className="h-4 w-4" /> Print
+                {printRegenerating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+                {printRegenerating ? "Regenerating…" : "View"}
               </a>
               <SendViaWhatsAppButton
                 fileId={generatedFile.id}
@@ -296,6 +330,8 @@ export function FoodListForm({
                 phone={patientPhone}
                 firstName={patientFirstName}
                 stale={pdfStale}
+                role={role}
+                onRegenerate={canRegenerate ? onGeneratePdf : undefined}
               />
             </>
           )}
