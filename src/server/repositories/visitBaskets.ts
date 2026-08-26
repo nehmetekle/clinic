@@ -61,6 +61,10 @@ export type BasketItemInput = {
   // The prepaid bundle this line sells. Makes the bundle line traceable to the
   // ClientPackage it created — and price-protectable like any other catalog line.
   clientPackageId?: string | null;
+  // The ConsultationBotoxItem this "botox" line sells — makes it traceable and
+  // price-protectable exactly like productId/clientPackageId/sessionPlanId
+  // above. null for everything else.
+  consultationBotoxItemId?: string | null;
   // Clinic cost per unit, frozen from the same source that supplied `unitPrice`.
   unitCost?: number;
 };
@@ -80,6 +84,7 @@ function itemCreate(i: BasketItemInput) {
     sessionPlanId: i.sessionPlanId ?? null,
     productId: i.productId ?? null,
     clientPackageId: i.clientPackageId ?? null,
+    consultationBotoxItemId: i.consultationBotoxItemId ?? null,
   };
 }
 
@@ -101,6 +106,7 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     sessionPlanId: i.sessionPlanId ?? undefined,
     productId: i.productId ?? undefined,
     clientPackageId: i.clientPackageId ?? undefined,
+    consultationBotoxItemId: i.consultationBotoxItemId ?? undefined,
   }));
   const totals = basketTotals(
     items,
@@ -496,12 +502,19 @@ export async function updateVisitBasket(
   //
   // Enforced on the SERVER, so a direct PATCH cannot bypass what the settlement
   // screen disables.
-  const SOURCED_KINDS = new Set(["consultation_fee", "blood_test", "treatment", "product", "package"]);
-  const isSourced = (i: { kind?: string | null; sessionPlanId?: string | null; productId?: string | null; clientPackageId?: string | null }) =>
+  const SOURCED_KINDS = new Set(["consultation_fee", "blood_test", "treatment", "product", "package", "botox"]);
+  const isSourced = (i: {
+    kind?: string | null;
+    sessionPlanId?: string | null;
+    productId?: string | null;
+    clientPackageId?: string | null;
+    consultationBotoxItemId?: string | null;
+  }) =>
     SOURCED_KINDS.has(i.kind ?? "custom") ||
     Boolean(i.sessionPlanId) ||
     Boolean(i.productId) ||
-    Boolean(i.clientPackageId);
+    Boolean(i.clientPackageId) ||
+    Boolean(i.consultationBotoxItemId);
   // Identity deliberately EXCLUDES price: that is the whole point — we are looking
   // for the same line coming back at a different price, which a price-inclusive
   // signature would read as an unrelated line and wave through.
@@ -518,6 +531,7 @@ export async function updateVisitBasket(
     productId?: string | null;
     clientPackageId?: string | null;
     sessionPlanId?: string | null;
+    consultationBotoxItemId?: string | null;
   }) =>
     i.productId
       ? `product::${i.productId}`
@@ -525,7 +539,9 @@ export async function updateVisitBasket(
         ? `package::${i.clientPackageId}`
         : i.sessionPlanId
           ? `plan::${i.sessionPlanId}`
-          : `${i.kind ?? "custom"}::${i.label.trim().toLowerCase()}::${i.covered ? 1 : 0}`;
+          : i.consultationBotoxItemId
+            ? `botox::${i.consultationBotoxItemId}`
+            : `${i.kind ?? "custom"}::${i.label.trim().toLowerCase()}::${i.covered ? 1 : 0}`;
   const sourcedPrices = new Map<string, number>();
   for (const i of existing.items) {
     if (isSourced(i)) sourcedPrices.set(priceKey(i), i.unitPrice);
@@ -533,7 +549,21 @@ export async function updateVisitBasket(
   for (const i of input.items) {
     if (!isSourced(i)) continue;
     const original = sourcedPrices.get(priceKey(i));
-    if (original === undefined) continue; // a newly added sourced line prices itself
+    // A newly added sourced line normally prices itself from its own catalog —
+    // EXCEPT a Botox line, which has no such fallback: its price is the
+    // doctor's own decision made in the consultation editor, not something
+    // `updateVisitBasket` (the secretary's screen) is allowed to originate.
+    // A "botox" line reaching here that wasn't already on this basket means the
+    // caller tried to invent a Botox charge outside the consultation flow —
+    // refuse it outright, regardless of role.
+    if (original === undefined) {
+      if (i.kind === "botox") {
+        throw new ConflictError(
+          `"${i.label}" can't be added here — Botox charges are set by the doctor in the consultation, not at checkout.`,
+        );
+      }
+      continue; // a newly added sourced line (product/package/etc.) prices itself
+    }
     if ((i.unitPrice ?? 0) !== original) {
       throw new ConflictError(
         `"${i.label}" is priced from the catalog and can't be re-priced at checkout. ` +

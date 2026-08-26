@@ -23,7 +23,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Stepper as QuickAddStepper } from "@/components/ui/Stepper";
 import { Modal } from "@/components/ui/Modal";
-import { FormRow, Input, Select, Textarea } from "@/components/ui/Field";
+import { FormRow, Input, MoneyInput, Select, Textarea } from "@/components/ui/Field";
 import { Loading, ErrorState } from "@/components/ui/States";
 import { VisitBasketCard } from "@/components/VisitBasketCard";
 import {
@@ -33,7 +33,7 @@ import {
 } from "@/components/FoodListForm";
 import { type FoodListLanguage } from "@/lib/food-list";
 import { useSession } from "@/lib/session";
-import { useApi } from "@/lib/use-api";
+import { useApi, useAutoRefetch } from "@/lib/use-api";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { NO_MACHINE_LABEL, SUPPLEMENTS } from "@/lib/types";
@@ -67,6 +67,30 @@ type TreatmentForm = {
 };
 
 type ProductForm = { productId: string; quantity: string };
+
+// A Botox line. `id` is present once this line has been saved before — it's
+// what lets the server tell an edit of an existing line apart from a new one,
+// and refuse a change once any part of it has been paid (`paid`, read-only
+// once true: the price/item/quantity fields lock and only the line stays
+// visible). `chargedPrice` defaults to the catalog's base price when an item
+// is first picked, but is always a free-form field from then on — that's the
+// whole point of the section.
+type BotoxLineForm = {
+  id?: string;
+  botoxItemId: string;
+  quantity: string;
+  chargedPrice: string;
+  notes: string;
+  paid: boolean;
+};
+
+const EMPTY_BOTOX_LINE: BotoxLineForm = {
+  botoxItemId: "",
+  quantity: "1",
+  chargedPrice: "",
+  notes: "",
+  paid: false,
+};
 
 const EMPTY_TREATMENT: TreatmentForm = {
   machine: "",
@@ -168,6 +192,7 @@ const SECTION_TONES = {
 const SERVICE_ACCENTS = {
   blood: "border-t-2 border-t-brand-300",
   treatments: "border-t-2 border-t-amber-300",
+  botox: "border-t-2 border-t-violet-300",
   products: "border-t-2 border-t-emerald-300",
 } as const;
 /** Label on the left, control on the right — the dense form row used per treatment. */
@@ -414,12 +439,18 @@ function ConsultationEditor() {
   const { data, loading, error, refetch } = useApi(() => api.getClient(clientId), [clientId]);
   const staff = useApi(() => api.listStaff());
   const productCatalog = useApi(() => api.listProducts());
+  const botoxCatalog = useApi(() => api.listBotoxItems());
   const servicePrices = useApi(() => api.listServicePrices());
   const packageCatalog = useApi(() => api.listPackages());
   // This visit's basket, so "Close visit" can be blocked until the secretary
-  // settles it (V-close rule). Polled with the page's other reads.
+  // settles it (V-close rule). Polled so it flips to "Paid" and unlocks Close
+  // on the dietitian's screen as soon as the secretary settles it elsewhere.
   const visitBaskets = useApi(() => api.listVisitBaskets());
+  useAutoRefetch(visitBaskets.refetch, 4000);
   const sellableProducts = (productCatalog.data ?? []).filter((p) => p.active);
+  // Active Botox catalog items a NEW line may pick — an inactive item still
+  // resolves fine for a line that already references it (see resolveBotoxLine).
+  const activeBotoxItems = (botoxCatalog.data ?? []).filter((b) => b.active);
   // Multi-session catalog packages a dietitian can start for the patient now.
   // Fetched here so newly created packages are always current (no stale list).
   const activeBundles = (packageCatalog.data ?? []).filter(
@@ -468,8 +499,6 @@ function ConsultationEditor() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  // Basket sent to the secretary for payment (manual send). Polled so it flips
-  // to "Paid" on the dietitian's screen once the secretary settles it.
 
   // ---- Visit services ----
   // Blood collection is implied by selecting one or more tests — the section
@@ -481,6 +510,8 @@ function ConsultationEditor() {
   const [bloodOther, setBloodOther] = useState("");
   const [treatments, setTreatments] = useState<TreatmentForm[]>([]);
   const [treatmentsOpen, setTreatmentsOpen] = useState(false);
+  const [botoxItems, setBotoxItems] = useState<BotoxLineForm[]>([]);
+  const [botoxOpen, setBotoxOpen] = useState(false);
   const [products, setProducts] = useState<ProductForm[]>([]);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [discountType, setDiscountType] = useState<"percent" | "amount">("percent");
@@ -536,6 +567,10 @@ function ConsultationEditor() {
   // Only a dietitian curates their own supplement list; other roles still see a
   // usable set (the fallback) but don't get the editor.
   const canManageSupplements = myStaff?.role === "dietitian";
+  // Admin always; a dietitian only if specifically granted (Staff page). The
+  // server enforces this independently (canOfferBotox in server/auth.ts) — this
+  // is what decides whether the section renders at all.
+  const canUseBotox = myStaff?.role === "admin" || myStaff?.canOfferBotox === true;
   const [manageSuppOpen, setManageSuppOpen] = useState(false);
   const [suppDraft, setSuppDraft] = useState<string[]>([]);
   const [newSupp, setNewSupp] = useState("");
@@ -653,6 +688,10 @@ function ConsultationEditor() {
     setProducts((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
   }
 
+  function updateBotoxLine(i: number, patch: Partial<BotoxLineForm>) {
+    setBotoxItems((prev) => prev.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
+  }
+
   // When continuing an existing draft, don't count it as a prior visit, and show
   // its real visit number instead of computing a new one.
   const editingConsult = editId ? (data?.consultations ?? []).find((c) => c.id === editId) : undefined;
@@ -755,12 +794,27 @@ function ConsultationEditor() {
         })
         .filter((p): p is { productId: string; quantity: string } => p !== null),
     );
+    // Prefilled regardless of the CURRENT user's Botox access — the section
+    // itself only renders when canUseBotox, so this state is simply unused
+    // (and never sent back, see finalBotoxItems) for someone who lacks it.
+    setBotoxItems(
+      (c.botoxItems ?? []).map((b) => ({
+        id: b.id,
+        botoxItemId: b.botoxItemId ?? "",
+        quantity: String(b.quantity),
+        chargedPrice: String(b.chargedPrice),
+        notes: b.notes ?? "",
+        paid: b.paid,
+      })),
+    );
     if ((c.treatments ?? []).length > 0) setTreatmentsOpen(true);
+    if ((c.botoxItems ?? []).length > 0) setBotoxOpen(true);
     if (
       (c.bloodTests ?? []).length > 0 ||
       c.nurseRequired ||
       (c.treatments ?? []).length > 0 ||
       (c.products ?? []).length > 0 ||
+      (c.botoxItems ?? []).length > 0 ||
       c.consultationFeeWaived ||
       (c.visitDiscountType && (c.visitDiscountValue ?? 0) > 0)
     ) {
@@ -1103,6 +1157,73 @@ function ConsultationEditor() {
     return items;
   }, []);
 
+  // Botox lines already saved on this consultation, snapshotted by their OWN id
+  // (not the catalog id — two lines can reference the same catalog item at
+  // different prices). Used only to keep showing a PAID line's exact recorded
+  // name/base price even if the catalog item is later renamed or deleted; an
+  // unpaid line always reflects the live catalog instead (see resolveBotoxLine).
+  const savedBotoxSnapshots = new Map(
+    (editConsultation?.botoxItems ?? [])
+      .filter((b) => b.id)
+      .map((b) => [b.id as string, { name: b.name, basePrice: b.basePrice, currency: b.currency ?? "USD" }]),
+  );
+  const resolveBotoxLine = (line: BotoxLineForm) => {
+    if (line.paid) {
+      const snap = line.id ? savedBotoxSnapshots.get(line.id) : undefined;
+      if (snap) return snap;
+    }
+    const live = (botoxCatalog.data ?? []).find((b) => b.id === line.botoxItemId);
+    if (live) return { name: live.name, basePrice: live.price, currency: live.currency };
+    const snap = line.id ? savedBotoxSnapshots.get(line.id) : undefined;
+    return snap;
+  };
+
+  // Only sent to the server when this user can actually use the section — an
+  // unauthorized save must OMIT the key entirely (not send `[]`), or it would
+  // read as "clear every Botox line," including ones an authorized colleague
+  // already added. See ConsultationInput.botoxItems in repositories/consultations.ts.
+  //
+  // A PAID line is always included, even mid-edit and even if its item/price
+  // fields look "incomplete" — it must never be silently dropped (the server
+  // refuses that anyway, but the UI shouldn't manufacture the attempt). Its
+  // botoxItemId may legitimately be empty if the catalog item behind it was
+  // since deleted; the server doesn't need it for an unchanged paid line.
+  const finalBotoxItems = canUseBotox
+    ? botoxItems
+        .filter((b) => b.paid || (b.botoxItemId && Number(b.chargedPrice) > 0))
+        .map((b) => ({
+          id: b.id,
+          botoxItemId: b.botoxItemId || undefined,
+          quantity: toCount(b.quantity, 1),
+          chargedPrice: toAmount(b.chargedPrice),
+          notes: b.notes.trim() || undefined,
+        }))
+    : undefined;
+
+  const botoxBasketItems = botoxItems.reduce<BasketItem[]>((items, b, i) => {
+    const info = resolveBotoxLine(b);
+    if (!info) return items;
+    if (!b.paid && (!b.botoxItemId || !(Number(b.chargedPrice) > 0))) return items;
+    const quantity = toCount(b.quantity, 1);
+    const price = toAmount(b.chargedPrice);
+    items.push({
+      id: b.id ? `botox-${b.id}` : `botox-new-${i}`,
+      kind: "botox",
+      label: info.name,
+      detail: b.paid ? "Botox · settled" : "Botox",
+      quantity,
+      unitPrice: price,
+      // A paid line contributes nothing new to "amount due" — it was already
+      // charged in an earlier installment (mirrors how a covered treatment
+      // session shows $0 here). Still listed, so the visit's full history stays
+      // visible in the editor, just not double-counted into what's owed now.
+      amount: b.paid ? 0 : price * quantity,
+      currency: info.currency,
+      covered: b.paid,
+    });
+    return items;
+  }, []);
+
   // Starting a bundle for the patient bills the full bundle price once this
   // visit (its sessions are then prepaid). One line per applied bundle.
   const bundleBasketItems = treatments.reduce<BasketItem[]>((items, t, i) => {
@@ -1208,6 +1329,7 @@ function ConsultationEditor() {
       return lines;
     }),
     ...bundleBasketItems,
+    ...botoxBasketItems,
     ...productBasketItems,
   ];
 
@@ -1275,6 +1397,9 @@ function ConsultationEditor() {
         waiveConsultationFee: feeWaived,
         treatments: buildTreatments(planIds),
         products: finalProducts,
+        // Omitted (not `[]`) for a user who can't use the section, so their
+        // save can't be read as "clear every Botox line" — see finalBotoxItems.
+        botoxItems: finalBotoxItems,
         // Only sent once the doctor has opened the card and picked a language;
         // otherwise omitted so an untouched card leaves a saved form intact.
         foodList: foodListLanguage
@@ -1952,6 +2077,115 @@ function ConsultationEditor() {
                   </Button>
                 </div>
               </Section>
+
+              {/* Botox — admin sets a default price per item; the doctor freely
+                  sets what THIS visit actually charges (no bound either way). */}
+              {canUseBotox && (
+                <Section
+                  title="Botox"
+                  subtitle="Doctor sets the actual charged price per patient."
+                  accent={SERVICE_ACCENTS.botox}
+                  open={botoxOpen}
+                  onOpenChange={setBotoxOpen}
+                >
+                  <div className="space-y-3">
+                    {activeBotoxItems.length === 0 && botoxItems.length === 0 ? (
+                      <p className="text-sm text-slate-400">
+                        No Botox items available. An admin can add them in Settings → Pricing.
+                      </p>
+                    ) : (
+                      <>
+                        {botoxItems.length === 0 && <p className="text-sm text-slate-400">No Botox charges added.</p>}
+                        {botoxItems.map((b, i) => {
+                          const info = resolveBotoxLine(b);
+                          // If the currently-picked item isn't (or is no longer)
+                          // active, still offer it so the dropdown shows its real
+                          // name instead of falling back to blank/"Select…".
+                          const itemOptions: { id: string; name: string }[] =
+                            b.botoxItemId && !activeBotoxItems.some((x) => x.id === b.botoxItemId) && info
+                              ? [{ id: b.botoxItemId, name: info.name }, ...activeBotoxItems]
+                              : activeBotoxItems;
+                          return (
+                            <div key={b.id ?? `new-${i}`} className={cn("rounded-lg border border-slate-200 p-3", SERVICE_ACCENTS.botox)}>
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <FormRow label="Botox item">
+                                  {b.paid ? (
+                                    <div className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                                      {info?.name ?? "—"}
+                                    </div>
+                                  ) : (
+                                    <Select
+                                      value={b.botoxItemId}
+                                      onChange={(e) => {
+                                        const item = (botoxCatalog.data ?? []).find((x) => x.id === e.target.value);
+                                        updateBotoxLine(i, {
+                                          botoxItemId: e.target.value,
+                                          chargedPrice: item ? String(item.price) : "",
+                                        });
+                                      }}
+                                    >
+                                      <option value="">Select…</option>
+                                      {itemOptions.map((it) => (
+                                        <option key={it.id} value={it.id}>{it.name}</option>
+                                      ))}
+                                    </Select>
+                                  )}
+                                </FormRow>
+                                <FormRow label="Quantity">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    value={b.quantity}
+                                    disabled={b.paid}
+                                    onChange={(e) => updateBotoxLine(i, { quantity: e.target.value })}
+                                  />
+                                </FormRow>
+                                <FormRow label="Charged price (USD)">
+                                  <MoneyInput
+                                    value={b.chargedPrice}
+                                    disabled={b.paid}
+                                    onValueChange={(v) => updateBotoxLine(i, { chargedPrice: v })}
+                                  />
+                                </FormRow>
+                              </div>
+                              {info && (
+                                <p className="mt-2 text-xs text-slate-400">
+                                  Base price: {formatMoney(info.basePrice, info.currency)}
+                                  {b.paid && <span className="ml-1 text-slate-400">· settled, locked</span>}
+                                </p>
+                              )}
+                              <div className="mt-2">
+                                <FormRow label="Notes (optional)">
+                                  <Input
+                                    value={b.notes}
+                                    disabled={b.paid}
+                                    onChange={(e) => updateBotoxLine(i, { notes: e.target.value })}
+                                    placeholder="e.g. forehead + crow's feet"
+                                  />
+                                </FormRow>
+                              </div>
+                              {!b.paid && (
+                                <div className="mt-2 flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => setBotoxItems((prev) => prev.filter((_, idx) => idx !== i))}
+                                    className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-rose-600"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" /> Remove
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <Button variant="outline" size="sm" onClick={() => setBotoxItems((prev) => [...prev, { ...EMPTY_BOTOX_LINE }])}>
+                          <Plus className="h-4 w-4" /> Add Botox charge
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </Section>
+              )}
 
               {/* 5. Product sale / add-on — pick a product; price comes from the catalog */}
               <Section

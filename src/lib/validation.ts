@@ -262,6 +262,34 @@ export const createConsultationSchema = z.object({
       }),
     )
     .optional(),
+  // Botox charges. Unlike treatments/products, each line carries an `id` when
+  // it already exists on this consultation — the server needs it to tell an
+  // edit of an existing line apart from a brand-new one, and to refuse a change
+  // to a line that has already been paid (see ConsultationBotoxItem). Omitted
+  // `id` = a new line. `chargedPrice` is the doctor's actual price for THIS
+  // visit — it may be above or below the catalog's base price, with no
+  // percentage bound; the base price itself is never accepted from the request,
+  // only resolved server-side from the catalog.
+  botoxItems: z
+    .array(
+      z
+        .object({
+          id: z.string().min(1).optional(),
+          // Optional, not required: a PAID line's catalog item may since have
+          // been hard-deleted (mirrors Product), which nulls this on the row —
+          // resending that line (unchanged, as the paid-line lock requires)
+          // must still validate. Only actually resolving/creating a NEW or
+          // still-unpaid line requires it, enforced in buildBotoxLinesTx, which
+          // is the one place that also knows whether a line is locked.
+          botoxItemId: z.string().min(1).optional(),
+          quantity: z.coerce.number().int().min(1).max(1000).optional(),
+          chargedPrice: z.coerce.number().positive("Price must be greater than 0"),
+          notes: z.string().optional(),
+        })
+        .superRefine((v, ctx) => refineMoneyCap(v.chargedPrice, "USD", ctx, "chargedPrice")),
+    )
+    .max(100)
+    .optional(),
   // ---- Food List (Nutrient-Rich Foods List) ----
   // Absent = the doctor never opened the card; the stored form (if any) is left
   // untouched. Present = save it. `selections` is filtered against the catalog in
@@ -318,7 +346,7 @@ export const createPaymentSchema = z
 const visitBasketItemSchema = z
   .object({
     kind: z
-      .enum(["blood_test", "treatment", "product", "package", "custom", "consultation_fee"])
+      .enum(["blood_test", "treatment", "product", "package", "custom", "consultation_fee", "botox"])
       .optional(),
     label: z.string().trim().min(1),
     detail: z.string().optional(),
@@ -337,6 +365,11 @@ const visitBasketItemSchema = z
     // it the round-trip through the settlement screen would strip the link and the
     // server's package guard would see the line as removed.
     clientPackageId: z.string().nullish(),
+    // Preserved through send/edit so a "botox" line keeps its
+    // ConsultationBotoxItem link — this is what updateVisitBasket's price-lock
+    // keys on, and what would otherwise let a botox line be re-priced at
+    // checkout like an anonymous "custom" one.
+    consultationBotoxItemId: z.string().nullish(),
     // NOTE: `unitCost` is deliberately absent. The clinic's cost is never accepted
     // from a request — it is snapshotted server-side from the catalog at the same
     // moment as the price, exactly like `unitPrice` is re-derived rather than
@@ -518,6 +551,27 @@ export const updateSettingsSchema = z
       v.usdToLbp !== undefined || v.usdToEur !== undefined || v.cardSurchargePercent !== undefined,
     { message: "At least one setting must be provided" },
   );
+
+// Botox catalog (admin only). USD-only by design, like the consultation fee and
+// Jessy — a premium/doctor-set service price, not a stock-tracked line, so it
+// skips Product's stock/lowStockThreshold fields.
+export const createBotoxItemSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    price: z.coerce.number().min(0),
+    cost: z.coerce.number().min(0).optional(),
+    active: z.boolean().optional(),
+  })
+  .superRefine((v, ctx) => refineMoneyCap(v.price, "USD", ctx, "price"));
+
+export const updateBotoxItemSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    price: z.coerce.number().min(0).optional(),
+    cost: z.coerce.number().min(0).optional(),
+    active: z.boolean().optional(),
+  })
+  .superRefine((v, ctx) => refineMoneyCap(v.price, "USD", ctx, "price"));
 
 export const createProductSchema = z.object({
   name: z.string().trim().min(1),
@@ -814,6 +868,9 @@ export const updateStaffSchema = z
     phone: z.string().optional(),
     role: z.enum(["secretary", "dietitian", "admin"]).optional(),
     status: z.enum(["active", "inactive"]).optional(),
+    // Admin-only per-doctor Botox access toggle. Meaningful for a dietitian
+    // only; harmless (ignored server-side by canOfferBotox) on any other role.
+    canOfferBotox: z.boolean().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), {
     message: "No changes provided",
@@ -854,6 +911,8 @@ export type CreateStaffInput = z.infer<typeof createStaffSchema>;
 export type UpdateStaffInput = z.infer<typeof updateStaffSchema>;
 export type UpdateStaffSupplementsInput = z.infer<typeof updateStaffSupplementsSchema>;
 export type UpdateStaffConsultationFeeInput = z.infer<typeof updateStaffConsultationFeeSchema>;
+export type CreateBotoxItemInput = z.infer<typeof createBotoxItemSchema>;
+export type UpdateBotoxItemInput = z.infer<typeof updateBotoxItemSchema>;
 export type CreateProductInput = z.infer<typeof createProductSchema>;
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 export type AdjustProductStockInput = z.infer<typeof adjustProductStockSchema>;

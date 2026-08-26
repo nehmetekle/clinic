@@ -47,6 +47,7 @@ export async function updateStaff(
     phone?: string;
     role?: string;
     status?: string;
+    canOfferBotox?: boolean;
   },
 ): Promise<StaffUser> {
   const current = await db.user.findUnique({
@@ -78,6 +79,7 @@ export async function updateStaff(
   if (input.email !== undefined) data.email = input.email;
   if (input.phone !== undefined) data.phone = input.phone;
   if (input.status !== undefined) data.status = input.status;
+  if (input.canOfferBotox !== undefined) data.canOfferBotox = input.canOfferBotox;
   if (input.role !== undefined) {
     data.role = input.role;
     if (input.role === "dietitian") {

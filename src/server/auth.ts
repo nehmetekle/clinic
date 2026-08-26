@@ -132,3 +132,23 @@ export async function canAttachSampleFile(req: Request): Promise<boolean> {
   const role = await actingRole(req);
   return role === "secretary" || role === "dietitian" || role === "admin";
 }
+
+/** Botox is clinical, doctor-decided, and — unlike every other permission in
+ * this file — scoped to the INDIVIDUAL doctor, not the role: an admin picks
+ * which specific dietitians may see/use the section (User.canOfferBotox),
+ * because not every doctor at the clinic offers it. Admin is always allowed.
+ * Secretary never is — adding/pricing a Botox line is a clinical decision;
+ * once it's on a basket, the secretary can still see and collect it like any
+ * other charge (that's canHandleMoney, unaffected by this). Fails closed: no
+ * session, no role, or no flag all resolve to false. */
+export async function canOfferBotox(req: Request): Promise<boolean> {
+  const user = await resolveActingUser(req);
+  if (!user) return false;
+  return user.role === "admin" || (user.role === "dietitian" && user.canOfferBotox === true);
+}
+
+/** Managing the Botox catalog (name, base price, active/inactive) is admin-only
+ * pricing work — the same tier as products/service-prices/referrers. */
+export async function canManageBotoxCatalog(req: Request): Promise<boolean> {
+  return (await actingRole(req)) === "admin";
+}

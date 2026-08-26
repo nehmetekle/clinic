@@ -4,7 +4,7 @@ import {
 } from "@/server/repositories/consultations";
 import { createConsultationSchema } from "@/lib/validation";
 import { ensureFoodListPdf } from "@/server/services/foodListPdf";
-import { actingUser, canViewClinical } from "@/server/auth";
+import { actingUser, canOfferBotox, canViewClinical } from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
 export async function GET(req: Request) {
@@ -40,6 +40,7 @@ export async function POST(req: Request) {
       close,
       actorName: actor.name,
       actorEmail: actor.email,
+      actorCanOfferBotox: await canOfferBotox(req),
     });
     // Save-and-close in one shot: the doctor never saw the "Generate PDF" button
     // in a saved state, so catch the Food List up here. Only reached once the

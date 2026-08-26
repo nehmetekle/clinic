@@ -90,6 +90,19 @@ export default function StaffPage() {
     }
   }
 
+  // Admin picks which specific doctors may see/use the Botox section in the
+  // consultation editor — irrelevant for secretary/admin (admin is always
+  // allowed by role, checked server-side, not by this flag).
+  async function toggleBotoxAccess(id: string, current: boolean) {
+    try {
+      await api.updateStaff(id, { canOfferBotox: !current });
+      toast(!current ? "Botox access granted" : "Botox access removed");
+      refetch();
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -131,6 +144,7 @@ export default function StaffPage() {
                 <TH>Phone</TH>
                 <TH>Role</TH>
                 <TH>Status</TH>
+                <TH>Botox</TH>
                 <TH>Created</TH>
                 <TH>Last login</TH>
                 <TH />
@@ -144,6 +158,17 @@ export default function StaffPage() {
                   <TD className="text-slate-500">{s.phone ?? "—"}</TD>
                   <TD className="text-slate-600">{ROLE_LABELS[s.role]}</TD>
                   <TD><Badge tone={s.status === "active" ? "green" : "gray"}>{s.status}</Badge></TD>
+                  <TD>
+                    {s.role === "dietitian" ? (
+                      <Button size="sm" variant="ghost" onClick={() => toggleBotoxAccess(s.id, s.canOfferBotox ?? false)}>
+                        {s.canOfferBotox ? "Allowed" : "Not allowed"}
+                      </Button>
+                    ) : s.role === "admin" ? (
+                      <span className="text-xs text-slate-400">Always</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
+                  </TD>
                   <TD className="text-slate-500">{formatDate(s.createdAt)}</TD>
                   <TD className="text-slate-500">{s.lastLoginAt ? formatDateTime(s.lastLoginAt) : "—"}</TD>
                   <TD>
