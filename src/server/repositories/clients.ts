@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { ConflictError, DuplicatePhoneError, ForbiddenError, NotFoundError } from "../http";
 import { dateOnly, toClientPackage, toSessionPlan } from "../serialize";
-import { expirePastScheduledAppointments, toAppointment } from "./appointments";
+import { expireStaleAppointments, toAppointment } from "./appointments";
 import { writeAudit } from "./audit";
 import { listClientDebts } from "./clientDebts";
 import { resolveReferralAttribution } from "./referrers";
@@ -217,7 +217,7 @@ export async function getClientDetail(
   // Resolve any stale bookings before reading this client's appointment history,
   // so a past no-show never lingers as "Scheduled" on the profile. See the sweep's
   // definition in the appointments repository for the rationale.
-  await expirePastScheduledAppointments();
+  await expireStaleAppointments();
 
   const [appointments, consultations, payments, sessionPlans, debts] =
     await Promise.all([

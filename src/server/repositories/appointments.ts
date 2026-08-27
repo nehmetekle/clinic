@@ -43,20 +43,36 @@ export function toAppointment(
 }
 
 /**
- * Auto-resolve stale bookings: any appointment still `scheduled` on a clinic-day
- * before today was never checked in, cancelled or marked — the client didn't show.
+ * Auto-resolve stale bookings from past clinic-days, in two shapes: one still
+ * `scheduled` (never checked in, cancelled or marked — the client didn't show),
+ * and one `checked_in`/`with_dietitian` whose consultation was never opened.
  * The queue for a past day is read-only and the profile only cancels future dates,
  * so without this sweep such a row would read "Scheduled" in history forever. We
  * persist the transition (rather than deriving it) so the record is corrected once
  * and stays consistent with every write path. Idempotent: matches 0 rows once
  * caught up, and runs lazily on every appointment read since there is no cron.
  */
-export async function expirePastScheduledAppointments(): Promise<void> {
+export async function expireStaleAppointments(): Promise<void> {
+  const cutoff = clinicDayRange(todayIso()).gte;
   // Also clears activeSlotKey: "no_show" is a terminal status, so the slot must
   // stop being occupied — otherwise the stale key would permanently block
   // rebooking the same client/date/time.
   await db.appointment.updateMany({
-    where: { status: "scheduled", date: { lt: clinicDayRange(todayIso()).gte } },
+    where: { status: "scheduled", date: { lt: cutoff } },
+    data: { status: "no_show", activeSlotKey: null },
+  });
+  // Second case: the patient was checked in (or even taken in by the doctor) on
+  // a past day, but no Consultation row was ever created for that booking — the
+  // visit was never opened, so there is nothing to close, nothing billed and
+  // nothing to reverse. Left alone the card sits on the queue forever. A booking
+  // that DOES have a consultation (even an empty draft) is deliberately out of
+  // scope here — that one has a visit to resolve.
+  await db.appointment.updateMany({
+    where: {
+      status: { in: ["checked_in", "with_dietitian"] },
+      date: { lt: cutoff },
+      consultations: { none: {} },
+    },
     data: { status: "no_show", activeSlotKey: null },
   });
 }
@@ -90,7 +106,7 @@ export async function listAppointments(
     dietitianId?: string;
   } = {},
 ): Promise<Appointment[]> {
-  await expirePastScheduledAppointments();
+  await expireStaleAppointments();
   const where: Prisma.AppointmentWhereInput = date ? { date: clinicDayRange(date) } : {};
   // Strict ownership: only bookings actually bound to this doctor. Unassigned
   // ones are deliberately NOT included — this scoping exists so a doctor's own
@@ -202,7 +218,7 @@ export async function rescheduleAppointment(
 ): Promise<Appointment> {
   // Sweep first, so an appointment this read would auto-mark `no_show` can't be
   // rescheduled through a stale `scheduled` status.
-  await expirePastScheduledAppointments();
+  await expireStaleAppointments();
   const existing = await db.appointment.findUnique({
     where: { id },
     select: { status: true, clientId: true },
