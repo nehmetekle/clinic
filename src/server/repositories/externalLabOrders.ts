@@ -520,3 +520,36 @@ export async function setExternalLabSalePrice(
     return toExternalLabOrder(fresh, opts);
   });
 }
+
+export type ExternalLabOrderSummary = {
+  id: string;
+  /** When the order was placed. No status/sample-tracking fields on purpose —
+   * this feature has no lab-logistics workflow (see the "No sample-tracking
+   * integration" note in docs/known-issues.md §19): it is billing only, so
+   * there is nothing to track beyond what was ordered and when. */
+  date: string;
+  tests: string[];
+};
+
+/**
+ * A client's external-lab orders, name-and-date only — no price, no cost, no
+ * status. Deliberately safe for EVERY signed-in role (mirrors `listBloodSamples`
+ * — lab logistics are visible clinic-wide): unlike the order returned by
+ * `getExternalLabOrder`, this never carries `totalCostPrice` or
+ * `totalSalePrice` at all, so there is no redaction to get right and no
+ * permission check to make here.
+ */
+export async function listExternalLabOrdersForClient(
+  clientId: string,
+): Promise<ExternalLabOrderSummary[]> {
+  const rows = await db.consultationExternalLabOrder.findMany({
+    where: { consultation: { clientId } },
+    include: { tests: { orderBy: { position: "asc" } } },
+    orderBy: { createdAt: "desc" },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    date: r.createdAt.toISOString(),
+    tests: r.tests.map((t) => t.name),
+  }));
+}

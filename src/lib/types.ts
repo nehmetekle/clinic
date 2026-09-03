@@ -465,6 +465,15 @@ export interface Consultation {
 /** One test inside an external-lab order. A name and free-text notes, and no
  * price of any kind: the external lab quotes the GROUP, so the only real numbers
  * live on the order itself. */
+/** Date + test names only, no price of any kind — the client-profile summary
+ * every signed-in role may see (mirrors BloodSample). See
+ * listExternalLabOrdersForClient. */
+export interface ExternalLabOrderSummary {
+  id: string;
+  date: string;
+  tests: string[];
+}
+
 export interface ConsultationExternalLabTest {
   id?: string;
   name: string;

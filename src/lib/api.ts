@@ -15,6 +15,7 @@ import type {
   ClientDetail,
   ClinicSettings,
   ConsultationExternalLabOrder,
+  ExternalLabOrderSummary,
   ConsultationListItem,
   Consultation,
   ConsultationStatus,
@@ -365,6 +366,10 @@ export const api = {
 
   listBloodSamples: (clientId?: string) =>
     getJson<BloodSample[]>(`/api/blood-samples${clientId ? `?clientId=${clientId}` : ""}`),
+  // Date + test names only, no price — safe for every role. See
+  // ExternalLabOrderSummary.
+  listExternalLabOrders: (clientId: string) =>
+    getJson<ExternalLabOrderSummary[]>(`/api/external-lab-orders?clientId=${clientId}`),
   updateBloodSample: (id: string, body: UpdateBloodSampleInput) =>
     patchJson<BloodSample>(`/api/blood-samples/${id}`, body),
 

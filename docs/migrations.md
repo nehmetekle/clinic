@@ -36,6 +36,43 @@ It adds two migrations that exist **only** on that branch:
 - `20260825105347_add_booking_requests`
 - `20260825121340_split_booking_request_name`
 
+### The actual mechanism — confirmed via Vercel's deployment history (2026-09-03)
+
+`vercel.json`'s `buildCommand` is:
+
+```
+prisma generate && prisma migrate deploy && next build
+```
+
+**This runs on every deployment, Preview included — not just Production.** The
+Vercel deployment list shows `feature online booking` (`fae99a7`) built as a
+**Preview** on 2026-08-25, the same day its two `BookingRequest` migrations
+appeared in the production database. `online-booking` was never merged to
+`main` (§1 above) and was never pushed under that branch name either — the
+deployment list shows it associated with `security` at build time, consistent
+with the branch having been renamed/repointed around then (see the reflog in
+§1). None of that matters for the mechanism: **a never-merged branch's
+migrations reached production because a Preview build for it ran `migrate
+deploy` against the production database.**
+
+That means the real trigger was never "merge to `main`" — it was **pushing a
+branch that touches `prisma/migrations/` to origin at all**, if (as the
+evidence here strongly implies) the Preview environment's `DATABASE_URL` /
+`DIRECT_URL` are the same values as Production's. `.env.example` and
+CLAUDE.md's "Run it" section both describe only one connection string per
+environment, with no mention of a separate Preview database — consistent with
+them never having been split.
+
+**Action needed, outside git entirely:** in Vercel → Project Settings →
+Environment Variables, confirm whether `DATABASE_URL`/`DIRECT_URL` differ
+between the Preview and Production environment scopes. If they don't, either
+point Preview at its own database (a Neon branch database is free and
+instant — and mirrors how Neon branching is meant to be used) or remove
+`prisma migrate deploy` from the Preview build path. Until this is fixed,
+**every future branch that adds a migration will silently apply it to
+production the moment it is pushed**, regardless of whether or when it is
+merged — no approval step, no "going live" decision, involved at all.
+
 ### What actually happened, to the second
 
 The reflog dates the episode to 2026-08-25: the branch was created (renamed from
