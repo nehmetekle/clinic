@@ -152,3 +152,50 @@ export async function canOfferBotox(req: Request): Promise<boolean> {
 export async function canManageBotoxCatalog(req: Request): Promise<boolean> {
   return (await actingRole(req)) === "admin";
 }
+
+/* ---- External Lab Blood Collection ------------------------------------------
+ *
+ * Three separate rights, because the two figures on an external-lab order are
+ * not the same kind of secret and must not collapse into one permission:
+ *
+ *   canOrderExternalLab      — create the order, edit the test list, edit the
+ *                              COST. Dietitian + admin: the clinical side is
+ *                              who phones the lab and negotiates the quote.
+ *   canViewExternalLabCost   — read the clinic's cost and the margin. Same two
+ *                              roles. This is the ONE cost figure in the app the
+ *                              dietitian may see; every other cost
+ *                              (VisitBasketItem.unitCost, botox unitCost,
+ *                              bloodTestCharges[].cost) stays admin-only, so
+ *                              don't generalise this into a "can see costs" gate.
+ *   canPriceExternalLabSale  — edit the SALE price. All three roles: the
+ *                              secretary settles with the patient and has to be
+ *                              able to correct what is being charged, without
+ *                              ever seeing what it cost us.
+ *
+ * All three fail closed (no session → no role → false), and every one of them is
+ * enforced at the route AND again where the row is written, so a direct API call
+ * can't do what the screen doesn't offer.
+ */
+
+/** Creating an external-lab order, editing its test list, or setting its COST. */
+export async function canOrderExternalLab(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "dietitian" || role === "admin";
+}
+
+/** Reading the clinic's cost / margin on an external-lab order. Deliberately the
+ * same two roles as `canOrderExternalLab`: you may not negotiate a number you
+ * cannot see, and you may not see one you have no reason to act on. */
+export async function canViewExternalLabCost(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "dietitian" || role === "admin";
+}
+
+/** Setting the patient-facing SALE price on an external-lab order. Includes the
+ * secretary: it is the number they collect, and the lab's final quote often only
+ * lands once the patient is already at the desk. Seeing the cost is a separate
+ * question — see `canViewExternalLabCost`. */
+export async function canPriceExternalLabSale(req: Request): Promise<boolean> {
+  const role = await actingRole(req);
+  return role === "secretary" || role === "dietitian" || role === "admin";
+}

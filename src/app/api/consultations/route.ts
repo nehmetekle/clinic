@@ -4,7 +4,13 @@ import {
 } from "@/server/repositories/consultations";
 import { createConsultationSchema } from "@/lib/validation";
 import { ensureFoodListPdf } from "@/server/services/foodListPdf";
-import { actingUser, canOfferBotox, canViewClinical } from "@/server/auth";
+import {
+  actingUser,
+  canOfferBotox,
+  canOrderExternalLab,
+  canViewClinical,
+  canViewExternalLabCost,
+} from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
 export async function GET(req: Request) {
@@ -41,6 +47,11 @@ export async function POST(req: Request) {
       actorName: actor.name,
       actorEmail: actor.email,
       actorCanOfferBotox: await canOfferBotox(req),
+      // Resolved from the verified session, never from the payload. The second
+      // flag is what decides whether a submitted `totalCostPrice` is honoured —
+      // the cost is the one figure on this order the front desk may not touch.
+      actorCanOrderExternalLab: await canOrderExternalLab(req),
+      actorCanSetExternalLabCost: await canViewExternalLabCost(req),
     });
     // Save-and-close in one shot: the doctor never saw the "Generate PDF" button
     // in a saved state, so catch the Food List up here. Only reached once the

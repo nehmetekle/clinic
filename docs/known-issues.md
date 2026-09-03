@@ -1350,3 +1350,200 @@ once (including two racing settles), forgiveness keeps sessions, the originating
 consultation exception, the standalone sale, no double billing across both
 purchase routes, and the CHECK constraints. `t19-machine-visits.ts` covers the
 refusal path; `t13-billing-rules.ts` is unchanged and still passes.
+
+---
+
+## 19. External Lab Blood Collection — an order that carries its own price
+
+Tests the clinic outsources to a third-party lab. The lab quotes **one lump sum
+for a group of tests**, by phone, and re-quotes the same group differently a week
+later. That single fact drives every design decision below, so it is worth
+stating before the decisions themselves.
+
+### 19.1 Why it is not just another blood test
+
+The in-clinic blood tests are catalog-priced: the doctor ticks "CBC" and the
+server snapshots $20 from `ServicePrice` (kind `blood_test`). Nothing about that
+model survives contact with an external lab:
+
+| | in-clinic blood test | external lab order |
+| --- | --- | --- |
+| price source | admin catalog, snapshotted | typed per order |
+| unit | one test | the whole group |
+| cost | catalog `cost`, admin-only | typed per order, **doctor-visible** |
+| same tests next month | same price | a different price, legitimately |
+
+So the two live side by side and never merge. `ConsultationExternalLabOrder`
+holds `totalCostPrice` / `totalSalePrice`; `ConsultationExternalLabTest` holds a
+name and free text and **no price of any kind**.
+
+**Don't put an amount on a test line.** There is no per-test price to put there,
+and inventing one creates a second total that can disagree with the one the lab
+actually billed — the exact ambiguity this model exists to remove.
+
+### 19.2 One order per visit
+
+`consultationId` is `@unique`. A visit raises exactly one external-lab charge,
+which keeps the basket line unambiguous and the freeze rule simple. A second
+batch of tests on the same day is more test lines on the same order, with the
+totals re-quoted — which is what the lab does anyway.
+
+### 19.3 The cost is visible to the doctor. That is a deliberate exception.
+
+Every other cost figure in this app is admin-only and is never serialized to a
+client: `VisitBasketItem.unitCost`, `ConsultationBotoxItem.unitCost`,
+`Consultation.bloodTestCharges[].cost`. `ConsultationExternalLabOrder.totalCostPrice`
+is the one exception, because the person who phones the lab and negotiates the
+number is the clinical side.
+
+Three permissions, deliberately not collapsed into one (`src/server/auth.ts`):
+
+- `canOrderExternalLab` — create the order, edit the test list, set the **cost**.
+  Dietitian + admin.
+- `canViewExternalLabCost` — read the cost/margin on an order. Dietitian + admin.
+- `canPriceExternalLabSale` — set the **sale price**. All three roles.
+
+**Do not generalise this into a "can see costs" permission.** It is scoped to this
+one entity on purpose; widening it silently exposes product margins, bundle
+economics and Botox costs to the clinical side, none of which was asked for.
+
+The redaction is by **omission, not by hiding**: `toExternalLabOrder` leaves the
+cost fields out of the object entirely for a reader who may not see them, so a
+secretary's browser never receives the number. `canSeeCost` on the payload tells
+the UI which of the two shapes it is holding, so "hidden from me" is
+distinguishable from "not entered yet" without inferring it from an `undefined`.
+
+The clinic-wide margin report is **stricter still — admin only** (`redactForRole`
+in `services/dashboard.ts`). Negotiating one lab quote is not the same right as
+reading the clinic's margin across every patient.
+
+### 19.4 The front desk reprices the ORDER, never the basket line
+
+The secretary needs to correct the sale price, because the lab's final quote
+often lands after the doctor has saved the visit. But a basket line's price must
+always equal the price its source gave it — that invariant is what makes the bill
+auditable, and `updateVisitBasket` enforces it for every sourced kind.
+
+So `external_lab` is a **sourced kind** like any other (locked at checkout,
+matched by `externalLabOrderId` rather than by label), and the secretary's edit
+goes to a separate route — `PATCH /api/consultations/[id]/external-lab-order` —
+which updates the order and lets the line be **re-derived** from it. The order and
+the bill therefore cannot disagree.
+
+That route's request schema (`externalLabSalePriceSchema`) has **no field for the
+cost, the notes or the test list**. The shape is the permission: no combination of
+request keys reaches them, however the call is crafted.
+
+### 19.5 Selling below cost
+
+Permitted — the clinic sometimes absorbs a difference — but never anonymously. A
+sale price below the cost requires a typed reason, enforced in three places:
+
+1. the editor (blocks the save with a readable message),
+2. `buildExternalLabOrderTx` / `setExternalLabSalePrice` (409 with a message),
+3. a **CHECK constraint** (`external_lab_below_cost_needs_reason`), which makes
+   "below cost with nobody's justification on record" unrepresentable however the
+   row is written.
+
+The reason is **cleared automatically** once the price is back at or above cost, so
+a stale justification can't sit on a healthy order looking like it still applies.
+
+**Known accepted leak.** A secretary who may not see the cost still learns, from
+the refusal, that the price they typed is below it — one bit, which repeated
+probing could narrow toward the actual figure. The refusal message deliberately
+does not name the cost. This was accepted knowingly: the alternative is letting
+the front desk sell below cost with nothing on record, which is the larger risk.
+If it ever matters, the fix is to route a below-cost front-desk price to an admin
+for approval rather than to refuse it inline.
+
+### 19.6 Freezing, and why `paid` alone is the wrong test
+
+Once the basket carrying the order is settled, **nothing on the order moves
+again** — not the totals, not the test list, not by any role. This app has no
+refund or reversal concept anywhere (see CLAUDE.md, "No refunds"), so a collected
+charge can never be re-described.
+
+`isOrderSettled` tests `status === "paid" || status === "closed"`, **never `paid`
+alone**. `closed` is not a different kind of sale: it is the same settled basket
+after `retirePaidBasketsTx` retired it from the settlement queue when the visit
+closed. Testing `paid` only would un-freeze every order at exactly the moment it
+is most finished — the consultation editor would still refuse (a closed visit
+can't be saved), but the front desk's reprice route has no such backstop and
+would happily rewrite the price of money already collected. This is the same rule
+`basketWhere` in `repositories/profitability.ts` applies, for the same reason.
+
+### 19.7 Three states, and why `null` is not `undefined`
+
+`externalLabOrder` on the consultation payload follows the same rule as
+`botoxItems` and `foodList`:
+
+- **omitted** — the card was never opened. Leave any stored order alone **and keep
+  billing it** (`unpaidExternalLabBasketItemsTx`). Without that second half, an
+  unrelated save would rebuild the pending basket without the charge and quietly
+  reduce what the patient owes.
+- **object** — this is the order now.
+- **`null`** — the doctor removed the order.
+
+The Zod field is `.nullish()`, not `.optional()`, precisely so `null` survives as a
+real instruction. A user who may not touch the section sends **nothing** — never
+`null`, which would read as "delete the order an authorized colleague added".
+
+### 19.8 Audit trail
+
+Freely-typed prices with no history are the manipulation risk this feature
+carries, so every money movement is written to `AuditLog` **inside the same
+transaction as the change**:
+
+- `External lab order created` — tests, cost and sale price.
+- `External lab order repriced` — each figure that moved, with its old value.
+- `External lab order priced below cost` — its own action, so it is findable
+  without reading every price change ever made, and carries the reason.
+- `External lab sale price changed` — the front desk's edit, tagged with the
+  actor's role.
+- `External lab order removed` — a pre-settlement removal.
+
+`pricedByName` / `pricedAt` on the row are the at-a-glance summary; `AuditLog` is
+the history.
+
+### 19.9 Reporting
+
+Two things, both from the **same settled basket lines**, never re-derived:
+
+- The `external_lab` kind flows into the existing Revenue / COGS / gross-profit
+  cards and the revenue breakdown automatically, because `getProfitability` sums
+  basket lines by kind. Nothing special was needed for the headline figures.
+- `getExternalLabProfitability` groups those same lines per order for the
+  dedicated section (revenue, lab cost, profit, margin, and the test list per
+  order). It therefore sums exactly to the `external_lab` row of the breakdown and
+  cannot drift from it.
+
+Recognition follows the file's existing rule without exception: an order counts
+when its basket is **settled**, at the figures frozen on the line at that moment.
+A pending order is not revenue however confidently it has been priced; an order
+settled onto a `ClientDebt` is a finalized sale and counts in full.
+
+### 19.10 Hand-written SQL — don't lose it
+
+`20260902120000_external_lab_blood_collection` carries three CHECK constraints
+Prisma cannot express or introspect: non-negative totals, the below-cost reason
+rule, and `currency = 'USD'`. Same warning as the Jessy and multi-currency
+migrations — **don't lose them in a squash.**
+
+### 19.11 Still open
+
+- ~~No automated test coverage yet.~~ **Done** —
+  [`tests/race/t25-external-lab.ts`](../tests/race/t25-external-lab.ts), 80
+  assertions via `npm run test:race`. Covers billing shape, the three-state
+  payload, below-cost governance (including the DB CHECKs, exercised by raw SQL
+  that bypasses the app), the cost-redaction split per role, route authorization
+  and field smuggling, checkout price protection, the settled/closed freeze, four
+  concurrency races (double save, double reprice, reprice-vs-settlement), and the
+  report reconciling exactly to the `external_lab` revenue row.
+- **No per-test reporting.** Test names are free text (deliberately: the lab's
+  panel names vary), so "Vit D" and "Vitamin D" do not group. If per-test
+  frequency becomes a real question, the answer is an admin-managed name catalog
+  with an "Other" fallback — the same shape as the blood-test picker — not
+  fuzzy matching after the fact.
+- **No sample-tracking integration.** An external-lab order is billing only: it
+  raises no `BloodSample`, so it does not appear on the samples board and results
+  are not attached through that flow. Decided deliberately.

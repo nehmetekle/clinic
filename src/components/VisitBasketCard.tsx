@@ -160,7 +160,14 @@ export function VisitBasketCard({
                   max={discountType === "percent" ? 100 : undefined}
                   value={discountValue}
                   disabled={!editableDiscount}
-                  onChange={(e) => onDiscountValueChange?.(e.target.value)}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (discountType === "percent" && raw !== "" && Number(raw) > 100) {
+                      onDiscountValueChange?.("100");
+                      return;
+                    }
+                    onDiscountValueChange?.(raw);
+                  }}
                   placeholder={discountType === "percent" ? "10" : "25"}
                 />
               </FormRow>

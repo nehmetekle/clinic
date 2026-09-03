@@ -84,6 +84,18 @@ type BotoxLineForm = {
   paid: boolean;
 };
 
+// One test inside an External Lab Blood Collection order: a name and free text,
+// and deliberately NO price field. The external lab quotes the whole group, so
+// the only real numbers live on the order above these lines — putting an amount
+// here would invent a second total that can disagree with the one the lab
+// actually charged.
+type ExternalLabTestForm = {
+  name: string;
+  description: string;
+};
+
+const EMPTY_EXTERNAL_LAB_TEST: ExternalLabTestForm = { name: "", description: "" };
+
 const EMPTY_BOTOX_LINE: BotoxLineForm = {
   botoxItemId: "",
   quantity: "1",
@@ -194,6 +206,7 @@ const SERVICE_ACCENTS = {
   treatments: "border-t-2 border-t-amber-300",
   botox: "border-t-2 border-t-violet-300",
   products: "border-t-2 border-t-emerald-300",
+  externalLab: "border-t-2 border-t-sky-300",
 } as const;
 /** Label on the left, control on the right — the dense form row used per treatment. */
 function DataRow({
@@ -512,6 +525,20 @@ function ConsultationEditor() {
   const [treatmentsOpen, setTreatmentsOpen] = useState(false);
   const [botoxItems, setBotoxItems] = useState<BotoxLineForm[]>([]);
   const [botoxOpen, setBotoxOpen] = useState(false);
+  // External Lab Blood Collection. `externalLabOn` is the card's own switch and
+  // is what distinguishes "no order on this visit" from "an order priced at 0" —
+  // the payload sends `null` when it is off, which REMOVES a stored order, and an
+  // object when it is on. Never infer removal from empty fields.
+  const [externalLabOn, setExternalLabOn] = useState(false);
+  const [externalLabOpen, setExternalLabOpen] = useState(false);
+  const [externalLabCost, setExternalLabCost] = useState("");
+  const [externalLabSale, setExternalLabSale] = useState("");
+  const [externalLabReason, setExternalLabReason] = useState("");
+  const [externalLabNotes, setExternalLabNotes] = useState("");
+  const [externalLabTests, setExternalLabTests] = useState<ExternalLabTestForm[]>([]);
+  // True once the order has been settled: everything below is read-only, because
+  // this app never reverses a collected charge.
+  const [externalLabSettled, setExternalLabSettled] = useState(false);
   const [products, setProducts] = useState<ProductForm[]>([]);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [discountType, setDiscountType] = useState<"percent" | "amount">("percent");
@@ -807,6 +834,20 @@ function ConsultationEditor() {
         paid: b.paid,
       })),
     );
+    // External lab order. Prefilled for any clinical reader; the cost fields are
+    // present because /api/consultations is doctor/admin-only (a secretary never
+    // receives a consultation at all, and reprices through the basket instead).
+    const lab = c.externalLabOrder;
+    setExternalLabOn(Boolean(lab));
+    setExternalLabSettled(lab?.settled ?? false);
+    setExternalLabCost(lab?.totalCostPrice !== undefined ? String(lab.totalCostPrice) : "");
+    setExternalLabSale(lab ? String(lab.totalSalePrice) : "");
+    setExternalLabReason(lab?.belowCostReason ?? "");
+    setExternalLabNotes(lab?.notes ?? "");
+    setExternalLabTests(
+      (lab?.tests ?? []).map((t) => ({ name: t.name, description: t.description ?? "" })),
+    );
+    if (lab) setExternalLabOpen(true);
     if ((c.treatments ?? []).length > 0) setTreatmentsOpen(true);
     if ((c.botoxItems ?? []).length > 0) setBotoxOpen(true);
     if (
@@ -815,6 +856,7 @@ function ConsultationEditor() {
       (c.treatments ?? []).length > 0 ||
       (c.products ?? []).length > 0 ||
       (c.botoxItems ?? []).length > 0 ||
+      Boolean(c.externalLabOrder) ||
       c.consultationFeeWaived ||
       (c.visitDiscountType && (c.visitDiscountValue ?? 0) > 0)
     ) {
@@ -1200,6 +1242,45 @@ function ConsultationEditor() {
         }))
     : undefined;
 
+  // ---- External Lab Blood Collection ----
+  // The consultation editor is clinical (doctor/admin), and those are exactly the
+  // two roles allowed to raise and cost an external-lab order, so this is true
+  // for anyone who can see this screen. It is computed rather than assumed so the
+  // section disappears rather than misbehaves if that ever changes — and the
+  // server checks it independently either way.
+  const canOrderExternalLab = myStaff?.role === "dietitian" || myStaff?.role === "admin";
+  const externalLabTestsClean = externalLabTests
+    .map((t) => ({ name: t.name.trim(), description: t.description.trim() }))
+    .filter((t) => t.name.length > 0);
+  const externalLabCostAmount = toAmount(externalLabCost);
+  const externalLabSaleAmount = toAmount(externalLabSale);
+  const externalLabBelowCost = externalLabOn && externalLabSaleAmount < externalLabCostAmount;
+  // Two things block a save while the card is on, both mirroring a server rule:
+  // an order with no tests is not an order, and selling below the lab's own
+  // charge has to be justified in writing by whoever decided it.
+  const externalLabNeedsTest = externalLabOn && externalLabTestsClean.length === 0;
+  const externalLabNeedsReason = externalLabBelowCost && !externalLabReason.trim();
+
+  // Sent as an object to replace the order, `null` to remove it, and OMITTED for
+  // a user who may not touch the section — an unauthorized save must never read
+  // as "delete the order", which is exactly what sending `null` would mean. A
+  // SETTLED order is resent unchanged (the server refuses any edit to it, and the
+  // fields are read-only above), never dropped.
+  const finalExternalLabOrder = !canOrderExternalLab
+    ? undefined
+    : externalLabOn
+      ? {
+          totalCostPrice: externalLabCostAmount,
+          totalSalePrice: externalLabSaleAmount,
+          belowCostReason: externalLabReason.trim() || undefined,
+          notes: externalLabNotes.trim() || undefined,
+          tests: externalLabTestsClean.map((t) => ({
+            name: t.name,
+            description: t.description || undefined,
+          })),
+        }
+      : null;
+
   const botoxBasketItems = botoxItems.reduce<BasketItem[]>((items, b, i) => {
     const info = resolveBotoxLine(b);
     if (!info) return items;
@@ -1330,6 +1411,31 @@ function ConsultationEditor() {
     }),
     ...bundleBasketItems,
     ...botoxBasketItems,
+    // ONE line for the whole outsourced order, at the negotiated sale total —
+    // mirroring exactly what the server bills (basketLineFor in
+    // repositories/externalLabOrders.ts), so the preview and the charge can't
+    // drift. The cost never appears on the basket: it is not what the patient
+    // pays, and the secretary who settles this must not see it.
+    ...(externalLabOn && externalLabTestsClean.length > 0
+      ? [
+          {
+            id: "external-lab",
+            kind: "external_lab" as const,
+            label: "External lab blood collection",
+            detail: externalLabTestsClean
+              .slice(0, 6)
+              .map((t) => t.name)
+              .join(", ")
+              + (externalLabTestsClean.length > 6
+                ? ` +${externalLabTestsClean.length - 6} more`
+                : ""),
+            quantity: 1,
+            unitPrice: externalLabSaleAmount,
+            amount: externalLabSaleAmount,
+            currency: "USD" as const,
+          },
+        ]
+      : []),
     ...productBasketItems,
   ];
 
@@ -1361,6 +1467,17 @@ function ConsultationEditor() {
   async function save(close: boolean, { silent = false }: { silent?: boolean } = {}): Promise<string | null> {
     if (discountReasonMissing) {
       toast("Please add a reason for the discount.");
+      return null;
+    }
+    // Mirrors the server's own refusals, so the doctor is stopped by a readable
+    // message here rather than by a 409 after a full round trip. The server still
+    // enforces both — this is a courtesy, not the control.
+    if (externalLabNeedsTest) {
+      toast("List at least one test in the external lab order.");
+      return null;
+    }
+    if (externalLabNeedsReason) {
+      toast("The external lab sale price is below cost — add a reason.");
       return null;
     }
     // A save is already running (including the silent one inside "Generate
@@ -1400,6 +1517,9 @@ function ConsultationEditor() {
         // Omitted (not `[]`) for a user who can't use the section, so their
         // save can't be read as "clear every Botox line" — see finalBotoxItems.
         botoxItems: finalBotoxItems,
+        // Object = this is the order; null = remove it; omitted = this user may
+        // not touch the section. See finalExternalLabOrder.
+        externalLabOrder: finalExternalLabOrder,
         // Only sent once the doctor has opened the card and picked a language;
         // otherwise omitted so an untouched card leaves a saved form intact.
         foodList: foodListLanguage
@@ -1751,6 +1871,215 @@ function ConsultationEditor() {
                   )}
                 </div>
               </Section>
+
+              {/* 2. External Lab Blood Collection — tests sent OUT to a
+                  third-party lab, which bills the clinic one lump sum for the
+                  whole group. Unlike the catalog-priced blood tests above, both
+                  numbers are typed per order: the lab re-quotes the same panel
+                  differently every time. */}
+              {canOrderExternalLab && (
+                <Section
+                  title="External lab blood collection"
+                  subtitle="Tests sent to an outside lab, priced as one total per order."
+                  accent={SERVICE_ACCENTS.externalLab}
+                  open={externalLabOpen}
+                  onOpenChange={setExternalLabOpen}
+                >
+                  <div className="space-y-3">
+                    <CheckLine
+                      checked={externalLabOn}
+                      onChange={(v) => {
+                        // Turning the card OFF removes the order from the visit
+                        // (the payload sends null). Refused by the server once the
+                        // order has been settled, and blocked here too so the
+                        // doctor doesn't stage a change that can't be saved.
+                        if (externalLabSettled) return;
+                        setExternalLabOn(v);
+                        if (v && externalLabTests.length === 0) {
+                          setExternalLabTests([{ ...EMPTY_EXTERNAL_LAB_TEST }]);
+                        }
+                      }}
+                      label={
+                        <span>
+                          Order tests from an external lab
+                          {externalLabSettled && (
+                            <span className="ml-2 text-xs font-medium text-slate-400">
+                              settled — locked
+                            </span>
+                          )}
+                        </span>
+                      }
+                    />
+
+                    {externalLabOn && (
+                      <>
+                        {externalLabSettled && (
+                          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                            This order has been paid. Its prices and tests are final —
+                            this clinic does not reverse a collected charge.
+                          </p>
+                        )}
+
+                        {/* The two totals sit at the TOP, above the tests: they are
+                            what the lab quoted for the group, and the list below
+                            only describes what that quote covered. */}
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <FormRow label="Total cost price (what the lab charges us)">
+                            <MoneyInput
+                              value={externalLabCost}
+                              onValueChange={setExternalLabCost}
+                              disabled={externalLabSettled}
+                              placeholder="0"
+                            />
+                          </FormRow>
+                          <FormRow label="Total sale price (what the patient pays)">
+                            <MoneyInput
+                              value={externalLabSale}
+                              onValueChange={setExternalLabSale}
+                              disabled={externalLabSettled}
+                              placeholder="0"
+                            />
+                          </FormRow>
+                        </div>
+
+                        {/* Margin, live. The point of typing two numbers is seeing
+                            the third — a lab quote is only good or bad relative to
+                            what the patient is charged. */}
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                          <span className="text-slate-500">
+                            Profit margin:{" "}
+                            <span
+                              className={cn(
+                                "font-semibold",
+                                externalLabBelowCost ? "text-rose-600" : "text-slate-700",
+                              )}
+                            >
+                              {formatMoney(externalLabSaleAmount - externalLabCostAmount, "USD")}
+                            </span>
+                          </span>
+                          {externalLabSaleAmount > 0 && (
+                            <span className="text-slate-400">
+                              {Math.round(
+                                ((externalLabSaleAmount - externalLabCostAmount) /
+                                  externalLabSaleAmount) *
+                                  1000,
+                              ) / 10}
+                              % of the sale price
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Below cost is allowed — the clinic sometimes absorbs a
+                            difference — but never anonymously. The server refuses
+                            the save without this, and a CHECK constraint refuses
+                            the row. */}
+                        {externalLabBelowCost && (
+                          <FormRow label="Reason for selling below cost (required)">
+                            <Input
+                              value={externalLabReason}
+                              onChange={(e) => setExternalLabReason(e.target.value)}
+                              disabled={externalLabSettled}
+                              placeholder="e.g. goodwill for a long-standing patient"
+                            />
+                          </FormRow>
+                        )}
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-slate-500">
+                            Tests included in this total
+                          </p>
+                          {externalLabTests.length === 0 && (
+                            <p className="text-sm text-slate-400">No tests listed yet.</p>
+                          )}
+                          {externalLabTests.map((t, i) => (
+                            <div
+                              key={i}
+                              className={cn(
+                                "space-y-2 rounded-lg border border-slate-200 p-3",
+                                SERVICE_ACCENTS.externalLab,
+                              )}
+                            >
+                              <div className="flex items-start gap-2">
+                                <div className="flex-1 space-y-2">
+                                  <FormRow label="Test">
+                                    <Input
+                                      value={t.name}
+                                      disabled={externalLabSettled}
+                                      onChange={(e) =>
+                                        setExternalLabTests((prev) =>
+                                          prev.map((x, xi) =>
+                                            xi === i ? { ...x, name: e.target.value } : x,
+                                          ),
+                                        )
+                                      }
+                                      placeholder="e.g. Vitamin D"
+                                    />
+                                  </FormRow>
+                                  <FormRow label="Description / notes">
+                                    <Textarea
+                                      rows={2}
+                                      value={t.description}
+                                      disabled={externalLabSettled}
+                                      onChange={(e) =>
+                                        setExternalLabTests((prev) =>
+                                          prev.map((x, xi) =>
+                                            xi === i
+                                              ? { ...x, description: e.target.value }
+                                              : x,
+                                          ),
+                                        )
+                                      }
+                                      placeholder="Why it was ordered, instructions for the lab, context…"
+                                    />
+                                  </FormRow>
+                                </div>
+                                {!externalLabSettled && (
+                                  <button
+                                    type="button"
+                                    aria-label="Remove test"
+                                    className="mt-6 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600"
+                                    onClick={() =>
+                                      setExternalLabTests((prev) =>
+                                        prev.filter((_, xi) => xi !== i),
+                                      )
+                                    }
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {!externalLabSettled && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() =>
+                                setExternalLabTests((prev) => [
+                                  ...prev,
+                                  { ...EMPTY_EXTERNAL_LAB_TEST },
+                                ])
+                              }
+                            >
+                              Add test
+                            </Button>
+                          )}
+                        </div>
+
+                        <FormRow label="Order notes (optional)">
+                          <Textarea
+                            rows={2}
+                            value={externalLabNotes}
+                            disabled={externalLabSettled}
+                            onChange={(e) => setExternalLabNotes(e.target.value)}
+                            placeholder="Which lab, who quoted it, when…"
+                          />
+                        </FormRow>
+                      </>
+                    )}
+                  </div>
+                </Section>
+              )}
 
               {/* 3 + 4. Services / treatments and packages & sessions */}
               <Section

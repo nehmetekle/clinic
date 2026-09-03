@@ -11,6 +11,7 @@ const KIND_LABELS: Record<string, string> = {
   product: "Products",
   botox: "Botox",
   blood_test: "Blood tests",
+  external_lab: "External lab tests",
   custom: "Other charges",
 };
 

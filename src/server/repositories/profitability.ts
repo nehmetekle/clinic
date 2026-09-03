@@ -78,6 +78,8 @@ type RawLine = {
  * selected as the period are the same arithmetic on the same rows — not two
  * implementations that happen to agree today.
  */
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 function sumLines(rows: RawLine[], liveRate: number): Profitability {
   const byKind = new Map<string, ProfitabilityLine>();
   let grossRevenue = 0;
@@ -111,7 +113,6 @@ function sumLines(rows: RawLine[], liveRate: number): Profitability {
     byKind.set(r.kind, entry);
   }
 
-  const round2 = (n: number) => Math.round(n * 100) / 100;
   revenue = round2(revenue);
   cogs = round2(cogs);
   const grossProfit = round2(revenue - cogs);
@@ -310,4 +311,129 @@ export async function getBundleProfitability(
       };
     })
     .sort((a, b) => b.grossProfit - a.grossProfit || b.revenue - a.revenue);
+}
+
+export type ExternalLabOrderProfitability = {
+  orderId: string;
+  /** Clinic day the sale was FINALIZED (the basket settled) — not the day the
+   * order was raised, so it agrees with every other earned figure. */
+  date: string;
+  clientId: string;
+  clientName: string;
+  visitNumber: number;
+  /** The tests the order covered, in the order they were listed. */
+  tests: string[];
+  /** What the patient was charged, net of the line's share of any bill discount. */
+  revenue: number;
+  /** What the external lab charged the clinic, frozen at the sale. */
+  cogs: number;
+  grossProfit: number;
+  grossMarginPercent: number | null;
+};
+
+export type ExternalLabProfitability = {
+  /** Number of settled external-lab orders in the window. */
+  orders: number;
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  grossMarginPercent: number | null;
+  /** Newest settlement first. */
+  rows: ExternalLabOrderProfitability[];
+};
+
+/**
+ * External-lab blood collection, per order and in total.
+ *
+ * These are the SAME settled basket lines the headline Revenue/COGS cards
+ * already count under the `external_lab` kind — grouped and labelled, never
+ * re-derived — so this section sums exactly to that row of the revenue
+ * breakdown and cannot drift from it.
+ *
+ * The margin is the whole point of the section: the lab quotes a different lump
+ * sum for the same two tests from one week to the next, so the only way to know
+ * whether the clinic is making money on outsourced labs is order by order.
+ *
+ * Recognition follows the file's rule without exception: an order is counted
+ * when its basket is SETTLED, priced at the figures frozen on the line at that
+ * moment. A pending order is not revenue and appears nowhere here, however
+ * confidently it has been priced; an order settled by deferring its balance to a
+ * ClientDebt is a finalized sale and is counted in full.
+ *
+ * ADMIN-ONLY, like every other cost figure that reaches a report. The dietitian
+ * may see the cost of an order they are working on (they negotiated it); the
+ * clinic-wide margin is a financial report, which docs/01-product-spec.md §2.1
+ * reserves for the admin.
+ */
+export async function getExternalLabProfitability(
+  range: ProfitabilityRange,
+): Promise<ExternalLabProfitability> {
+  const [rows, liveRate] = await Promise.all([
+    db.visitBasketItem.findMany({
+      where: { ...SOLD_LINE, kind: "external_lab", basket: basketWhere(range) },
+      select: {
+        ...LINE_SELECT,
+        externalLabOrder: {
+          select: {
+            id: true,
+            tests: { orderBy: { position: "asc" }, select: { name: true } },
+            consultation: {
+              select: {
+                visitNumber: true,
+                client: { select: { id: true, firstName: true, lastName: true } },
+              },
+            },
+          },
+        },
+        basket: {
+          select: {
+            usdToLbp: true,
+            paidAt: true,
+            client: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+    }),
+    getUsdToLbp(),
+  ]);
+
+  const perOrder: ExternalLabOrderProfitability[] = rows.map((r) => {
+    const usd = (amount: number) => toUsdFrozen(amount, r.currency, r.basket.usdToLbp, liveRate);
+    const revenue = round2(usd(r.unitPrice * r.quantity) - usd(r.discountAmount));
+    const cogs = round2(usd(r.unitCost * r.quantity));
+    const grossProfit = round2(revenue - cogs);
+    // The basket's client is the fallback for a line whose order row is gone —
+    // it can't be today (the FK is ON DELETE SET NULL and only a cascade from a
+    // deleted visit removes an order), but a report must still render a row it
+    // has revenue for rather than dropping money from a total.
+    const client = r.externalLabOrder?.consultation.client ?? r.basket.client;
+    return {
+      orderId: r.externalLabOrder?.id ?? "",
+      date: r.basket.paidAt ? clinicDay(r.basket.paidAt) : "",
+      clientId: client.id,
+      clientName: `${client.firstName} ${client.lastName}`,
+      visitNumber: r.externalLabOrder?.consultation.visitNumber ?? 0,
+      tests: r.externalLabOrder?.tests.map((t) => t.name) ?? [],
+      revenue,
+      cogs,
+      grossProfit,
+      grossMarginPercent: revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : null,
+    };
+  });
+
+  // Totals are summed from the SAME per-order figures the table shows, so the
+  // card and the rows beneath it can never disagree by a rounding cent.
+  const revenue = round2(perOrder.reduce((n, o) => n + o.revenue, 0));
+  const cogs = round2(perOrder.reduce((n, o) => n + o.cogs, 0));
+  const grossProfit = round2(revenue - cogs);
+
+  return {
+    orders: perOrder.length,
+    revenue,
+    cogs,
+    grossProfit,
+    // Undefined rather than 0 on no revenue — same rule as everywhere else here.
+    grossMarginPercent: revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : null,
+    rows: perOrder.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+  };
 }

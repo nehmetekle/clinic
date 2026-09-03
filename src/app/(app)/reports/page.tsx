@@ -166,6 +166,21 @@ export default function ReportsPage() {
         })),
       },
       {
+        // Per-order, because that is the only level at which an outsourced lab
+        // has a margin: the same two tests are quoted differently every time.
+        title: `External lab blood collection — ${period}${scopeLabel}`,
+        rows: data.externalLab.rows.map((o) => ({
+          Date: o.date,
+          Client: o.clientName,
+          Visit: o.visitNumber,
+          Tests: o.tests.join("; "),
+          "Sale price (USD)": usd(o.revenue),
+          "Lab cost (USD)": usd(o.cogs),
+          "Profit (USD)": usd(o.grossProfit),
+          "Margin (%)": o.grossMarginPercent === null ? "" : o.grossMarginPercent.toFixed(1),
+        })),
+      },
+      {
         title: `Machine utilization — ${period}`,
         rows: clinicWide(data.machineUtilization).map((m) => ({
           Machine: m.machine,
@@ -450,6 +465,79 @@ export default function ReportsPage() {
           )}
         </Card>
       </div>
+
+      {/* External lab blood collection. Admin-only: the whole card is built from
+          cost/margin figures, which redactForRole zeroes out for every other role
+          — so a non-admin simply gets no rows and the card doesn't render. The
+          revenue here is the same settled lines the Revenue card counts under
+          "External lab tests", grouped per order rather than re-derived. */}
+      {data.externalLab.rows.length > 0 && (
+        <div className="mt-6">
+          <Card>
+            <CardHeader
+              title="External lab blood collection"
+              subtitle={`${data.externalLab.orders} settled order${data.externalLab.orders === 1 ? "" : "s"} ${rangeLabel(range.from, range.to)}${scoped ? ` — ${dietitianName}` : ""}`}
+            />
+            <CardBody className="grid gap-4 sm:grid-cols-4">
+              <StatCard label="Revenue" value={formatMoney(data.externalLab.revenue)} tone="green" />
+              <StatCard label="Lab cost" value={formatMoney(data.externalLab.cogs)} tone="rose" />
+              <StatCard
+                label="Profit"
+                value={formatMoney(data.externalLab.grossProfit)}
+                tone={data.externalLab.grossProfit < 0 ? "rose" : "brand"}
+              />
+              <StatCard
+                label="Margin"
+                value={
+                  data.externalLab.grossMarginPercent === null
+                    ? "—"
+                    : `${data.externalLab.grossMarginPercent.toFixed(1)}%`
+                }
+                tone="brand"
+              />
+            </CardBody>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Date</TH>
+                  <TH>Client</TH>
+                  <TH>Tests</TH>
+                  <TH>Sale</TH>
+                  <TH>Lab cost</TH>
+                  <TH>Profit</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {data.externalLab.rows.map((o) => (
+                  <TR key={o.orderId || `${o.clientId}-${o.date}-${o.visitNumber}`}>
+                    <TD className="whitespace-nowrap text-slate-500">{o.date}</TD>
+                    <TD className="font-medium">
+                      {o.clientName}
+                      <span className="ml-1 text-xs text-slate-400">#{o.visitNumber}</span>
+                    </TD>
+                    <TD className="text-slate-500">{o.tests.join(", ") || "—"}</TD>
+                    <TD className="font-medium">{formatMoney(o.revenue)}</TD>
+                    <TD className="text-slate-500">{formatMoney(o.cogs)}</TD>
+                    <TD
+                      className={cn(
+                        "font-medium",
+                        o.grossProfit < 0 ? "text-rose-600" : "text-emerald-600",
+                      )}
+                    >
+                      {formatMoney(o.grossProfit)}
+                      {o.grossMarginPercent !== null && (
+                        <span className="ml-1 text-xs font-normal text-slate-400">
+                          {o.grossMarginPercent.toFixed(1)}%
+                        </span>
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          </Card>
+        </div>
+      )}
 
       {!scoped && (
       <div className="mt-6">

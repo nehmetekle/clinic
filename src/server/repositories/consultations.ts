@@ -3,6 +3,12 @@ import { db } from "../db";
 import { ConflictError, ForbiddenError, NotFoundError } from "../http";
 import type { ConsultationBotoxLineInput } from "./botoxLines";
 import { buildBotoxLinesTx, unpaidBotoxBasketItemsTx } from "./botoxLines";
+import type { ExternalLabOrderInput } from "./externalLabOrders";
+import {
+  buildExternalLabOrderTx,
+  toExternalLabOrder,
+  unpaidExternalLabBasketItemsTx,
+} from "./externalLabOrders";
 import { calcBmi, discountAmount } from "@/lib/utils";
 import { allocateCoverage } from "@/lib/coverage";
 import { clinicDayRange } from "@/lib/config";
@@ -49,6 +55,15 @@ export const consultationInclude = {
   botoxItems: {
     orderBy: { createdAt: "asc" },
     include: { basketItems: { include: { basket: { select: { status: true } } } } },
+  },
+  // Same nested basket/status join as botoxItems, and for the same reason: the
+  // order's `settled` flag — which freezes every field on it — is decided by
+  // whether a basket line billing it has been paid.
+  externalLabOrder: {
+    include: {
+      tests: { orderBy: { position: "asc" } },
+      basketItems: { include: { basket: { select: { status: true } } } },
+    },
   },
   foodList: true,
 } satisfies Prisma.ConsultationInclude;
@@ -242,6 +257,18 @@ export function toConsultation(c: ConsultationRow): Consultation {
       notes: b.notes ?? undefined,
       paid: b.basketItems.some((bi) => bi.basket.status === "paid"),
     })),
+    // CLINICAL READERS ONLY. Everything that maps a consultation through this
+    // function is gated on `canViewClinical` (the /api/consultations routes
+    // return [] to a secretary, and clients.ts maps consultations only when
+    // `includeClinical`), and the two clinical roles are exactly the two allowed
+    // to see the external lab's cost — so `canSeeCost` is true here. The
+    // secretary's own view of an order comes from the role-scoped
+    // /api/consultations/[id]/external-lab-order route, never from this mapper.
+    // If a consultation is ever serialized to the front desk, this must become a
+    // parameter before that happens.
+    externalLabOrder: c.externalLabOrder
+      ? toExternalLabOrder(c.externalLabOrder, { canSeeCost: true })
+      : undefined,
     foodList: c.foodList
       ? {
           language: c.foodList.language as FoodListLanguage,
@@ -342,6 +369,12 @@ export type ConsultationInput = {
   // Present (even `[]`) is authoritative. See repositories/botoxLines.ts for
   // the paid-line lock this goes through.
   botoxItems?: ConsultationBotoxLineInput[];
+  // The external-lab blood collection order. Follows the same three-state rule
+  // as `botoxItems`/`foodList`: KEY OMITTED means the section was untouched
+  // (leave the stored order alone, but keep billing it); an object REPLACES the
+  // order; explicit `null` REMOVES it. Never write "falsy = remove" here — an
+  // untouched card would delete a real order and quietly drop its charge.
+  externalLabOrder?: ExternalLabOrderInput | null;
   // Nutrient-Rich Foods List. Omitted = the card was never opened on this save;
   // any stored form is left untouched (see buildConsultationContentTx).
   foodList?: {
@@ -499,6 +532,11 @@ async function buildConsultationContentTx(
     // canOfferBotox) — never trust a client-supplied flag for this. Only
     // consulted when `input.botoxItems` is actually present.
     actorCanOfferBotox?: boolean;
+    // Both resolved at the route from the verified session (server/auth.ts
+    // canOrderExternalLab / canViewExternalLabCost) — never from the payload.
+    // Only consulted when `input.externalLabOrder` is actually present.
+    actorCanOrderExternalLab?: boolean;
+    actorCanSetExternalLabCost?: boolean;
   },
 ): Promise<void> {
   const treatments = input.treatments ?? [];
@@ -611,6 +649,21 @@ async function buildConsultationContentTx(
         // basket rebuild below still needs to know what's already unpaid, or
         // this unrelated save would silently drop it from what's owed.
         await unpaidBotoxBasketItemsTx(tx, consultationId);
+
+  // External lab blood collection. Same three-state rule as Botox above: an
+  // absent key is an untouched section (don't validate, don't audit, don't
+  // mutate — but keep contributing the existing charge, or this save would drop
+  // it from the basket), an object is the new state, explicit `null` removes the
+  // order. A SETTLED order returns nothing here: its money was already recorded.
+  const externalLabBasketItems: BasketItemInput[] =
+    input.externalLabOrder !== undefined
+      ? await buildExternalLabOrderTx(tx, consultationId, input.externalLabOrder, {
+          actorCanOrder: opts.actorCanOrderExternalLab ?? false,
+          actorCanSetCost: opts.actorCanSetExternalLabCost ?? false,
+          actor: opts.actor,
+          visitNumber: consultRow?.visitNumber ?? 0,
+        })
+      : await unpaidExternalLabBasketItemsTx(tx, consultationId);
 
   // F10: every pre-existing package a treatment draws coverage from (or links to)
   // must belong to THIS visit's client — the same ownership check session plans
@@ -809,6 +862,11 @@ async function buildConsultationContentTx(
   for (const b of botoxBasketItems) {
     addMoney(serviceSubtotals, b.currency ?? "USD", (b.unitPrice ?? 0) * (b.quantity ?? 1));
   }
+  // The external-lab order bills as ONE line at its negotiated sale total — no
+  // per-test arithmetic, because the lab quoted the group and not the tests.
+  for (const e of externalLabBasketItems) {
+    addMoney(serviceSubtotals, e.currency ?? "USD", (e.unitPrice ?? 0) * (e.quantity ?? 1));
+  }
   const serviceTotals = applyDiscount({
     subtotals: serviceSubtotals,
     discountType: input.visitDiscountType,
@@ -1002,6 +1060,11 @@ async function buildConsultationContentTx(
     // charge for those. consultationBotoxItemId is what makes an unpaid line
     // price-protected at checkout, same role as productId/clientPackageId above.
     ...botoxBasketItems,
+    // Already excludes a settled order (buildExternalLabOrderTx) — nothing left
+    // to charge for that. `externalLabOrderId` is what makes the line
+    // price-protected at checkout and traceable back to the order that priced
+    // it, the same role productId/clientPackageId/consultationBotoxItemId play.
+    ...externalLabBasketItems,
   ];
 
   // Delta basket = what's newly added and not yet paid on THIS consultation.
@@ -1340,6 +1403,8 @@ export async function createConsultation(
     actorName?: string | null;
     actorEmail?: string | null;
     actorCanOfferBotox?: boolean;
+    actorCanOrderExternalLab?: boolean;
+    actorCanSetExternalLabCost?: boolean;
   } = {},
 ): Promise<Consultation> {
   const priorVisits = await db.consultation.count({ where: { clientId: input.clientId } });
@@ -1399,6 +1464,8 @@ export async function createConsultation(
       allowBundles: true,
       actor: { name: opts.actorName, email: opts.actorEmail },
       actorCanOfferBotox: opts.actorCanOfferBotox,
+      actorCanOrderExternalLab: opts.actorCanOrderExternalLab,
+      actorCanSetExternalLabCost: opts.actorCanSetExternalLabCost,
     });
     if (opts.close) {
       // A visit with billable charges can't be closed on first save — its basket
@@ -1452,6 +1519,8 @@ export async function updateConsultation(
     actorEmail?: string | null;
     actorRole?: string | null;
     actorCanOfferBotox?: boolean;
+    actorCanOrderExternalLab?: boolean;
+    actorCanSetExternalLabCost?: boolean;
   } = {},
 ): Promise<Consultation> {
   await db.$transaction(async (tx) => {
@@ -1501,6 +1570,8 @@ export async function updateConsultation(
       priorProducts,
       actor: { name: opts.actorName, email: opts.actorEmail },
       actorCanOfferBotox: opts.actorCanOfferBotox,
+      actorCanOrderExternalLab: opts.actorCanOrderExternalLab,
+      actorCanSetExternalLabCost: opts.actorCanSetExternalLabCost,
     });
   });
   return getConsultationById(id);

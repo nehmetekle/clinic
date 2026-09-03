@@ -10,7 +10,12 @@ import { getJessyOutstanding } from "../repositories/jessy";
 import { listPayments } from "../repositories/payments";
 import { getUsdToLbp } from "../repositories/settings";
 import { debtOutstandingUsd } from "../repositories/clientDebts";
-import { getProfitability, getMonthlyProfitability, getBundleProfitability } from "../repositories/profitability";
+import {
+  getProfitability,
+  getMonthlyProfitability,
+  getBundleProfitability,
+  getExternalLabProfitability,
+} from "../repositories/profitability";
 import { getReferralSummary } from "../repositories/referralCommissions";
 import { listStaff } from "../repositories/staff";
 import { JESSY_METHOD, NO_MACHINE_LABEL } from "@/lib/types";
@@ -70,7 +75,7 @@ export async function getDashboardSummaryForRole(
   const today = todayIso();
   const monthStart = `${today.slice(0, 7)}-01`;
 
-  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralCommissions, usdToLbp, jessyOutstanding, allMachineVisits, machineUsage, topBloodTestsOrdered, profitability, referralSummary, monthlyProfit, bundleProfit, referralPayouts, jessySettlements] =
+  const [clients, payments, expenses, consultations, staff, todaysAppointments, outstandingDebts, referralCommissions, usdToLbp, jessyOutstanding, allMachineVisits, machineUsage, topBloodTestsOrdered, profitability, referralSummary, monthlyProfit, bundleProfit, externalLabProfit, referralPayouts, jessySettlements] =
     await Promise.all([
       listClients(),
       listPayments(),
@@ -129,6 +134,12 @@ export async function getDashboardSummaryForRole(
       // Per-bundle revenue/COGS/margin for the SAME window as the headline cards,
       // from the same settled lines — see getBundleProfitability.
       getBundleProfitability({ from: opts.from, to: opts.to, dietitianId: opts.dietitianId }),
+      // External-lab blood collection: revenue, the lab's own charge, and the
+      // margin — per order and in total, for the SAME window and from the SAME
+      // settled lines the revenue breakdown counts under `external_lab`. This is
+      // the only place the clinic can see whether an outsourced panel made money,
+      // because the lab re-quotes the same tests differently every time.
+      getExternalLabProfitability({ from: opts.from, to: opts.to, dietitianId: opts.dietitianId }),
       // CASH going OUT to referrers. Dated by `paidAt` — when the money actually
       // left — which is a different question from `incurredAt` above and must
       // never be confused with it: the commission was the expense, this is the
@@ -579,6 +590,7 @@ export async function getDashboardSummaryForRole(
     staffActivity,
     profitSeries,
     packageRevenue,
+    externalLab: externalLabProfit,
     topMachines,
     appointmentBreakdown,
     unpaidClients,
@@ -646,6 +658,19 @@ function redactForRole(summary: DashboardSummary, role: Role | undefined): Dashb
     packagesSold: 0,
     mostPopularPackage: "",
     packageRevenue: [],
+    // The external-lab margin report is a cost/profit figure, so it follows every
+    // other one here: admin-only. Note this is a STRICTER gate than the order
+    // itself, which a dietitian may see the cost of on the visit they raised —
+    // negotiating one lab quote is not the same right as reading the clinic's
+    // margin across every patient.
+    externalLab: {
+      orders: 0,
+      revenue: 0,
+      cogs: 0,
+      grossProfit: 0,
+      grossMarginPercent: null,
+      rows: [],
+    },
     // topMachines is NOT redacted: it carries session counts, no money, and is a
     // slice of machineUtilization, which passes through for every role. Zeroing
     // one and not the other would make the chart contradict the table.

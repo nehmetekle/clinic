@@ -14,6 +14,7 @@ import type {
   ClientDebt,
   ClientDetail,
   ClinicSettings,
+  ConsultationExternalLabOrder,
   ConsultationListItem,
   Consultation,
   ConsultationStatus,
@@ -297,6 +298,29 @@ export const api = {
     postJson<Consultation>(`/api/consultations/${id}/close`, {}),
   // Delete an open consultation opened by mistake (dietitian on own visit, or admin).
   deleteConsultation: (id: string) => deleteJson(`/api/consultations/${id}`),
+
+  // ---- External Lab Blood Collection ----
+  // The order itself is created and edited as part of the consultation payload
+  // (doctor/admin). These two exist for the FRONT DESK, which has no access to a
+  // consultation: the secretary reads the order to see what is being charged and
+  // may correct the sale price before settling. The response omits the clinic's
+  // cost entirely for a caller who may not see it — `canSeeCost` says which shape
+  // came back, so the UI never has to infer it from a missing number.
+  getExternalLabOrder: (consultationId: string) =>
+    getJson<ConsultationExternalLabOrder | null>(
+      `/api/consultations/${consultationId}/external-lab-order`,
+    ),
+  // `belowCostReason` is only required when the new price falls below the order's
+  // cost; the server refuses without it and says so (without naming the cost, for
+  // a caller who may not see it).
+  setExternalLabSalePrice: (
+    consultationId: string,
+    body: { totalSalePrice: number; belowCostReason?: string },
+  ) =>
+    patchJson<ConsultationExternalLabOrder>(
+      `/api/consultations/${consultationId}/external-lab-order`,
+      body,
+    ),
 
   // Pass a clinic-day (YYYY-MM-DD) to fetch only that day's payments; omit for all.
   listPayments: (date?: string) =>

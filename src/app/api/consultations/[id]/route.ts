@@ -5,7 +5,13 @@ import {
 } from "@/server/repositories/consultations";
 import { createConsultationSchema } from "@/lib/validation";
 import { ensureFoodListPdf } from "@/server/services/foodListPdf";
-import { actingUser, canOfferBotox, canViewClinical } from "@/server/auth";
+import {
+  actingUser,
+  canOfferBotox,
+  canOrderExternalLab,
+  canViewClinical,
+  canViewExternalLabCost,
+} from "@/server/auth";
 import { handleError, json, readJson } from "@/server/http";
 
 // Edit an open consultation (evolving draft). `close: true` also finalizes it,
@@ -24,6 +30,11 @@ export async function PATCH(
       actorEmail: actor.email,
       actorRole: actor.role,
       actorCanOfferBotox: await canOfferBotox(req),
+      // Resolved from the verified session, never from the payload. The second
+      // flag is what decides whether a submitted `totalCostPrice` is honoured —
+      // the cost is the one figure on this order the front desk may not touch.
+      actorCanOrderExternalLab: await canOrderExternalLab(req),
+      actorCanSetExternalLabCost: await canViewExternalLabCost(req),
     });
     if (close) {
       result = await closeConsultation(id, {

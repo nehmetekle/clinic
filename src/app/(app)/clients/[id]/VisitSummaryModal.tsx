@@ -8,7 +8,7 @@ import {
   itemLabel,
 } from "@/lib/food-list";
 import type { Consultation } from "@/lib/types";
-import { bmiCategory, formatDate } from "@/lib/utils";
+import { bmiCategory, formatDate, formatMoney } from "@/lib/utils";
 
 /**
  * The read-only Visit Summary for a **closed** consultation.
@@ -106,6 +106,50 @@ export function VisitSummaryModal({
               )}
               {c.nurseRequired && (
                 <p><span className="font-medium text-slate-700">Nurse: </span>Required</p>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {/* External lab blood collection — one lump-sum order, so the money sits
+            on the order and the tests below it only describe what it covered.
+            The clinic's cost is shown because this modal is clinical (doctor and
+            admin only, like the consultation it renders); the front desk sees
+            the sale price on the basket instead. */}
+        {c.externalLabOrder && (
+          <Section title="External lab blood collection">
+            <div className="space-y-2 text-sm text-slate-600">
+              <p>
+                <span className="font-medium text-slate-700">Charged: </span>
+                {formatMoney(c.externalLabOrder.totalSalePrice, c.externalLabOrder.currency)}
+                {c.externalLabOrder.totalCostPrice !== undefined && (
+                  <span className="text-slate-500">
+                    {" "}· lab cost {formatMoney(c.externalLabOrder.totalCostPrice, c.externalLabOrder.currency)}
+                    {" "}· margin{" "}
+                    {formatMoney(
+                      c.externalLabOrder.totalSalePrice - c.externalLabOrder.totalCostPrice,
+                      c.externalLabOrder.currency,
+                    )}
+                  </span>
+                )}
+              </p>
+              <ul className="space-y-1">
+                {c.externalLabOrder.tests.map((t, i) => (
+                  <li key={t.id ?? i} className="rounded-lg bg-slate-50 px-3 py-2">
+                    <p className="font-medium text-slate-700">{t.name}</p>
+                    {t.description && <p className="text-xs text-slate-500">{t.description}</p>}
+                  </li>
+                ))}
+              </ul>
+              {c.externalLabOrder.belowCostReason && (
+                <p className="text-xs text-rose-600">
+                  Sold below cost — {c.externalLabOrder.belowCostReason}
+                </p>
+              )}
+              {c.externalLabOrder.pricedByName && (
+                <p className="text-xs text-slate-400">
+                  Priced by {c.externalLabOrder.pricedByName}
+                </p>
               )}
             </div>
           </Section>

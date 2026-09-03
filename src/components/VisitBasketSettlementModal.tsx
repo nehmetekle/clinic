@@ -70,6 +70,10 @@ type EditItem = {
   // doctor set this price in the consultation editor, so it's locked here the
   // same way a session-plan/bundle line is (see isLockedQuantity below).
   consultationBotoxItemId?: string;
+  // Kept so an external-lab line's order link survives the edit. Dropping it
+  // would strip the line of the source that price-protects it, and would orphan
+  // the charge from the order the report reconciles against.
+  externalLabOrderId?: string;
 };
 
 /**
@@ -116,6 +120,7 @@ export function VisitBasketSettlementModal({
       productId: i.productId,
       clientPackageId: i.clientPackageId,
       consultationBotoxItemId: i.consultationBotoxItemId,
+      externalLabOrderId: i.externalLabOrderId,
     })),
   );
   const [discountOpen, setDiscountOpen] = useState(Boolean(basket.discountType));
@@ -149,6 +154,22 @@ export function VisitBasketSettlementModal({
   const [customAmount, setCustomAmount] = useState("");
   const [customQty, setCustomQty] = useState("1");
   const [saving, setSaving] = useState(false);
+  // ---- External lab reprice (front desk) ----
+  // The lab's final quote often only lands once the patient is already at the
+  // desk, so the sale price has to be correctable here. It is edited on the
+  // ORDER, never on the basket line: a sourced line must always equal the price
+  // its source gave it, and repricing the source keeps that true (the server
+  // re-derives the line — see setExternalLabSalePrice). The clinic's COST is not
+  // fetched, not shown and not editable here; the secretary's payload doesn't
+  // even carry it.
+  const externalLabLine = items.find((i) => i.externalLabOrderId);
+  const [labPriceOpen, setLabPriceOpen] = useState(false);
+  const [labPrice, setLabPrice] = useState("");
+  const [labReason, setLabReason] = useState("");
+  const [labSaving, setLabSaving] = useState(false);
+  // Set when the server refuses the new price for being below the order's cost.
+  // The message deliberately does not name that cost.
+  const [labBelowCost, setLabBelowCost] = useState(false);
   // Set when a submit was rejected because an FX rate moved mid-checkout. Cleared
   // as soon as the desk edits anything, so it can never linger over a screen that
   // has already been re-priced and re-checked.
@@ -180,7 +201,11 @@ export function VisitBasketSettlementModal({
   // only keeps the field from inviting the attempt. The money may still be
   // deferred to a debt; that settles the basket without changing what was sold.
   const isLockedQuantity = (i: EditItem) =>
-    i.sent || Boolean(i.sessionPlanId) || Boolean(i.clientPackageId) || Boolean(i.consultationBotoxItemId);
+    i.sent ||
+    Boolean(i.sessionPlanId) ||
+    Boolean(i.clientPackageId) ||
+    Boolean(i.consultationBotoxItemId) ||
+    Boolean(i.externalLabOrderId);
 
   // Only lines the secretary added here (sent === false) can be removed. Every
   // dietitian-sent line is guarded at the handler too, not just hidden in the
@@ -189,7 +214,14 @@ export function VisitBasketSettlementModal({
     setItems((prev) =>
       prev.filter(
         (i) =>
-          !(i.key === key && !i.sent && !i.sessionPlanId && !i.clientPackageId && !i.consultationBotoxItemId),
+          !(
+            i.key === key &&
+            !i.sent &&
+            !i.sessionPlanId &&
+            !i.clientPackageId &&
+            !i.consultationBotoxItemId &&
+            !i.externalLabOrderId
+          ),
       ),
     );
   }
@@ -267,6 +299,7 @@ export function VisitBasketSettlementModal({
         productId: i.productId,
         clientPackageId: i.clientPackageId,
         consultationBotoxItemId: i.consultationBotoxItemId,
+        externalLabOrderId: i.externalLabOrderId,
       })),
       discountType: discountOpen && Number(discountValue) > 0 ? discountType : null,
       discountValue: discountOpen ? Number(discountValue) || 0 : 0,
@@ -514,6 +547,34 @@ export function VisitBasketSettlementModal({
     }
   }
 
+  async function saveLabPrice() {
+    if (!basket.consultationId) return;
+    setLabSaving(true);
+    try {
+      await api.setExternalLabSalePrice(basket.consultationId, {
+        totalSalePrice: parseNumberInput(labPrice) || 0,
+        belowCostReason: labReason.trim() || undefined,
+      });
+      setLabPriceOpen(false);
+      setLabBelowCost(false);
+      setLabReason("");
+      // Refetch rather than patching local state: the basket line is re-derived
+      // server-side from the order, so the authoritative figure is the one that
+      // comes back — not one this component computes.
+      onChanged();
+      onClose();
+      toast("External lab price updated");
+    } catch (e) {
+      const message = (e as Error).message;
+      // The refusal that means "below cost, justify it". Surfacing the reason
+      // field is the only thing this reveals — the amount is never returned.
+      if (/below what this order costs/i.test(message)) setLabBelowCost(true);
+      toast(message);
+    } finally {
+      setLabSaving(false);
+    }
+  }
+
   const activeProducts = products.filter((p) => p.active);
 
   return (
@@ -599,6 +660,72 @@ export function VisitBasketSettlementModal({
                   ))}
                 </ul>
               )}
+          </div>
+        )}
+
+        {/* External lab blood collection: the one sent line whose price the front
+            desk may correct — because the outside lab quotes per phone call and
+            the final number often arrives after the doctor has saved the visit.
+            Everything else the dietitian sent is collected exactly as sent. */}
+        {externalLabLine && editable && basket.consultationId && (
+          <div className="rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-slate-700">
+                External lab order —{" "}
+                <span className="font-semibold">
+                  {formatMoney(externalLabLine.unitPrice, externalLabLine.currency)}
+                </span>
+              </span>
+              {!labPriceOpen && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setLabPrice(String(externalLabLine.unitPrice));
+                    setLabPriceOpen(true);
+                  }}
+                >
+                  Change price
+                </Button>
+              )}
+            </div>
+            {labPriceOpen && (
+              <div className="mt-2 space-y-2">
+                <FormRow label="New total sale price">
+                  <MoneyInput value={labPrice} onValueChange={setLabPrice} placeholder="0" />
+                </FormRow>
+                {/* Only rendered after the server has refused the price for being
+                    below cost. The cost itself is never sent to this screen. */}
+                {labBelowCost && (
+                  <FormRow label="Reason (this price is below what the order costs the clinic)">
+                    <Input
+                      value={labReason}
+                      onChange={(e) => setLabReason(e.target.value)}
+                      placeholder="Why the clinic is absorbing the difference"
+                    />
+                  </FormRow>
+                )}
+                <p className="text-xs text-slate-500">
+                  This updates the order the charge comes from, and is recorded against
+                  your name.
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={saveLabPrice} disabled={labSaving}>
+                    {labSaving ? "Saving…" : "Save price"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setLabPriceOpen(false);
+                      setLabBelowCost(false);
+                      setLabReason("");
+                    }}
+                    disabled={labSaving}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

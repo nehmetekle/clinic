@@ -30,6 +30,18 @@ everything back to empty — there is no seed data to reload), `npm run build`.
 Production: point `DATABASE_URL`/`DIRECT_URL` at a Neon Postgres project (see
 `.env.example`), run `npx prisma migrate deploy`, then `npm run db:create-admin`.
 
+**Before touching migrations, read [docs/migrations.md](docs/migrations.md).** It
+carries the deploy runbook, the read-only `scripts/probe-db.sh` (what does this
+database actually think has been applied to it), and the standing rule that broke
+things once already: `migrate dev` applies whatever is on the CHECKED-OUT BRANCH
+to whatever `.env` points at, so a feature branch needs its own database. The
+unmerged `online-booking` branch put two `BookingRequest` migrations into both the
+dev and the production databases that the repo has never heard of. Dev has since
+been reset clean; **production keeps its (empty) `BookingRequest` table and its
+two history rows on purpose** — harmless, and the feature may still ship. But
+merging `online-booking` naively later **will** break the next production deploy;
+§5 is the plan that avoids it.
+
 **There is no seed/demo data.** `prisma/seed.ts` was deleted on purpose — the
 only user in this database is ever the one `db:create-admin` creates from
 `.env`. Don't reintroduce a seed script/fixtures without being asked.
@@ -422,6 +434,51 @@ patient actually eats.
   the regression test. Fidelity trade-offs vs both Word documents (fonts, drawn
   checkboxes, padding, 4-column print vs responsive screen) are in
   [docs/known-issues.md](docs/known-issues.md) §9 (English) and §10 (Arabic).
+
+## External Lab Blood Collection
+Tests outsourced to a third-party lab that bills the clinic **one lump sum for a
+group of tests**, re-quoted by phone every time. So the money lives on the
+**order** (`ConsultationExternalLabOrder`: `totalCostPrice`, `totalSalePrice`,
+USD-only) and the test lines under it (`ConsultationExternalLabTest`) carry a
+name and free-text description and **no price of any kind** — don't add one, it
+would create a second total that can disagree with the lab's.
+- **One order per visit** (`consultationId @unique`), raised in the consultation
+  editor's "External lab blood collection" card. It bills as **one** basket line
+  (kind `external_lab`, quantity 1) at the sale total.
+- **Three permissions, deliberately separate** (`src/server/auth.ts`):
+  `canOrderExternalLab` (create/edit tests/set **cost** — dietitian+admin),
+  `canViewExternalLabCost` (read cost/margin — dietitian+admin),
+  `canPriceExternalLabSale` (set the **sale price** — all three roles).
+  **This cost is the one cost in the app a dietitian may see** — every other
+  (`VisitBasketItem.unitCost`, botox `unitCost`, `bloodTestCharges[].cost`) stays
+  admin-only. Don't generalise it into a "can see costs" gate. Redaction is by
+  **omission**: `toExternalLabOrder` leaves the cost out of the payload entirely
+  for a secretary, and `canSeeCost` says which shape came back.
+- **The front desk reprices the ORDER, never the basket line.** `external_lab` is
+  a sourced kind (locked at checkout like every other), and the secretary's edit
+  goes to `PATCH /api/consultations/[id]/external-lab-order`, which updates the
+  order and lets the line be re-derived — so the bill and its source can't
+  disagree. That route's schema has **no field** for cost, notes or tests.
+- **Below cost is allowed but never anonymous**: a typed reason is required by the
+  editor, by the server, and by a CHECK constraint; it is cleared automatically
+  once the price is back at or above cost.
+- **Settled = frozen** (totals and test list, for every role — no refunds).
+  `isOrderSettled` tests `paid` **or `closed`**, never `paid` alone: `closed` is
+  the same settled basket after the visit retired it.
+- **Payload is three-state**, like `botoxItems`/`foodList`: omitted = untouched
+  (but still billed, via `unpaidExternalLabBasketItemsTx`), object = replace,
+  `null` = remove. The Zod field is `.nullish()` for exactly that reason.
+- **Reporting is both**: the `external_lab` kind folds into the existing
+  Revenue/COGS/profit cards for free (`getProfitability` groups by kind), and
+  `getExternalLabProfitability` groups the SAME settled lines per order for the
+  admin-only "External lab blood collection" section on Reports (+ CSV). Never
+  re-derived, so the two can't drift.
+- CHECK constraints in `20260902120000_external_lab_blood_collection` are
+  hand-written SQL Prisma can't introspect — don't lose them in a squash.
+- Tests: `tests/race/t25-external-lab.ts` via `npm run test:race`.
+- Full detail, including the accepted below-cost information leak and the
+  remaining open items (no per-test grouping, no sample-tracking link), in
+  [docs/known-issues.md](docs/known-issues.md) §19.
 
 ## Multi-currency tender (USD / EUR / LBP)
 **Obligations are USD. Payments may be tendered in USD, EUR or LBP.** A $1,000

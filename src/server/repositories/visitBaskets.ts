@@ -65,6 +65,10 @@ export type BasketItemInput = {
   // price-protectable exactly like productId/clientPackageId/sessionPlanId
   // above. null for everything else.
   consultationBotoxItemId?: string | null;
+  // The external-lab order this line bills. Like a Botox line, its price is
+  // negotiated per order rather than fixed by a catalog, so it needs a stable id
+  // to be price-protected at checkout instead of a kind+label+price match.
+  externalLabOrderId?: string | null;
   // Clinic cost per unit, frozen from the same source that supplied `unitPrice`.
   unitCost?: number;
 };
@@ -85,6 +89,7 @@ function itemCreate(i: BasketItemInput) {
     productId: i.productId ?? null,
     clientPackageId: i.clientPackageId ?? null,
     consultationBotoxItemId: i.consultationBotoxItemId ?? null,
+    externalLabOrderId: i.externalLabOrderId ?? null,
   };
 }
 
@@ -107,6 +112,12 @@ export function toVisitBasket(b: VisitBasketRow): VisitBasket {
     productId: i.productId ?? undefined,
     clientPackageId: i.clientPackageId ?? undefined,
     consultationBotoxItemId: i.consultationBotoxItemId ?? undefined,
+    // Carried to the client so the settlement screen can offer the front desk's
+    // one legitimate edit — repricing the external-lab ORDER, which then
+    // re-derives this line (see setExternalLabSalePrice). The line's own price
+    // is still not editable here, exactly like every other sourced line; the
+    // clinic's `unitCost` remains unexposed, as above.
+    externalLabOrderId: i.externalLabOrderId ?? undefined,
   }));
   const totals = basketTotals(
     items,
@@ -502,19 +513,21 @@ export async function updateVisitBasket(
   //
   // Enforced on the SERVER, so a direct PATCH cannot bypass what the settlement
   // screen disables.
-  const SOURCED_KINDS = new Set(["consultation_fee", "blood_test", "treatment", "product", "package", "botox"]);
+  const SOURCED_KINDS = new Set(["consultation_fee", "blood_test", "treatment", "product", "package", "botox", "external_lab"]);
   const isSourced = (i: {
     kind?: string | null;
     sessionPlanId?: string | null;
     productId?: string | null;
     clientPackageId?: string | null;
     consultationBotoxItemId?: string | null;
+    externalLabOrderId?: string | null;
   }) =>
     SOURCED_KINDS.has(i.kind ?? "custom") ||
     Boolean(i.sessionPlanId) ||
     Boolean(i.productId) ||
     Boolean(i.clientPackageId) ||
-    Boolean(i.consultationBotoxItemId);
+    Boolean(i.consultationBotoxItemId) ||
+    Boolean(i.externalLabOrderId);
   // Identity deliberately EXCLUDES price: that is the whole point — we are looking
   // for the same line coming back at a different price, which a price-inclusive
   // signature would read as an unrelated line and wave through.
@@ -532,8 +545,11 @@ export async function updateVisitBasket(
     clientPackageId?: string | null;
     sessionPlanId?: string | null;
     consultationBotoxItemId?: string | null;
+    externalLabOrderId?: string | null;
   }) =>
-    i.productId
+    i.externalLabOrderId
+      ? `external_lab::${i.externalLabOrderId}`
+      : i.productId
       ? `product::${i.productId}`
       : i.clientPackageId
         ? `package::${i.clientPackageId}`

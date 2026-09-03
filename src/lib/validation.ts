@@ -290,6 +290,47 @@ export const createConsultationSchema = z.object({
     )
     .max(100)
     .optional(),
+  // ---- External Lab Blood Collection ----
+  // Tests outsourced to a third-party lab that bills the clinic ONE lump sum for
+  // the whole group, so the money is on the ORDER and the test lines carry none.
+  //
+  // Three meanings, and they are all load-bearing:
+  //   omitted  — the card was never opened; leave any stored order alone (and
+  //              keep billing it — see buildConsultationContentTx).
+  //   object   — this is the order now.
+  //   null     — the doctor removed the order from the visit.
+  // `.nullish()` rather than `.optional()` is what makes `null` reach the
+  // repository as a real instruction instead of being dropped.
+  //
+  // `totalCostPrice` is optional HERE because a caller who may not set it simply
+  // doesn't send it; whether it is honoured is a permission decision made
+  // server-side in buildExternalLabOrderTx, never inferred from its presence.
+  externalLabOrder: z
+    .object({
+      totalCostPrice: z.coerce.number().min(0, "Cost can't be negative").optional(),
+      totalSalePrice: z.coerce.number().min(0, "Sale price can't be negative"),
+      // Required by the server (and by a CHECK constraint) only when the sale
+      // price is below the cost — a comparison this schema can't make reliably,
+      // since the cost may legitimately be absent from the payload.
+      belowCostReason: z.string().trim().max(500).optional(),
+      notes: z.string().trim().max(2000).optional(),
+      tests: z
+        .array(
+          z.object({
+            name: z.string().trim().min(1, "Test name is required").max(200),
+            description: z.string().trim().max(2000).optional(),
+          }),
+        )
+        .min(1, "List at least one test")
+        .max(50),
+    })
+    .superRefine((v, ctx) => {
+      refineMoneyCap(v.totalSalePrice, "USD", ctx, "totalSalePrice");
+      if (v.totalCostPrice !== undefined) {
+        refineMoneyCap(v.totalCostPrice, "USD", ctx, "totalCostPrice");
+      }
+    })
+    .nullish(),
   // ---- Food List (Nutrient-Rich Foods List) ----
   // Absent = the doctor never opened the card; the stored form (if any) is left
   // untouched. Present = save it. `selections` is filtered against the catalog in
@@ -346,7 +387,16 @@ export const createPaymentSchema = z
 const visitBasketItemSchema = z
   .object({
     kind: z
-      .enum(["blood_test", "treatment", "product", "package", "custom", "consultation_fee", "botox"])
+      .enum([
+        "blood_test",
+        "treatment",
+        "product",
+        "package",
+        "custom",
+        "consultation_fee",
+        "botox",
+        "external_lab",
+      ])
       .optional(),
     label: z.string().trim().min(1),
     detail: z.string().optional(),
@@ -370,6 +420,9 @@ const visitBasketItemSchema = z
     // keys on, and what would otherwise let a botox line be re-priced at
     // checkout like an anonymous "custom" one.
     consultationBotoxItemId: z.string().nullish(),
+    // Preserved through send/edit so an external-lab line keeps its link to the
+    // order that priced it — that link is what price-protects it at checkout.
+    externalLabOrderId: z.string().nullish(),
     // NOTE: `unitCost` is deliberately absent. The clinic's cost is never accepted
     // from a request — it is snapshotted server-side from the catalog at the same
     // moment as the price, exactly like `unitPrice` is re-derived rather than
@@ -930,3 +983,21 @@ export type RecordJessySettlementInput = z.infer<typeof recordJessySettlementSch
 export type MedicalHistoryInput = z.infer<typeof medicalHistorySchema>;
 export type CreateMachineVisitInput = z.infer<typeof createMachineVisitSchema>;
 export type VoidMachineVisitInput = z.infer<typeof voidMachineVisitSchema>;
+
+/**
+ * The front desk's edit of an external-lab order: the SALE PRICE, and nothing
+ * else. Deliberately its own schema rather than a partial of the order schema —
+ * the shape is the permission. There is no field here for the cost, the notes or
+ * the test list, so no combination of request keys can reach them through this
+ * route however it is crafted.
+ */
+export const externalLabSalePriceSchema = z.object({
+  totalSalePrice: z.coerce
+    .number()
+    .min(0, "Sale price can't be negative")
+    .superRefine((v, ctx) => refineMoneyCap(v, "USD", ctx, "totalSalePrice")),
+  // Required by the server only when the new price falls below the order's cost.
+  // The requester may not be allowed to KNOW that it does — see
+  // setExternalLabSalePrice, which refuses without naming the cost.
+  belowCostReason: z.string().trim().max(500).optional(),
+});

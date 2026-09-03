@@ -290,7 +290,7 @@ model Appointment {
 }
 
 model Consultation {
-  id                    String                  @id @default(cuid())
+  id                    String                        @id @default(cuid())
   clientId              String
   dietitianId           String?
   /// The appointment this visit is fulfilling, when it was started from one.
@@ -300,9 +300,9 @@ model Consultation {
   /// to completing a single unambiguous live appointment (see
   /// completeLinkedAppointmentTx).
   appointmentId         String?
-  date                  DateTime                @default(now())
+  date                  DateTime                      @default(now())
   visitNumber           Int
-  status                String                  @default("open")
+  status                String                        @default("open")
   closedAt              DateTime?
   weightKg              Float?
   heightCm              Float?
@@ -316,7 +316,7 @@ model Consultation {
   notes                 String?
   recommendations       String?
   followUpPlan          String?
-  bloodCollection       Boolean                 @default(false)
+  bloodCollection       Boolean                       @default(false)
   bloodTests            String?
   /// JSON array of the blood tests charged on this visit, each snapshotted from
   /// the catalog at save time: `{ name, price, currency, cost }`. `cost` is the
@@ -325,32 +325,33 @@ model Consultation {
   /// report. Rows written before cost capture have no `cost` key (treat as
   /// unknown, not as zero).
   bloodTestCharges      String?
-  nurseRequired         Boolean                 @default(false)
+  nurseRequired         Boolean                       @default(false)
   visitDiscountType     String?
-  visitDiscountValue    Float                   @default(0)
+  visitDiscountValue    Float                         @default(0)
   visitDiscountReason   String?
   visitDiscountCurrency String?
   visitServiceTotals    String?
   consultationFee       Float?
-  consultationFeeWaived Boolean                 @default(false)
+  consultationFeeWaived Boolean                       @default(false)
   /// The dietitian's name frozen at the moment the visit closed. A closed visit
   /// is a historical record: renaming the staff member later must not rewrite it.
   /// Null while the visit is open (read the live relation then) and on visits
   /// closed before this column existed.
   dietitianNameSnapshot String?
-  createdAt             DateTime                @default(now())
-  updatedAt             DateTime                @updatedAt
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
   bloodSample           BloodSample?
   debts                 ClientDebt[]
-  client                Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dietitian             User?                   @relation(fields: [dietitianId], references: [id])
-  appointment           Appointment?            @relation(fields: [appointmentId], references: [id])
+  client                Client                        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dietitian             User?                         @relation(fields: [dietitianId], references: [id])
+  appointment           Appointment?                  @relation(fields: [appointmentId], references: [id])
   files                 ConsultationFile[]
   foodList              ConsultationFoodList?
   jessyReceivables      JessyReceivable[]
   products              ConsultationProduct[]
   treatments            ConsultationTreatment[]
   botoxItems            ConsultationBotoxItem[]
+  externalLabOrder      ConsultationExternalLabOrder?
   visitBaskets          VisitBasket[]
 
   @@index([appointmentId])
@@ -570,6 +571,79 @@ model ConsultationBotoxItem {
   @@index([consultationId])
 }
 
+// EXTERNAL LAB BLOOD COLLECTION — tests the clinic outsources to a third-party
+// lab, which bills the clinic ONE LUMP SUM for the whole group rather than a
+// price per test. That is the entire reason this exists next to the fixed-price
+// blood_test catalog: there is no per-test price to snapshot, and the same two
+// tests legitimately cost a different amount on a different day (the lab quotes
+// per phone call). So the money lives at the ORDER level and the tests below it
+// are a description of what was ordered, never a price list.
+//
+// One order per visit (@unique on consultationId): the visit raises exactly one
+// external-lab charge, which keeps the basket line unambiguous and the paid-lock
+// simple. A second batch on the same day is added as more test lines on the same
+// order, with the totals re-quoted.
+//
+// `totalCostPrice` is the clinic's own cost and is NOT admin-only, unlike every
+// other cost in this schema (VisitBasketItem.unitCost, ConsultationBotoxItem.
+// unitCost, Consultation.bloodTestCharges[].cost). The person who phones the lab
+// and negotiates the number is the doctor, so dietitian + admin may read and
+// write it; the SECRETARY MUST NEVER SEE IT — see canViewExternalLabCost in
+// src/server/auth.ts, and the role-scoped serializer in
+// repositories/externalLabOrders.ts, which omits the field entirely rather than
+// hiding it in the UI.
+model ConsultationExternalLabOrder {
+  id              String    @id @default(cuid())
+  consultationId  String    @unique
+  // Both totals are USD, always. Obligations in this app are USD (see the
+  // multi-currency note in CLAUDE.md — only a Payment carries a tender
+  // currency), and a margin computed across two units is a margin nobody can
+  // check. Kept as a column rather than assumed so a future LBP-billing lab is
+  // a migration, not an archaeology exercise.
+  currency        String    @default("USD")
+  // What the external lab charges the clinic for the whole group of tests.
+  totalCostPrice  Float     @default(0)
+  // What the patient is charged for the whole group. This is the only figure
+  // that reaches the basket.
+  totalSalePrice  Float     @default(0)
+  // Required (server-enforced) whenever totalSalePrice < totalCostPrice — the
+  // clinic selling below its own cost is a decision someone has to own in
+  // writing. Cleared automatically once the sale price is back at or above cost,
+  // so a stale justification can't sit on a healthy order.
+  belowCostReason String?
+  notes           String?
+  /// Who last set the money on this order, frozen at that moment — the at-a-glance
+  /// answer to "who priced this". The full who/what/when/old→new history is in
+  /// AuditLog; this is the summary the order card shows without a lookup.
+  pricedByName    String?
+  pricedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  consultation Consultation                  @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  tests        ConsultationExternalLabTest[]
+  basketItems  VisitBasketItem[]
+}
+
+// One test inside an external-lab order: a NAME and a free-text DESCRIPTION, and
+// deliberately no price of any kind. Adding a per-line amount here would create a
+// second, contradictory source of truth for a bill whose only real number is the
+// order total, so don't — the lab does not quote per test.
+model ConsultationExternalLabTest {
+  id          String   @id @default(cuid())
+  orderId     String
+  name        String
+  description String?
+  // Preserves the order staff typed the tests in; the lab's quote is for the
+  // group as listed, so the listing is part of the record.
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  order ConsultationExternalLabOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
 model Payment {
   id                  String           @id @default(cuid())
   clientId            String?
@@ -714,21 +788,21 @@ model VisitBasket {
 }
 
 model VisitBasketItem {
-  id                      String                 @id @default(cuid())
+  id                      String                        @id @default(cuid())
   basketId                String
-  kind                    String                 @default("custom")
+  kind                    String                        @default("custom")
   label                   String
   detail                  String?
-  quantity                Int                    @default(1)
-  unitPrice               Float                  @default(0)
-  currency                String                 @default("USD")
-  covered                 Boolean                @default(false)
+  quantity                Int                           @default(1)
+  unitPrice               Float                         @default(0)
+  currency                String                        @default("USD")
+  covered                 Boolean                       @default(false)
   /// The clinic's own cost for this line, per unit, FROZEN when the line was
   /// built — the cost counterpart of `unitPrice`. COGS for the line is
   /// `unitCost * quantity`. 0 for lines that have no cost of goods (a
   /// consultation fee is the doctor's time, which is an operating expense).
   /// Admin-only: never serialized to a client.
-  unitCost                Float                  @default(0)
+  unitCost                Float                         @default(0)
   /// The line's allocated share of the bill-level discount, in the basket's
   /// currency, FROZEN at settlement.
   ///
@@ -738,7 +812,7 @@ model VisitBasketItem {
   /// `unitPrice * quantity - discountAmount`, and the allocation is computed so
   /// these sum EXACTLY to the amount charged to the client — no residual cent can
   /// appear between the sum of the lines and the basket total.
-  discountAmount          Float                  @default(0)
+  discountAmount          Float                         @default(0)
   sessionPlanId           String?
   // Permanent catalog reference for a "product" line (survives rename/delete,
   // like ConsultationProduct.productId) — lets settlement deduct inventory by
@@ -755,13 +829,20 @@ model VisitBasketItem {
   // line's price can move, so its paid-lock check needs a stable id rather than
   // a kind+label+price match. Null for every non-botox line.
   consultationBotoxItemId String?
-  createdAt               DateTime               @default(now())
-  basket                  VisitBasket            @relation(fields: [basketId], references: [id], onDelete: Cascade)
-  sessionPlan             SessionPlan?           @relation(fields: [sessionPlanId], references: [id])
-  clientPackage           ClientPackage?         @relation(fields: [clientPackageId], references: [id])
-  consultationBotoxItem   ConsultationBotoxItem? @relation(fields: [consultationBotoxItemId], references: [id])
+  // Durable reference to the ConsultationExternalLabOrder this line bills. Like
+  // a Botox line the price is negotiated per order rather than fixed by a
+  // catalog, so the paid-lock and the price-protection at checkout both need a
+  // stable id instead of a kind+label+price match. Null for every other kind.
+  externalLabOrderId      String?
+  createdAt               DateTime                      @default(now())
+  basket                  VisitBasket                   @relation(fields: [basketId], references: [id], onDelete: Cascade)
+  sessionPlan             SessionPlan?                  @relation(fields: [sessionPlanId], references: [id])
+  clientPackage           ClientPackage?                @relation(fields: [clientPackageId], references: [id])
+  consultationBotoxItem   ConsultationBotoxItem?        @relation(fields: [consultationBotoxItemId], references: [id])
+  externalLabOrder        ConsultationExternalLabOrder? @relation(fields: [externalLabOrderId], references: [id])
 
   @@index([consultationBotoxItemId])
+  @@index([externalLabOrderId])
 }
 
 model ClientDebt {

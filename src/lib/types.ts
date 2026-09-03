@@ -454,8 +454,49 @@ export interface Consultation {
   treatments?: ConsultationTreatment[];
   products?: ConsultationProduct[];
   botoxItems?: ConsultationBotoxItem[];
+  // The external-lab blood collection ordered on this visit, if any. Absent when
+  // no order exists — and `totalCostPrice` is absent whenever the reader is not
+  // allowed to see the clinic's cost (see ConsultationExternalLabOrder).
+  externalLabOrder?: ConsultationExternalLabOrder;
   // The Nutrient-Rich Foods List filled in on this visit, if the doctor opened it.
   foodList?: ConsultationFoodList;
+}
+
+/** One test inside an external-lab order. A name and free-text notes, and no
+ * price of any kind: the external lab quotes the GROUP, so the only real numbers
+ * live on the order itself. */
+export interface ConsultationExternalLabTest {
+  id?: string;
+  name: string;
+  description?: string;
+}
+
+/**
+ * An "External Lab Blood Collection" order — tests sent to a third-party lab
+ * that bills the clinic a single lump sum for the whole group.
+ *
+ * `totalCostPrice` is OPTIONAL ON THIS TYPE ON PURPOSE. It is not "sometimes
+ * unset" — it is omitted by the server for any reader who may not see the
+ * clinic's cost (the secretary), so that the number never travels to a browser
+ * that must not display it. `canSeeCost` says which of the two shapes you are
+ * holding, so the UI can tell "hidden from me" apart from "not entered yet"
+ * without guessing from an undefined.
+ */
+export interface ConsultationExternalLabOrder {
+  id: string;
+  currency: Currency;
+  totalCostPrice?: number;
+  totalSalePrice: number;
+  /** True when this payload actually carries the cost figures. */
+  canSeeCost: boolean;
+  belowCostReason?: string;
+  notes?: string;
+  tests: ConsultationExternalLabTest[];
+  /** Who last set the money on this order, and when — frozen at that moment. */
+  pricedByName?: string;
+  pricedAt?: string;
+  /** The order has been settled (its basket is paid): everything is frozen. */
+  settled: boolean;
 }
 
 /** The Food List form as saved against a visit. `selections` holds catalog item
@@ -552,7 +593,11 @@ export type VisitBasketItemKind =
   | "custom"
   | "consultation_fee"
   // A Botox charge, doctor-priced per visit. See ConsultationBotoxItem.
-  | "botox";
+  | "botox"
+  // An external-lab blood collection: one line for the whole outsourced order,
+  // priced per order rather than from any catalog. See
+  // ConsultationExternalLabOrder.
+  | "external_lab";
 
 export interface VisitBasketItem {
   id?: string;
@@ -579,6 +624,10 @@ export interface VisitBasketItem {
   // Set on a "botox" line — the ConsultationBotoxItem this charge belongs to,
   // which is what the paid-line lock keys on. Absent otherwise.
   consultationBotoxItemId?: string;
+  // Set on an "external_lab" line: the ConsultationExternalLabOrder it bills.
+  // The settlement screen uses it to offer a reprice of the ORDER (the source),
+  // which is the only sanctioned way this line's price ever moves.
+  externalLabOrderId?: string;
 }
 
 export interface VisitBasket {
@@ -1127,6 +1176,32 @@ export interface DashboardSummary {
     grossProfit: number;
     grossMarginPercent: number | null;
   }[];
+  // External-lab blood collection for the selected period: revenue, what the
+  // external labs charged the clinic, and the margin — in total and per order.
+  // The rows are the same settled basket lines the revenue breakdown counts
+  // under `external_lab`, so they sum exactly to that row. Admin-only, like every
+  // other cost figure on this page (a dietitian sees the cost of the single order
+  // they raised, never the clinic-wide margin).
+  externalLab: {
+    orders: number;
+    revenue: number;
+    cogs: number;
+    grossProfit: number;
+    grossMarginPercent: number | null;
+    rows: {
+      orderId: string;
+      /** Clinic day the sale was FINALIZED, not the day the order was raised. */
+      date: string;
+      clientId: string;
+      clientName: string;
+      visitNumber: number;
+      tests: string[];
+      revenue: number;
+      cogs: number;
+      grossProfit: number;
+      grossMarginPercent: number | null;
+    }[];
+  };
   // The five machines with the most SESSIONS delivered in the selected period.
   // Sliced from `machineUtilization`, so it is the same period, boundaries and
   // canonical machine identity — the chart cannot rank a machine differently from
